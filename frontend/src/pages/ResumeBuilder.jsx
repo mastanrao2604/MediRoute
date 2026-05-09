@@ -125,16 +125,46 @@ export default function ResumeBuilder() {
     setDownloading(true);
     try {
       const res = await api.get('/resume/builder/pdf', { responseType: 'blob' });
-      const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+      const blob = new Blob([res.data], { type: 'application/pdf' });
+      const fileName = `${form.full_name.replace(/\s+/g, '_') || 'resume'}.pdf`;
+
+      // Android Capacitor WebView & mobile Chrome: use Web Share API with file.
+      // The anchor-download approach is silently ignored inside Android WebViews.
+      if (typeof navigator.canShare === 'function') {
+        const file = new File([blob], fileName, { type: 'application/pdf' });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: 'My Resume' });
+          return;
+        }
+      }
+
+      // Desktop browsers: anchor + blob URL download.
+      const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${form.full_name.replace(/\s+/g, '_') || 'resume'}.pdf`;
+      a.download = fileName;
       document.body.appendChild(a);
       a.click();
       a.remove();
-      URL.revokeObjectURL(url);
-    } catch {
-      setError('Save your resume first, then download PDF.');
+      // Defer revoke so the browser has time to start the download before the URL is invalidated.
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (err) {
+      // User dismissed the native share sheet — not an error.
+      if (err?.name === 'AbortError') return;
+      // Axios returns a Blob as response.data when responseType='blob' and server errors (4xx/5xx).
+      // Extract the JSON detail from it to show a useful message.
+      let msg = 'Save your resume first, then download PDF.';
+      if (err?.response?.data instanceof Blob) {
+        try {
+          const text = await err.response.data.text();
+          const json = JSON.parse(text);
+          if (json.detail) msg = json.detail;
+        } catch { /* ignore parse errors — fall through to default msg */ }
+      } else if (err?.message) {
+        msg = err.message;
+      }
+      setError(msg);
+      console.error('PDF download error:', err?.response?.status, msg);
     } finally {
       setDownloading(false);
     }

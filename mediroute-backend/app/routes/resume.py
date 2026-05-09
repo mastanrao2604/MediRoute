@@ -1,10 +1,13 @@
-﻿import os
+﻿import logging
+import os
 import uuid
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from typing import List
+
+logger = logging.getLogger("uvicorn.error")
 
 from ..database import get_db
 from .. import crud, schemas, models
@@ -237,15 +240,28 @@ def download_resume_pdf(
 ):
     resumes = crud.get_resume_data(db, current_user.id)
     if not resumes:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No resume data found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No resume data found. Please save your resume first, then download.",
+        )
     data = resumes[-1]
     os.makedirs(PDF_DIR, exist_ok=True)
     file_path = os.path.join(PDF_DIR, f"resume_{current_user.id}.pdf")
     try:
         generate_resume_pdf(data, file_path)
+        logger.info("Resume PDF generated: user_id=%s", current_user.id)
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
-    return FileResponse(path=file_path, media_type="application/pdf", filename="resume.pdf")
+        logger.error("Resume PDF generation failed: user_id=%s error=%s", current_user.id, exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"PDF generation failed — {exc}",
+        )
+    return FileResponse(
+        path=file_path,
+        media_type="application/pdf",
+        filename="resume.pdf",
+        headers={"Content-Disposition": 'attachment; filename="resume.pdf"'},
+    )
 
 
 @router.get("/builder/pdf/german")
@@ -255,15 +271,28 @@ def download_german_resume_pdf(
 ):
     resumes = crud.get_resume_data(db, current_user.id)
     if not resumes:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No resume data found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No resume data found. Please save your resume first, then download.",
+        )
     data = resumes[-1]
     os.makedirs(PDF_DIR, exist_ok=True)
     file_path = os.path.join(PDF_DIR, f"german_resume_{current_user.id}.pdf")
     try:
         generate_german_pdf(data, file_path)
+        logger.info("German resume PDF generated: user_id=%s", current_user.id)
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
-    return FileResponse(path=file_path, media_type="application/pdf", filename="german_resume.pdf")
+        logger.error("German PDF generation failed: user_id=%s error=%s", current_user.id, exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"PDF generation failed — {exc}",
+        )
+    return FileResponse(
+        path=file_path,
+        media_type="application/pdf",
+        filename="german_resume.pdf",
+        headers={"Content-Disposition": 'attachment; filename="german_resume.pdf"'},
+    )
 
 
 # â”€â”€â”€ Photo upload â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
