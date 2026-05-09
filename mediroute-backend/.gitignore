@@ -1,0 +1,75 @@
+# Environment — NEVER commit secrets
+.env
+.env.local
+.env.production
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+testenv/
+venv/
+.venv/
+env/
+
+# Node (npm shims live in this folder — not part of the Python app)
+node_modules/
+npm-debug.log*
+# npm/node shim files copied into this folder
+npm
+npm.cmd
+npm.ps1
+npx
+npx.cmd
+npx.ps1
+node.exe
+corepack
+corepack.cmd
+nodevars.bat
+install_tools.bat
+-H
+cd
+dir
+
+# Stray files
+photo.jpg
+resume.pdf
+*.pdf
+*.jpg
+*.jpeg
+*.png
+*.gitignore.txt
+
+# Database files — use PostgreSQL in production
+*.db
+*.sqlite
+*.sqlite3
+
+# Uploaded files — use cloud storage in production
+uploads/
+generated_pdfs/
+
+# Logs
+*.log
+otp_dev.log
+
+# Dev scripts (one-off migration tools)
+migrate_to_postgres.py
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp

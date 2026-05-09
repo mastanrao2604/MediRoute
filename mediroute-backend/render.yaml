@@ -1,0 +1,42 @@
+# Render deployment configuration
+# https://render.com/docs/render-yaml-spec
+
+services:
+  - type: web
+    name: mediroute-backend
+    runtime: python
+    region: singapore   # closest free-tier region to India on Render
+    plan: free
+
+    # Build: install dependencies + run DB migrations (safe on existing DB)
+    buildCommand: pip install -r requirements.txt && alembic upgrade head
+
+    # Start: read PORT from Render's injected env var (default 10000)
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 2
+
+    healthCheckPath: /
+
+    envVars:
+      # ── Set these in the Render dashboard (do NOT put real values here) ──
+      - key: ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false           # set manually in dashboard
+      - key: SECRET_KEY
+        generateValue: true   # Render generates a secure random value
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false           # e.g. https://mediroute.in,capacitor://localhost
+      - key: ADMIN_PHONE
+        sync: false
+      - key: ADMIN_SECRET
+        sync: false
+      - key: MSG91_AUTH_KEY
+        sync: false
+      - key: MSG91_TEMPLATE_ID
+        sync: false
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: "30"
+      - key: REFRESH_TOKEN_EXPIRE_DAYS
+        value: "7"
