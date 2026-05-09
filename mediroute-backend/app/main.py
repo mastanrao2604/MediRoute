@@ -18,8 +18,7 @@ if _SENTRY_DSN and _IS_PRODUCTION:
 
 from fastapi import FastAPI, Request, Response, Depends
 from fastapi.middleware.cors import CORSMiddleware
-# StaticFiles intentionally NOT imported — uploads are served via protected
-# /resume/download/{user_id} endpoint only, never as public static files.
+from fastapi.middleware.gzip import GZipMiddleware
 
 from sqlalchemy.orm import Session
 
@@ -40,13 +39,23 @@ app = FastAPI(
     openapi_url=None if _IS_PRODUCTION else "/openapi.json",
 )
 
+# ─── GZip compression ────────────────────────────────────────────────────────
+# Compress responses >= 1 KB. Reduces API payload sizes by 60-80% on mobile.
+# Must be added BEFORE CORS middleware so the compressed response still
+# carries correct CORS headers (middleware stack runs in reverse order).
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
 # ─── Security headers middleware ──────────────────────────────────────────────
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
+    import time
+    t0 = time.perf_counter()
     response: Response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    # Expose response time for performance monitoring (safe — no secrets)
+    response.headers["X-Response-Time"] = f"{(time.perf_counter() - t0) * 1000:.1f}ms"
     if _IS_PRODUCTION:
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response

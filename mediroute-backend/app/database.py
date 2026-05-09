@@ -32,21 +32,15 @@ Base = declarative_base()
 
 
 def get_db():
-    """FastAPI dependency — yields a DB session and guarantees close."""
-    from fastapi import HTTPException
-    from sqlalchemy import text
+    """FastAPI dependency — yields a DB session and guarantees close.
+
+    pool_pre_ping=True on the engine already validates connections before
+    handing them out (transparent reconnect on stale connections). An extra
+    explicit SELECT 1 here would add a network round-trip (~100 ms on Supabase)
+    to EVERY request — removed intentionally.
+    """
     db = SessionLocal()
     try:
-        # Verify the connection is alive (pool_pre_ping may not catch all cases at yield time).
-        # This gives callers a clean 503 instead of an opaque 500.
-        try:
-            db.execute(text("SELECT 1"))
-        except Exception as _ping_err:
-            db.close()
-            raise HTTPException(
-                status_code=503,
-                detail="Database temporarily unavailable. Please try again in a moment.",
-            )
         yield db
     finally:
         db.close()

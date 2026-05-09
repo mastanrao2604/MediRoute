@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { GoogleOAuthProvider } from '@react-oauth/google';
 import { AuthProvider } from './context/AuthContext';
 import { useAuth } from './context/AuthContext';
+import { lazy, Suspense } from 'react';
 import ProtectedRoute from './components/ProtectedRoute';
 import InstallPrompt from './components/InstallPrompt';
 import UpdatePrompt from './components/UpdatePrompt';
@@ -12,21 +13,23 @@ function RoleHome() {
   const { user } = useAuth();
   return <Navigate to={user?.role === 'recruiter' ? '/recruiter/dashboard' : '/dashboard'} replace />;
 }
-import Login from './pages/Login';
-import OTPVerify from './pages/OTPVerify';
-import Onboarding from './pages/Onboarding';
-import Profile from './pages/Profile';
-import Jobs from './pages/Jobs';
-import JobDetail from './pages/JobDetail';
-import Dashboard from './pages/Dashboard';
-import ResumeBuilder from './pages/ResumeBuilder';
-import RecruiterDashboard from './pages/RecruiterDashboard';
-import PostJob from './pages/PostJob';
-import Applicants from './pages/Applicants';
-import CandidateDetail from './pages/CandidateDetail';
-import RecruiterOnboarding from './pages/RecruiterOnboarding';
-import AdminDashboard from './pages/AdminDashboard';
-import PhoneLinkVerify from './pages/PhoneLinkVerify';
+
+// ── Lazy-loaded pages (code splitting — each page only downloads when visited) ──
+const Login               = lazy(() => import('./pages/Login'));
+const OTPVerify           = lazy(() => import('./pages/OTPVerify'));
+const Onboarding          = lazy(() => import('./pages/Onboarding'));
+const Profile             = lazy(() => import('./pages/Profile'));
+const Jobs                = lazy(() => import('./pages/Jobs'));
+const JobDetail           = lazy(() => import('./pages/JobDetail'));
+const Dashboard           = lazy(() => import('./pages/Dashboard'));
+const ResumeBuilder       = lazy(() => import('./pages/ResumeBuilder'));
+const RecruiterDashboard  = lazy(() => import('./pages/RecruiterDashboard'));
+const PostJob             = lazy(() => import('./pages/PostJob'));
+const Applicants          = lazy(() => import('./pages/Applicants'));
+const CandidateDetail     = lazy(() => import('./pages/CandidateDetail'));
+const RecruiterOnboarding = lazy(() => import('./pages/RecruiterOnboarding'));
+const AdminDashboard      = lazy(() => import('./pages/AdminDashboard'));
+const PhoneLinkVerify     = lazy(() => import('./pages/PhoneLinkVerify'));
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 const ADMIN_PHONE = import.meta.env.VITE_ADMIN_PHONE || '';
@@ -86,6 +89,11 @@ export default function App() {
       <BrowserRouter>
         <UpdatePrompt />
         <InstallPrompt />
+        <Suspense fallback={
+          <div className="min-h-screen flex items-center justify-center bg-gray-50">
+            <div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+          </div>
+        }>
         <Routes>
           <Route path="/login" element={<PublicRoute><Login /></PublicRoute>} />
           <Route path="/verify-otp" element={<OTPVerify />} />
@@ -112,6 +120,7 @@ export default function App() {
           <Route path="/" element={<ProtectedRoute><RoleHome /></ProtectedRoute>} />
           <Route path="*" element={<ProtectedRoute><RoleHome /></ProtectedRoute>} />
         </Routes>
+        </Suspense>
       </BrowserRouter>
     </AuthProvider>
     </GoogleOAuthProvider>

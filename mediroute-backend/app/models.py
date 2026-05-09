@@ -90,6 +90,8 @@ class User(Base):
     __table_args__ = (
         Index("idx_users_phone", "phone"),
         Index("idx_users_google_id", "google_id"),
+        # Admin pending-recruiter query: WHERE role='recruiter' AND is_verified=false
+        Index("idx_users_role_verified", "role", "is_verified"),
     )
 
 
@@ -174,6 +176,10 @@ class Job(Base):
 
     __table_args__ = (
         Index("idx_job_search", "role_required", "location", "job_type"),
+        # get_jobs() always filters WHERE status='open' — most selective column first
+        Index("idx_job_status", "status"),
+        # get_recruiter_jobs() filters by posted_by_user_id ORDER BY created_at
+        Index("idx_job_posted_by", "posted_by_user_id", "created_at"),
     )
 
 
