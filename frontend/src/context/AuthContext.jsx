@@ -30,11 +30,25 @@ export function AuthProvider({ children }) {
         setUser(res.data);
         localStorage.setItem('mediroute_user', JSON.stringify(res.data));
       })
-      .catch(() => {
-        // Interceptor already cleared tokens and redirected if refresh failed.
-        // Just reset local state here.
-        setToken(null);
-        setUser(null);
+      .catch((err) => {
+        // Only clear session on explicit auth failure (401).
+        // Network errors (Render cold-start, no connection) should NOT log out
+        // the user — restore cached state from localStorage so the UI stays
+        // functional. API calls will re-authenticate via the refresh-token
+        // interceptor when the backend comes back up.
+        if (err?.response?.status === 401 || err?.response?.status === 403) {
+          setToken(null);
+          setUser(null);
+        } else {
+          const latestToken = localStorage.getItem('mediroute_token');
+          let cachedUser = null;
+          try {
+            const stored = localStorage.getItem('mediroute_user');
+            if (stored) cachedUser = JSON.parse(stored);
+          } catch { /* ignore */ }
+          setToken(latestToken || null);
+          setUser(cachedUser);
+        }
       })
       .finally(() => setLoading(false));
   }, []);

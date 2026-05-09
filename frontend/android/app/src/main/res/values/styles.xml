@@ -13,6 +13,13 @@
         <item name="windowActionBar">false</item>
         <item name="windowNoTitle">true</item>
         <item name="android:background">@null</item>
+        <!-- Match the bottom nav bar colour so the system nav bar blends in.
+             Capacitor 6+ draws the WebView edge-to-edge; setting this white
+             prevents a black bar from covering the bottom navigation tabs. -->
+        <item name="android:navigationBarColor">#FFFFFF</item>
+        <!-- Dark nav-bar buttons (visible on white background). API 27+ only;
+             silently ignored on older versions. -->
+        <item name="android:windowLightNavigationBar">true</item>
     </style>
 
 

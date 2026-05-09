@@ -6,7 +6,7 @@ import Spinner from '../components/Spinner';
 import { useAuth } from '../context/AuthContext';
 
 export default function Dashboard() {
-  const { user } = useAuth();
+  const { user, login } = useAuth();
   const navigate = useNavigate();
   const [applications, setApplications] = useState([]);
   const [profile, setProfile] = useState(null);
@@ -15,10 +15,16 @@ export default function Dashboard() {
 
   useEffect(() => {
     Promise.all([
+      api.get('/auth/me').catch(() => null),
       api.get('/applications/me').catch(() => ({ data: [] })),
       api.get('/profile/me').catch(() => ({ data: null })),
       api.get('/preferences/me').catch(() => ({ data: null })),
-    ]).then(([appsRes, profileRes, prefRes]) => {
+    ]).then(([meRes, appsRes, profileRes, prefRes]) => {
+      // Refresh user in AuthContext so phone/role are always current
+      if (meRes?.data) {
+        const latestToken = localStorage.getItem('mediroute_token');
+        login(latestToken, meRes.data);
+      }
       setApplications(appsRes.data || []);
       setProfile(profileRes.data);
       setPreferences(prefRes.data);
