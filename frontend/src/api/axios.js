@@ -4,6 +4,9 @@ const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
 const api = axios.create({
   baseURL: BASE_URL,
+  // 12 second hard timeout per request. Without this, a request to a sleeping
+  // Render backend hangs indefinitely and freezes the app UI.
+  timeout: 12000,
   headers: { 'Content-Type': 'application/json' },
 });
 

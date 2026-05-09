@@ -8,49 +8,69 @@ export function AuthProvider({ children }) {
   const [token, setToken] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // On mount: restore session from stored tokens.
-  // The axios interceptor transparently refreshes an expired access token
-  // using the stored refresh token, so we just call /auth/me and let it handle itself.
+  // On mount: restore session using a cache-first strategy.
+  //
+  // WHY: Render free-tier backends cold-start in 30-60 seconds. With no axios
+  // timeout the old approach blocked the entire app behind the loading spinner
+  // for that entire duration on every app launch after the backend sleeps.
+  //
+  // STRATEGY:
+  //   1. If a cached user exists in localStorage → restore immediately (<50ms)
+  //      and set loading=false so the app renders at once.
+  //   2. Call /auth/me in the background to validate + refresh the cached data.
+  //   3. On 401/403 → session truly expired → clear everything and go to login.
+  //   4. On network error → keep the cached state; the user stays on their
+  //      dashboard and future API calls retry when the backend wakes up.
   useEffect(() => {
     const storedToken = localStorage.getItem('mediroute_token');
     const storedRefresh = localStorage.getItem('mediroute_refresh_token');
 
     if (!storedToken && !storedRefresh) {
-      // No session at all — go straight to loading=false (stay on login)
+      // No session at all — show login immediately
       setLoading(false);
       return;
     }
 
+    // ── Step 1: cache-first restore ─────────────────────────────────────────
+    // Parse the cached user synchronously so the app is visible in < 100ms.
+    let cachedUser = null;
+    try {
+      const stored = localStorage.getItem('mediroute_user');
+      if (stored) cachedUser = JSON.parse(stored);
+    } catch { /* ignore malformed JSON */ }
+
+    if (cachedUser) {
+      // Unblock the UI immediately — background validation below will silently
+      // update user state once the backend responds.
+      setToken(storedToken);
+      setUser(cachedUser);
+      setLoading(false);
+    }
+
+    // ── Step 2: background validation ───────────────────────────────────────
     api
       .get('/auth/me')
       .then((res) => {
-        // Token may have been silently refreshed by the interceptor — read latest
         const latestToken = localStorage.getItem('mediroute_token');
         setToken(latestToken);
         setUser(res.data);
         localStorage.setItem('mediroute_user', JSON.stringify(res.data));
       })
       .catch((err) => {
-        // Only clear session on explicit auth failure (401).
-        // Network errors (Render cold-start, no connection) should NOT log out
-        // the user — restore cached state from localStorage so the UI stays
-        // functional. API calls will re-authenticate via the refresh-token
-        // interceptor when the backend comes back up.
         if (err?.response?.status === 401 || err?.response?.status === 403) {
+          // Token truly revoked — log the user out
           setToken(null);
           setUser(null);
-        } else {
-          const latestToken = localStorage.getItem('mediroute_token');
-          let cachedUser = null;
-          try {
-            const stored = localStorage.getItem('mediroute_user');
-            if (stored) cachedUser = JSON.parse(stored);
-          } catch { /* ignore */ }
-          setToken(latestToken || null);
-          setUser(cachedUser);
+          localStorage.removeItem('mediroute_token');
+          localStorage.removeItem('mediroute_refresh_token');
+          localStorage.removeItem('mediroute_user');
         }
+        // Network errors / timeouts: keep cached state; don't log the user out
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        // Only needed when there was no cached user (first-ever login path)
+        if (!cachedUser) setLoading(false);
+      });
   }, []);
 
   /**
