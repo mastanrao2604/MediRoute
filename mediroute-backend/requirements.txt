@@ -1,47 +1,38 @@
 # ── Core framework ──────────────────────────────────────────────────────────
-fastapi==0.136.1
-starlette==1.0.0
-uvicorn==0.46.0
-python-multipart==0.0.26
+fastapi>=0.115.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
 
 # ── Database ─────────────────────────────────────────────────────────────────
-SQLAlchemy==2.0.49
-psycopg2-binary==2.9.12
-greenlet==3.4.0
+SQLAlchemy>=2.0.0
+psycopg2-binary>=2.9.9
+greenlet>=3.0.0
 
 # ── Migrations ───────────────────────────────────────────────────────────────
-alembic==1.16.1
+alembic>=1.13.0
 
 # ── Auth / Crypto ─────────────────────────────────────────────────────────────
-python-jose==3.5.0
-cryptography==47.0.0
+python-jose[cryptography]>=3.3.0
+cryptography>=42.0.0
 
 # ── Google OAuth ─────────────────────────────────────────────────────────────
-google-auth==2.50.0
+google-auth>=2.29.0
 
 # ── PDF generation / processing ──────────────────────────────────────────────
-reportlab==4.4.10
-pdfminer.six==20251230
-pdfplumber==0.11.7
-pillow==12.2.0
+reportlab>=4.2.0
+pdfminer.six>=20221105
+pdfplumber>=0.11.0
+pillow>=10.0.0
 
 # ── HTTP ─────────────────────────────────────────────────────────────────────
-requests==2.33.1
-certifi==2026.4.22
-urllib3==2.6.3
+requests>=2.31.0
 
 # ── Validation ───────────────────────────────────────────────────────────────
-pydantic==2.13.3
-pydantic_core==2.46.3
-annotated-types==0.7.0
-typing_extensions==4.15.0
+pydantic>=2.6.0
 
 # ── Config / runtime ─────────────────────────────────────────────────────────
-python-dotenv==1.2.2
-anyio==4.13.0
-httptools==0.7.1
-watchfiles==1.1.1
-websockets==16.0
+python-dotenv>=1.0.0
+anyio>=4.0.0
 
 # ── Monitoring ───────────────────────────────────────────────────────────────
-sentry-sdk[fastapi]==2.29.1
+sentry-sdk[fastapi]>=2.0.0
