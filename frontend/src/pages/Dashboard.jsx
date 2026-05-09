@@ -14,17 +14,19 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(false);  // start false — shell renders immediately
 
   useEffect(() => {
-    // AuthContext already validates /auth/me in the background on startup.
-    // Dashboard only fetches its own data — no duplicate auth call needed.
-    Promise.all([
-      api.get('/applications/me').catch(() => ({ data: [] })),
-      api.get('/profile/me').catch(() => ({ data: null })),
-      api.get('/preferences/me').catch(() => ({ data: null })),
-    ]).then(([appsRes, profileRes, prefRes]) => {
-      setApplications(appsRes.data || []);
-      setProfile(profileRes.data);
-      setPreferences(prefRes.data);
-    }).finally(() => setLoading(false));
+    // Single /dashboard call replaces 3 separate requests (profile + preferences + applications).
+    // The backend aggregates them in one DB round-trip per relation.
+    api.get('/dashboard/?app_limit=10')
+      .then((res) => {
+        const data = res.data || {};
+        setApplications(data.applications || []);
+        setProfile(data.profile ?? null);
+        setPreferences(data.preferences ?? null);
+      })
+      .catch(() => {
+        // Silently degrade — shell already visible, data sections stay empty
+      })
+      .finally(() => setLoading(false));
   }, []);
 
   function profileCompletionScore() {

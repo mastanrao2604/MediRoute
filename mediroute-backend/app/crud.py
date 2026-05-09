@@ -1,7 +1,8 @@
 import logging
 import sys
 import secrets
-from sqlalchemy.orm import Session
+from sqlalchemy import func
+from sqlalchemy.orm import Session, selectinload
 from typing import Optional, List
 from datetime import datetime, timedelta
 
@@ -221,22 +222,46 @@ def get_recruiter_jobs(db: Session, user_id: int) -> List[models.Job]:
 
 
 def get_job_applicants(db: Session, job_id: int) -> List[dict]:
+    # Fetch applications with users in a single query (no lazy-load per row)
     applications = (
         db.query(models.Application)
         .filter(models.Application.job_id == job_id)
+        .options(selectinload(models.Application.user))
         .all()
     )
+    if not applications:
+        return []
+
+    user_ids = [app.user_id for app in applications]
+
+    # Batch-load profiles: 1 query for all users
+    profiles = {
+        p.user_id: p
+        for p in db.query(models.Profile).filter(models.Profile.user_id.in_(user_ids)).all()
+    }
+
+    # Batch-load latest ResumeData per user: 1 query via window function
+    subq = (
+        db.query(
+            models.ResumeData.user_id,
+            func.max(models.ResumeData.id).label("max_id"),
+        )
+        .filter(models.ResumeData.user_id.in_(user_ids))
+        .group_by(models.ResumeData.user_id)
+        .subquery()
+    )
+    resumes = {
+        r.user_id: r
+        for r in db.query(models.ResumeData)
+        .join(subq, models.ResumeData.id == subq.c.max_id)
+        .all()
+    }
+
     result = []
     for app in applications:
-        user = app.user
-        profile = db.query(models.Profile).filter(models.Profile.user_id == user.id).first()
-        resume = (
-            db.query(models.ResumeData)
-            .filter(models.ResumeData.user_id == user.id)
-            .order_by(models.ResumeData.id.desc())
-            .first()
-        )
-        # Resolve display name: user.name → resume full_name → phone
+        user = app.user  # already loaded — no extra query
+        profile = profiles.get(user.id)
+        resume = resumes.get(user.id)
         display_name = (
             user.name
             or (resume.full_name if resume and resume.full_name else None)
@@ -251,16 +276,21 @@ def get_job_applicants(db: Session, job_id: int) -> List[dict]:
             "skills": profile.skills if profile else None,
             "location": profile.current_location if profile else None,
             "candidate_user_id": user.id,
-            "has_resume": has_uploaded_resume(db, user.id),
+            "has_resume": bool(user.resume_url),  # already loaded — no extra query
         })
     return result
 
 
 def get_application_detail(db: Session, application_id: int) -> Optional[dict]:
-    app = db.query(models.Application).filter(models.Application.id == application_id).first()
+    app = (
+        db.query(models.Application)
+        .filter(models.Application.id == application_id)
+        .options(selectinload(models.Application.user))
+        .first()
+    )
     if not app:
         return None
-    user = app.user
+    user = app.user  # already loaded
     profile = db.query(models.Profile).filter(models.Profile.user_id == user.id).first()
     resume = (
         db.query(models.ResumeData)
@@ -296,7 +326,8 @@ def match_jobs_for_user(db: Session, user_id: int) -> List[dict]:
     profile = get_profile(db, user_id)
     prefs = get_preferences(db, user_id)
 
-    jobs = db.query(models.Job).all()
+    # Only score open jobs — avoids full-table scan across closed/draft/pending rows
+    jobs = db.query(models.Job).filter(models.Job.status == models.JobStatus.open).all()
     scored = []
 
     user_skills: set = set()
@@ -329,6 +360,27 @@ def match_jobs_for_user(db: Session, user_id: int) -> List[dict]:
 
     scored.sort(key=lambda x: x["score"], reverse=True)
     return scored[:10]
+
+
+def get_dashboard_data(db: Session, user_id: int, app_limit: int = 10) -> dict:
+    """Aggregate dashboard query — returns profile, preferences, and recent applications
+    in a single DB round-trip per relation (3 queries total) instead of 3 HTTP calls."""
+    profile = db.query(models.Profile).filter(models.Profile.user_id == user_id).first()
+    preferences = db.query(models.UserPreference).filter(
+        models.UserPreference.user_id == user_id
+    ).first()
+    applications = (
+        db.query(models.Application)
+        .filter(models.Application.user_id == user_id)
+        .order_by(models.Application.created_at.desc())
+        .limit(app_limit)
+        .all()
+    )
+    return {
+        "profile": profile,
+        "preferences": preferences,
+        "applications": applications,
+    }
 
 
 def apply_to_job(db: Session, user_id: int, job_id: int) -> models.Application:

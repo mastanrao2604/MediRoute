@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 
 from ..database import get_db
 from .. import crud, schemas, models
@@ -28,7 +28,13 @@ def apply_to_job(
 
 @router.get("/me", response_model=List[schemas.ApplicationResponse])
 def get_my_applications(
+    limit: Optional[int] = Query(None, ge=1, le=200),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(require_candidate),
 ):
-    return crud.get_user_applications(db, current_user.id)
+    apps = db.query(models.Application).filter(
+        models.Application.user_id == current_user.id
+    ).order_by(models.Application.created_at.desc())
+    if limit is not None:
+        apps = apps.limit(limit)
+    return apps.all()

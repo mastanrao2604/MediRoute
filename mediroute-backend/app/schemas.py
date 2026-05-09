@@ -257,6 +257,19 @@ class JobMatchResponse(BaseModel):
     score: int
 
 
+# ─── Dashboard aggregate ──────────────────────────────────────────────────────
+
+class DashboardResponse(BaseModel):
+    """Single-request payload for the candidate dashboard.
+    Replaces three separate API calls (/profile/me, /preferences/me, /applications/me).
+    """
+    model_config = ConfigDict(from_attributes=True)
+
+    profile: Optional["ProfileResponse"] = None
+    preferences: Optional["PreferenceResponse"] = None
+    applications: List["ApplicationResponse"] = []
+
+
 # ─── Application ──────────────────────────────────────────────────────────────
 
 class ApplicationCreate(BaseModel):

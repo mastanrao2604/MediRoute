@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from .database import engine, SessionLocal, get_db
 from . import models, crud
-from .routes import auth, profile, preferences, jobs, applications, resume, user, recruiter, admin
+from .routes import auth, profile, preferences, jobs, applications, resume, user, recruiter, admin, dashboard
 
 app = FastAPI(
     title="MediRoute API",
@@ -111,13 +111,16 @@ app.include_router(applications.router)
 app.include_router(resume.router)
 app.include_router(recruiter.router)
 app.include_router(admin.router)
+app.include_router(dashboard.router)
 
 
 # ─── Health ───────────────────────────────────────────────────────────────────
-
-@app.get("/", tags=["Health"])
-def root():
-    return {"status": "ok", "service": "MediRoute API", "version": "2.0.0"}
+@app.get("/health", tags=["Health"])
+def health_check():
+    """Lightweight keep-alive endpoint for Render / UptimeRobot.
+    Returns immediately without a DB query so it never blocks.
+    """
+    return {"status": "ok"}
 
 
 # ─── Stats ────────────────────────────────────────────────────────────────────
@@ -129,11 +132,6 @@ def get_stats(db: Session = Depends(get_db)):
         "total_jobs":         db.query(models.Job).count(),
         "total_applications": db.query(models.Application).count(),
     }
-
-
-@app.get("/health", tags=["Health"])
-def health():
-    return {"status": "ok"}
 
 
 @app.get("/health/db", tags=["Health"])
