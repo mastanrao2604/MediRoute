@@ -1,0 +1,34 @@
+{
+  "appId": "com.mediroute.app",
+  "appName": "MediRoute",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https",
+    "cleartext": false,
+    "allowNavigation": [
+      "accounts.google.com",
+      "oauth2.googleapis.com"
+    ]
+  },
+  "plugins": {
+    "GoogleAuth": {
+      "scopes": ["profile", "email"],
+      "serverClientId": "461943303725-lqravijl3j6l251fp76j27nrg50elapc.apps.googleusercontent.com",
+      "forceCodeForRefreshToken": true
+    },
+    "SplashScreen": {
+      "launchShowDuration": 2000,
+      "launchAutoHide": true,
+      "backgroundColor": "#ffffff",
+      "androidSplashResourceName": "splash",
+      "androidScaleType": "CENTER_CROP",
+      "showSpinner": false,
+      "splashFullScreen": true,
+      "splashImmersive": false
+    }
+  },
+  "android": {
+    "allowMixedContent": false,
+    "appendUserAgent": "MediRoute-Android"
+  }
+}

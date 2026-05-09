@@ -1,0 +1,34 @@
+services:
+  - type: web
+    name: mediroute-backend
+    runtime: python
+    rootDir: mediroute-backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false          # Set manually in Render dashboard (contains password)
+      - key: SECRET_KEY
+        sync: false          # Set manually in Render dashboard
+      - key: ADMIN_SECRET
+        sync: false          # Set manually in Render dashboard
+      - key: ADMIN_PHONE
+        sync: false          # Set manually in Render dashboard
+      - key: GOOGLE_CLIENT_ID
+        sync: false          # Set manually in Render dashboard
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: "30"
+      - key: REFRESH_TOKEN_EXPIRE_DAYS
+        value: "7"
+      - key: ALLOWED_ORIGINS
+        value: "https://localhost,capacitor://localhost"   # UPDATE after deploy — add your Render URL
+      - key: SMS_PROVIDER
+        value: log           # Change to msg91 when MSG91 keys are ready
+      # - key: MSG91_AUTH_KEY
+      #   sync: false
+      # - key: MSG91_TEMPLATE_ID
+      #   sync: false
+      # - key: SENTRY_DSN
+      #   sync: false

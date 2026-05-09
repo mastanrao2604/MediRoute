@@ -1,0 +1,5 @@
+@import 'tailwindcss';
+
+/* Hide scrollbar on the Navbar link row on small screens */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }

@@ -1,0 +1,9 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">MediRoute</string>
+    <string name="title_activity_main">MediRoute</string>
+    <string name="package_name">com.mediroute.app</string>
+    <string name="custom_url_scheme">com.mediroute.app</string>
+    <!-- Required by @codetrix-studio/capacitor-google-auth to initialize the Google Sign-In client -->
+    <string name="server_client_id">461943303725-lqravijl3j6l251fp76j27nrg50elapc.apps.googleusercontent.com</string>
+</resources>
