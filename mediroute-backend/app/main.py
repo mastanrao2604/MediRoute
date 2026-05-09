@@ -61,11 +61,17 @@ _default_origins = (
     "https://localhost,"        # Capacitor Android (androidScheme=https)
     "capacitor://localhost"     # Capacitor Android fallback / iOS
 )
-_origins = os.getenv("ALLOWED_ORIGINS", _default_origins).split(",")
+_configured_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", _default_origins).split(",") if o.strip()]
+# Always include Capacitor Android origins regardless of the ALLOWED_ORIGINS env var.
+# The APK's WebView uses https://localhost (androidScheme=https) as its origin.
+# Without these, every non-simple request (e.g. GET with Authorization header)
+# fails the CORS preflight and the user sees "Failed to load jobs."
+_capacitor_origins = ["https://localhost", "capacitor://localhost"]
+_origins = list({*_configured_origins, *_capacitor_origins})
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in _origins],
+    allow_origins=_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

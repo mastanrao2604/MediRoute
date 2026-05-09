@@ -159,14 +159,20 @@ export default function MainLayout({ children }) {
           </div>
         </header>
 
-        {/* Page content — pb-24 reserves space for mobile bottom nav */}
-        <main className="flex-1 pb-24 lg:pb-8">
+        {/* Page content — bottom padding reserves space for mobile bottom nav + safe-area */}
+        <main
+          className="flex-1 lg:pb-8"
+          style={{ paddingBottom: 'calc(4rem + env(safe-area-inset-bottom) + 1rem)' }}
+        >
           {children}
         </main>
       </div>
 
       {/* ── Mobile bottom nav ─────────────────────────────────────────────── */}
-      <nav className="lg:hidden fixed bottom-0 inset-x-0 z-50 bg-white border-t border-gray-100">
+      <nav
+        className="lg:hidden fixed bottom-0 inset-x-0 z-50 bg-white border-t border-gray-100"
+        style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+      >
         <div className="flex items-stretch h-16">
           {navItems.map((item) => {
             const active = isActive(item.path);

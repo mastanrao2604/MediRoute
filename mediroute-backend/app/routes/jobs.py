@@ -1,4 +1,5 @@
 import os
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
@@ -7,6 +8,8 @@ from typing import List, Optional
 from ..database import get_db
 from .. import crud, schemas, models
 from ..dependencies import get_current_user, require_recruiter
+
+logger = logging.getLogger("uvicorn.error")
 
 _JOB_APPROVAL_REQUIRED = os.getenv("JOB_APPROVAL_REQUIRED", "false").lower() == "true"
 
@@ -23,7 +26,13 @@ def list_jobs(
     db: Session = Depends(get_db),
 ):
     """List jobs with optional filters for role, location, and job type."""
-    return crud.get_jobs(db, role=role, location=location, job_type=job_type, skip=skip, limit=limit)
+    try:
+        jobs = crud.get_jobs(db, role=role, location=location, job_type=job_type, skip=skip, limit=limit)
+        logger.info("list_jobs: returned %d jobs (role=%s location=%s job_type=%s)", len(jobs), role, location, job_type)
+        return jobs
+    except Exception as exc:
+        logger.exception("list_jobs: unexpected error — %s", exc)
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Job listing temporarily unavailable. Please try again.")
 
 
 @router.get("/match", response_model=List[schemas.JobMatchResponse])
@@ -66,6 +75,7 @@ def create_job(
             detail="Your recruiter account must be verified before posting jobs.",
         )
     job_data = data.model_dump()
+    job_data["posted_by_user_id"] = current_user.id
     if _JOB_APPROVAL_REQUIRED:
         job_data["status"] = models.JobStatus.pending
     return crud.create_job(db, job_data)

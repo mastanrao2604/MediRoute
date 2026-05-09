@@ -149,38 +149,72 @@ export default function AdminDashboard() {
           )}
 
           {!loading && !error && recruiters.length > 0 && (
-            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50 border-b border-gray-100">
-                  <tr>
-                    <th className="px-5 py-3 text-left font-medium text-gray-500">Name</th>
-                    <th className="px-5 py-3 text-left font-medium text-gray-500">Company</th>
-                    <th className="px-5 py-3 text-left font-medium text-gray-500">Email</th>
-                    <th className="px-5 py-3 text-left font-medium text-gray-500">Phone</th>
-                    <th className="px-5 py-3 text-left font-medium text-gray-500">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-50">
-                  {recruiters.map((r) => (
-                    <tr key={r.id} className="hover:bg-gray-50">
-                      <td className="px-5 py-4 font-medium text-gray-900">{r.name || '—'}</td>
-                      <td className="px-5 py-4 text-gray-600">{r.company_name || '—'}</td>
-                      <td className="px-5 py-4 text-gray-600">{r.official_email || '—'}</td>
-                      <td className="px-5 py-4 text-gray-600 font-mono">{r.phone}</td>
-                      <td className="px-5 py-4">
-                        <button
-                          onClick={() => handleApprove(r.id)}
-                          disabled={approving === r.id}
-                          className="bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
-                        >
-                          {approving === r.id ? 'Approving…' : 'Approve'}
-                        </button>
-                      </td>
+            <>
+              {/* ── Mobile cards (< lg) ── */}
+              <div className="lg:hidden flex flex-col gap-3">
+                {recruiters.map((r) => (
+                  <div key={r.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
+                    <div className="flex items-start justify-between gap-3 mb-3">
+                      <div className="min-w-0">
+                        <p className="font-semibold text-gray-900 text-sm">{r.name || '—'}</p>
+                        <p className="text-xs text-indigo-600 font-medium mt-0.5">{r.company_name || '—'}</p>
+                      </div>
+                      <button
+                        onClick={() => handleApprove(r.id)}
+                        disabled={approving === r.id}
+                        className="shrink-0 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
+                      >
+                        {approving === r.id ? 'Approving…' : 'Approve'}
+                      </button>
+                    </div>
+                    <div className="flex flex-col gap-1.5 text-xs text-gray-600">
+                      <div className="flex items-center gap-2">
+                        <span className="text-gray-400 w-12 shrink-0">Email</span>
+                        <span className="break-all">{r.official_email || '—'}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-gray-400 w-12 shrink-0">Phone</span>
+                        <span className="font-mono tracking-wide">{r.phone}</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* ── Desktop table (lg+) ── */}
+              <div className="hidden lg:block bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 border-b border-gray-100">
+                    <tr>
+                      <th className="px-5 py-3 text-left font-medium text-gray-500">Name</th>
+                      <th className="px-5 py-3 text-left font-medium text-gray-500">Company</th>
+                      <th className="px-5 py-3 text-left font-medium text-gray-500">Email</th>
+                      <th className="px-5 py-3 text-left font-medium text-gray-500">Phone</th>
+                      <th className="px-5 py-3 text-left font-medium text-gray-500">Action</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {recruiters.map((r) => (
+                      <tr key={r.id} className="hover:bg-gray-50">
+                        <td className="px-5 py-4 font-medium text-gray-900">{r.name || '—'}</td>
+                        <td className="px-5 py-4 text-gray-600">{r.company_name || '—'}</td>
+                        <td className="px-5 py-4 text-gray-600">{r.official_email || '—'}</td>
+                        <td className="px-5 py-4 text-gray-600 font-mono">{r.phone}</td>
+                        <td className="px-5 py-4">
+                          <button
+                            onClick={() => handleApprove(r.id)}
+                            disabled={approving === r.id}
+                            className="bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
+                          >
+                            {approving === r.id ? 'Approving…' : 'Approve'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </div>
       )}

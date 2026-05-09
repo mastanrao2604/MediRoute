@@ -11,6 +11,11 @@ from .database import Base
 
 class UserRole(str, enum.Enum):
     nurse = "nurse"
+    staff_nurse = "staff_nurse"
+    icu_nurse = "icu_nurse"
+    ot_nurse = "ot_nurse"
+    emergency_nurse = "emergency_nurse"
+    home_care_nurse = "home_care_nurse"
     doctor = "doctor"
     lab_tech = "lab_tech"
     pharmacist = "pharmacist"

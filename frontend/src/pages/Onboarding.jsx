@@ -4,13 +4,18 @@ import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
 
 const ROLES = [
-  { value: 'nurse',        label: 'Nurse' },
-  { value: 'doctor',       label: 'Doctor' },
-  { value: 'lab_tech',     label: 'Lab Technician' },
-  { value: 'pharmacist',   label: 'Pharmacist' },
-  { value: 'driver',       label: 'Medical Driver' },
-  { value: 'front_office', label: 'Other Healthcare Staff' },
-  { value: 'recruiter',    label: 'Recruiter / Hospital HR' },
+  { value: 'nurse',           label: 'Nurse' },
+  { value: 'staff_nurse',     label: 'Staff Nurse' },
+  { value: 'icu_nurse',       label: 'ICU Nurse' },
+  { value: 'ot_nurse',        label: 'OT Nurse' },
+  { value: 'emergency_nurse', label: 'Emergency Nurse' },
+  { value: 'home_care_nurse', label: 'Home Care Nurse' },
+  { value: 'doctor',          label: 'Doctor' },
+  { value: 'lab_tech',        label: 'Lab Technician' },
+  { value: 'pharmacist',      label: 'Pharmacist' },
+  { value: 'driver',          label: 'Medical Driver' },
+  { value: 'front_office',    label: 'Other Healthcare Staff' },
+  { value: 'recruiter',       label: 'Recruiter / Hospital HR' },
 ];
 
 const EXP_OPTIONS = [
@@ -143,7 +148,7 @@ export default function Onboarding() {
     e.preventDefault();
     if (!name.trim() || !role) { setError('Please enter your name and select a role.'); return; }
 
-    if (!city.trim()) { setError('Please enter your current city.'); return; }
+    if (isJobSeeker(role) && !city.trim()) { setError('Please enter your current city.'); return; }
 
     if (isJobSeeker(role) && !jobType) { setError('Please select your preferred job location.'); return; }
 

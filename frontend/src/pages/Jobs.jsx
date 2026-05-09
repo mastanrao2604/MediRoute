@@ -4,7 +4,7 @@ import MainLayout from '../layouts/MainLayout';
 import JobCard from '../components/JobCard';
 import { useAuth } from '../context/AuthContext';
 
-const ROLES = ['', 'nurse', 'doctor', 'lab_tech', 'pharmacist', 'driver', 'front_office'];
+const ROLES = ['', 'nurse', 'staff_nurse', 'icu_nurse', 'ot_nurse', 'emergency_nurse', 'home_care_nurse', 'doctor', 'lab_tech', 'pharmacist', 'driver', 'front_office'];
 const JOB_TYPES = ['', 'india', 'abroad', 'both'];
 
 export default function Jobs() {
@@ -31,8 +31,10 @@ export default function Jobs() {
       if (filters.job_type) params.job_type = filters.job_type;
       const res = await api.get('/jobs', { params });
       setJobs(res.data);
-    } catch {
-      setError('Failed to load jobs.');
+    } catch (err) {
+      const detail = err.response?.data?.detail || err.message || 'Network error';
+      setError(`Failed to load jobs — ${detail}. Tap 'Search Jobs' to retry.`);
+      console.error('fetchJobs error:', err.response?.status, detail);
     } finally {
       setLoading(false);
     }

@@ -4,7 +4,7 @@ import api from '../api/axios';
 import MainLayout from '../layouts/MainLayout';
 import { useAuth } from '../context/AuthContext';
 
-const ROLE_OPTIONS = ['nurse', 'doctor', 'lab_tech', 'pharmacist', 'driver', 'front_office'];
+const ROLE_OPTIONS = ['nurse', 'staff_nurse', 'icu_nurse', 'ot_nurse', 'emergency_nurse', 'home_care_nurse', 'doctor', 'lab_tech', 'pharmacist', 'driver', 'front_office'];
 const JOB_TYPE_OPTIONS = ['india', 'abroad', 'both'];
 
 export default function PostJob() {

@@ -36,30 +36,10 @@ export default function RecruiterDashboard() {
 
   return (
     <MainLayout>
-      <div className="max-w-3xl mx-auto px-4 py-6">
+      <div className="max-w-3xl mx-auto px-4 py-4">
 
-        {/* Verification banner */}
-        {!isVerified && (
-          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-6 flex items-start gap-3">
-            <span className="text-amber-500 text-lg">⏳</span>
-            <div>
-              <p className="text-sm font-semibold text-amber-800">Account under verification</p>
-              <p className="text-xs text-amber-700 mt-0.5">
-                Our team is reviewing your company details. You'll be able to post jobs once verified.
-              </p>
-              {!user?.company_name && (
-                <button
-                  onClick={() => navigate('/recruiter/onboarding')}
-                  className="mt-2 text-xs text-indigo-600 font-semibold underline"
-                >
-                  Complete company profile →
-                </button>
-              )}
-            </div>
-          </div>
-        )}
-
-        <div className="flex items-center justify-between mb-6">
+        {/* Header — always at the top so title is immediately visible */}
+        <div className="flex items-center justify-between mb-4">
           <div>
             <h1 className="text-2xl font-bold text-gray-900">Recruiter Dashboard</h1>
             {user?.company_name && (
@@ -80,6 +60,27 @@ export default function RecruiterDashboard() {
             + Post Job
           </button>
         </div>
+
+        {/* Verification banner — below the title */}
+        {!isVerified && (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-4 flex items-start gap-3">
+            <span className="text-amber-500 text-lg">⏳</span>
+            <div>
+              <p className="text-sm font-semibold text-amber-800">Account under verification</p>
+              <p className="text-xs text-amber-700 mt-0.5">
+                Our team is reviewing your company details. You'll be able to post jobs once verified.
+              </p>
+              {!user?.company_name && (
+                <button
+                  onClick={() => navigate('/recruiter/onboarding')}
+                  className="mt-2 text-xs text-indigo-600 font-semibold underline"
+                >
+                  Complete company profile →
+                </button>
+              )}
+            </div>
+          </div>
+        )}
 
         {error && <p className="text-sm text-red-600 bg-red-50 px-3 py-2 rounded-lg mb-4">{error}</p>}
 
