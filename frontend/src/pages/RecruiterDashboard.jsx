@@ -7,19 +7,15 @@ import { useAuth } from '../context/AuthContext';
 
 export default function RecruiterDashboard() {
   const navigate = useNavigate();
-  const { user, login, token } = useAuth();
+  const { user } = useAuth();
   const [jobs, setJobs] = useState([]);
-  const [fetching, setFetching] = useState(true);
+  const [fetching, setFetching] = useState(false);  // start false — shell renders immediately
   const [error, setError] = useState('');
 
   const isVerified = user?.is_verified === true;
 
   useEffect(() => {
-    // Refresh user from server so is_verified reflects latest admin decision
-    api.get('/auth/me')
-      .then((res) => login(token, res.data))
-      .catch(() => {});
-
+    // AuthContext already refreshes /auth/me in the background. No duplicate call here.
     api.get('/recruiter/jobs')
       .then((res) => setJobs(res.data))
       .catch(() => setError('Failed to load jobs.'))
@@ -33,6 +29,8 @@ export default function RecruiterDashboard() {
       </MainLayout>
     );
   }
+
+  // — removed: shell always renders; data loads inline below —
 
   return (
     <MainLayout>

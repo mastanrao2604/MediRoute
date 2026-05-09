@@ -11,7 +11,7 @@ export default function Jobs() {
   const { user } = useAuth();
   const isCandidate = user?.role !== 'recruiter';
   const [jobs, setJobs] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);  // start false — shell renders immediately
   const [error, setError] = useState('');
   const [applying, setApplying] = useState(null);
   const [toast, setToast] = useState('');

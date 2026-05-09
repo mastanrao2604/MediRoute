@@ -46,7 +46,7 @@ export default function Profile() {
   const [isEditMode,    setIsEditMode]    = useState(false);
   const [form,          setForm]          = useState(EMPTY_PROFILE_FORM);
   const [prefsForm,     setPrefsForm]     = useState(EMPTY_PREFS_FORM);
-  const [fetching,      setFetching]      = useState(true);
+  const [fetching,      setFetching]      = useState(false);  // start false — shell renders immediately
   const [loading,       setLoading]       = useState(false);
   const [error,         setError]         = useState('');
   const [success,       setSuccess]       = useState('');
@@ -253,6 +253,8 @@ export default function Profile() {
       </MainLayout>
     );
   }
+
+  // — removed: shell always renders; data loads inline below —
 
   const pageTitle    = !profile ? 'Complete Your Profile' : isEditMode ? 'Edit Profile' : 'Your Profile';
   const pageSubtitle = !profile ? 'Fill in your details to get better job matches'

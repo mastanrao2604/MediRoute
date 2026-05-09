@@ -11,7 +11,7 @@ export default function Dashboard() {
   const [applications, setApplications] = useState([]);
   const [profile, setProfile] = useState(null);
   const [preferences, setPreferences] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);  // start false — shell renders immediately
 
   useEffect(() => {
     // AuthContext already validates /auth/me in the background on startup.
@@ -52,6 +52,8 @@ export default function Dashboard() {
       </MainLayout>
     );
   }
+
+  // — removed: shell always renders; data loads inline below —
 
   return (
     <MainLayout>
