@@ -36,10 +36,11 @@ function buildShareText(job) {
   const location = locationParts.join(', ');
 
   const lines = [
-    `🏥 *MediRoute is Hiring!*`,
+    job.hospital_name
+      ? `🏥 *${job.hospital_name} is Hiring!*`
+      : `🏥 *Hiring on MediRoute!*`,
     ``,
     `👨‍⚕️ ${job.title}`,
-    job.hospital_name ? `🏨 ${job.hospital_name}` : null,
     location          ? `📍 ${location}`          : null,
     job.salary        ? `💰 ${job.salary}`         : null,
     role              ? `👤 ${role}`               : null,
