@@ -541,6 +541,17 @@ def update_profile_from_resume_builder(db: Session, user_id: int, resume_data: d
 
 
 def create_resume_data(db: Session, user_id: int, data: dict) -> models.ResumeData:
+    """Upsert: update the existing ResumeData row for this user if one exists,
+    otherwise create a new one. This prevents unbounded row growth on every Save."""
+    existing = db.query(models.ResumeData).filter(
+        models.ResumeData.user_id == user_id
+    ).order_by(models.ResumeData.id.desc()).first()
+    if existing:
+        for key, value in data.items():
+            setattr(existing, key, value)
+        db.commit()
+        db.refresh(existing)
+        return existing
     resume = models.ResumeData(user_id=user_id, **data)
     db.add(resume)
     db.commit()

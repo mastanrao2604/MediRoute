@@ -16,11 +16,26 @@ from ..utils.pdf_generator import generate_resume_pdf, generate_german_pdf
 
 router = APIRouter(prefix="/resume", tags=["Resume"])
 
-PDF_DIR: str = os.getenv("PDF_DIR", "generated_pdfs")
-UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", "uploads/resumes")
+# Use absolute paths so file I/O works regardless of the working directory
+# uvicorn is launched from (critical on Render where cwd != project root).
+_BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PDF_DIR: str    = os.getenv("PDF_DIR",    os.path.join(_BACKEND_ROOT, "generated_pdfs"))
+UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", os.path.join(_BACKEND_ROOT, "uploads", "resumes"))
+PHOTO_DIR_DEFAULT = os.path.join(_BACKEND_ROOT, "uploads", "photos")
 
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
 _PDF_MAGIC = b"%PDF"
+
+
+def _resolve_path(stored: str) -> str:
+    """Convert a stored resume_url value to an absolute filesystem path.
+    Handles both legacy relative paths (e.g. 'uploads/resumes/1_20240101.pdf')
+    and absolute paths stored by the updated upload handler.
+    """
+    if os.path.isabs(stored):
+        return stored
+    # Legacy: strip leading slash then resolve relative to backend root
+    return os.path.join(_BACKEND_ROOT, stored.lstrip("/").lstrip("\\"))
 
 
 # â”€â”€â”€ Shared upload helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -30,10 +45,20 @@ def _save_pdf(file: UploadFile, user_id: int) -> str:
     Validate, size-check, verify PDF magic bytes, save with a stable
     filename ({user_id}_{timestamp}.pdf), and return the stored path.
     """
-    # Never use the client-provided filename — always construct path from user_id + timestamp
-    # to prevent path traversal and directory attacks.
+    # Validate extension
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext != ".pdf":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only PDF files are accepted.",
+        )
+
+    # Validate MIME type from the Content-Type header sent by the browser.
+    # Some Android file pickers set this to application/octet-stream for all files;
+    # we still accept that case and rely on magic-byte verification below.
+    allowed_content_types = {"application/pdf", "application/octet-stream", "binary/octet-stream"}
+    ct = (file.content_type or "").split(";")[0].strip().lower()
+    if ct and ct not in allowed_content_types:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Only PDF files are accepted.",
@@ -90,18 +115,18 @@ def upload_resume(
     - Deletes the previous uploaded resume file if one exists.
     - Saves the new file and stores its URL on the user record.
     """
-    # Delete old file if present
+    saved_path = _save_pdf(file, current_user.id)  # absolute path
+    # Store the absolute path directly — no leading-slash confusion.
+    resume_url = saved_path
+
+    # Delete old file if present (resolve old path correctly too)
     if current_user.resume_url:
-        old_path = current_user.resume_url.lstrip("/")
+        old_path = _resolve_path(current_user.resume_url)
         if os.path.exists(old_path):
             try:
                 os.remove(old_path)
             except OSError:
                 pass
-
-    saved_path = _save_pdf(file, current_user.id)
-    # Normalize to a forward-slash URL path (for serving via /uploads/...)
-    resume_url = "/" + saved_path.replace("\\", "/")
 
     current_user.resume_url = resume_url
     db.commit()
@@ -126,10 +151,10 @@ def get_my_resume_file(
     """Stream the current user's uploaded resume PDF."""
     if not current_user.resume_url:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No uploaded resume found.")
-    path = current_user.resume_url.lstrip("/")
+    path = _resolve_path(current_user.resume_url)
     if not os.path.exists(path):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resume file not found on server.")
-    return FileResponse(path=path, media_type="application/pdf", filename="my_resume.pdf")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resume file not found on server. Please re-upload your resume.")
+    return FileResponse(path=path, media_type="application/pdf", filename="my_resume.pdf", headers={"Content-Disposition": 'attachment; filename="my_resume.pdf"'})
 
 
 @router.delete("/me/file", status_code=status.HTTP_204_NO_CONTENT)
@@ -140,7 +165,7 @@ def delete_my_resume(
     """Delete the current user's uploaded resume (file + clears URL)."""
     if not current_user.resume_url:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No uploaded resume found.")
-    path = current_user.resume_url.lstrip("/")
+    path = _resolve_path(current_user.resume_url)
     if os.path.exists(path):
         try:
             os.remove(path)
@@ -188,7 +213,7 @@ def download_candidate_resume(
     if not candidate.resume_url:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This candidate has not uploaded a resume.")
 
-    path = candidate.resume_url.lstrip("/")
+    path = _resolve_path(candidate.resume_url)
     if not os.path.exists(path):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resume file not found on server.")
 
@@ -297,7 +322,7 @@ def download_german_resume_pdf(
 
 # â”€â”€â”€ Photo upload â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-PHOTO_DIR: str = os.getenv("PHOTO_DIR", "uploads/photos")
+PHOTO_DIR: str = os.getenv("PHOTO_DIR", PHOTO_DIR_DEFAULT)
 
 
 @router.post("/photo")

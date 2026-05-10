@@ -25,6 +25,7 @@ export default function ResumeBuilder() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [isSaved, setIsSaved] = useState(false);  // true once data has been saved to backend
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
   const fileInputRef = useRef(null);
@@ -48,6 +49,7 @@ export default function ResumeBuilder() {
             photo_url: latest.photo_url || '',
           });
           if (latest.photo_url) setPhotoPreview(latest.photo_url);
+          setIsSaved(true);  // data already exists on backend
           return;
         }
         const [profileRes, userRes] = await Promise.allSettled([
@@ -112,6 +114,7 @@ export default function ResumeBuilder() {
         setPhotoFile(null);
       }
       await api.post('/resume/builder', { ...form, photo_url: photoUrl });
+      setIsSaved(true);
       showToast('Resume saved successfully!');
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to save resume.');
@@ -124,6 +127,24 @@ export default function ResumeBuilder() {
     setError('');
     setDownloading(true);
     try {
+      // Auto-save first so the backend always has the latest data.
+      // This means Download PDF works even if user forgot to press Save.
+      if (!isIncomplete) {
+        let photoUrl = form.photo_url;
+        if (photoFile) {
+          const fd = new FormData();
+          fd.append('file', photoFile);
+          const photoRes = await api.post('/resume/photo', fd, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+          });
+          photoUrl = photoRes.data.photo_url;
+          setForm((f) => ({ ...f, photo_url: photoUrl }));
+          setPhotoFile(null);
+        }
+        await api.post('/resume/builder', { ...form, photo_url: photoUrl });
+        setIsSaved(true);
+      }
+
       const res = await api.get('/resume/builder/pdf', { responseType: 'blob' });
       const blob = new Blob([res.data], { type: 'application/pdf' });
       const fileName = `${form.full_name.replace(/\s+/g, '_') || 'resume'}.pdf`;
@@ -153,7 +174,7 @@ export default function ResumeBuilder() {
       if (err?.name === 'AbortError') return;
       // Axios returns a Blob as response.data when responseType='blob' and server errors (4xx/5xx).
       // Extract the JSON detail from it to show a useful message.
-      let msg = 'Save your resume first, then download PDF.';
+      let msg = 'PDF generation failed. Please try again.';
       if (err?.response?.data instanceof Blob) {
         try {
           const text = await err.response.data.text();

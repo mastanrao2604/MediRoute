@@ -144,9 +144,20 @@ export default function Profile() {
     setUploadError('');
     try {
       const res = await api.get('/resume/me/file', { responseType: 'blob' });
-      const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+      const blob = new Blob([res.data], { type: 'application/pdf' });
+      // Android WebView blocks window.open() — use Web Share API when available.
+      if (typeof navigator.canShare === 'function') {
+        const file = new File([blob], 'my_resume.pdf', { type: 'application/pdf' });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: 'My Resume' });
+          return;
+        }
+      }
+      const url = URL.createObjectURL(blob);
       window.open(url, '_blank');
-    } catch {
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (err) {
+      if (err?.name === 'AbortError') return;  // user dismissed share sheet
       setUploadError('Could not open resume. Please try again.');
     }
   }
@@ -318,7 +329,7 @@ export default function Profile() {
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".pdf"
+                  accept="application/pdf,.pdf"
                   onChange={handleFileChange}
                   className="block w-full text-sm text-gray-600 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 cursor-pointer"
                 />
@@ -338,7 +349,7 @@ export default function Profile() {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".pdf"
+                accept="application/pdf,.pdf"
                 onChange={handleFileChange}
                 className="block w-full text-sm text-gray-600 file:mr-3 file:py-2.5 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-indigo-600 file:text-white hover:file:bg-indigo-700 cursor-pointer"
               />
