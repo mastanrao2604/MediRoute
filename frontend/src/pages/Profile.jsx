@@ -3,7 +3,8 @@ import api from '../api/axios';
 import MainLayout from '../layouts/MainLayout';
 import Spinner from '../components/Spinner';
 import { useAuth } from '../context/AuthContext';
-import { downloadPDF } from '../utils/downloadPdf';
+import { downloadPDF, viewPDF } from '../utils/downloadPdf';
+import { Capacitor } from '@capacitor/core';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const JOB_TYPE_OPTIONS = [
@@ -53,6 +54,7 @@ export default function Profile() {
   // ── Resume upload state ───────────────────────────────────────────────────
   const [hasResume,    setHasResume]    = useState(false);
   const [uploading,    setUploading]    = useState(false);
+  const [viewing,      setViewing]      = useState(false);
   const [uploadError,  setUploadError]  = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
   const fileInputRef = useRef(null);
@@ -131,27 +133,15 @@ export default function Profile() {
     setUploadError('');
     const formData = new FormData();
     formData.append('file', selectedFile);
-    console.debug('[MediRoute] PDF upload start', {
-      name: selectedFile.name,
-      size: selectedFile.size,
-      type: selectedFile.type,
-    });
     try {
       // 30-second timeout for file uploads — Render may need time to wake from cold start.
-      const res = await api.post('/resume/upload', formData, { timeout: 30000 });
-      console.debug('[MediRoute] PDF upload success', res.status, res.data);
+      const res = await api.post('/resume/upload', formData, { timeout: 30000, headers: { 'Content-Type': undefined } });
       setHasResume(true);
       setSelectedFile(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
       setSuccess('Resume uploaded successfully!');
       setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
-      console.error('[MediRoute] PDF upload error', {
-        status: err?.response?.status,
-        detail: err?.response?.data?.detail,
-        code: err?.code,
-        message: err?.message,
-      });
       const isTimeout = err.code === 'ECONNABORTED' || (err.message || '').includes('timeout');
       // FastAPI Pydantic v2 validation errors return detail as an array of objects.
       // Rendering an array/object directly in JSX causes React Error #31 (white screen).
@@ -171,24 +161,39 @@ export default function Profile() {
     }
   }
 
-  async function handleViewResume() {
+  async function handlePreviewResume() {
     setUploadError('');
-    console.debug('[MediRoute] PDF download start');
+    setViewing(true);
     try {
       const res = await api.get('/resume/me/file', { responseType: 'blob', timeout: 30000 });
-      console.debug('[MediRoute] PDF download response', {
-        status: res.status,
-        contentType: res.headers?.['content-type'],
-        blobSize: res.data?.size,
-      });
+      const blob = new Blob([res.data], { type: 'application/pdf' });
+      await viewPDF(blob);
+    } catch (err) {
+      if (err?.name === 'AbortError') return;
+      setUploadError('Could not open resume preview. Please try again.');
+    } finally {
+      setViewing(false);
+    }
+  }
+
+  async function handleDownloadResume() {
+    setUploadError('');
+    try {
+      const res = await api.get('/resume/me/file', { responseType: 'blob', timeout: 30000 });
       const blob = new Blob([res.data], { type: 'application/pdf' });
       const safeFirst = ((user?.name || '').trim().split(/\s+/)[0] || 'user')
         .toLowerCase().replace(/[^a-z0-9-]/g, '') || 'user';
       const dlName = `${safeFirst}_resume.pdf`;
-      await downloadPDF(blob, dlName);
+      const { savedTo } = await downloadPDF(blob, dlName);
+      if (savedTo === 'downloads') {
+        setSuccess('PDF saved to Downloads!');
+        setTimeout(() => setSuccess(''), 3000);
+      } else if (savedTo === 'documents') {
+        setSuccess('PDF saved to app Documents folder.');
+        setTimeout(() => setSuccess(''), 3000);
+      }
     } catch (err) {
-      if (err?.name === 'AbortError') return;  // user dismissed share sheet
-      console.error('[MediRoute] PDF download error', { message: err?.message, code: err?.code });
+      if (err?.name === 'AbortError') return;
       setUploadError('Could not download resume. Please try again.');
     }
   }
@@ -353,18 +358,27 @@ export default function Profile() {
                 </svg>
                 <span className="text-sm font-medium text-green-800">Resume uploaded ✓</span>
               </div>
-              <div className="flex gap-2">
-                <button
-                  onClick={handleViewResume}
-                  className="flex-1 text-sm font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 py-3 rounded-xl transition-colors"
-                >
-                  View PDF
-                </button>
+              <div className="flex flex-col gap-2">
+                <div className="flex gap-2">
+                  <button
+                    onClick={handlePreviewResume}
+                    disabled={viewing}
+                    className="flex-1 text-sm font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 disabled:opacity-60 border border-indigo-200 py-3 rounded-xl transition-colors"
+                  >
+                    {viewing ? 'Opening…' : 'Preview Resume'}
+                  </button>
+                  <button
+                    onClick={handleDownloadResume}
+                    className="flex-1 text-sm font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 py-3 rounded-xl transition-colors"
+                  >
+                    Download
+                  </button>
+                </div>
                 <button
                   onClick={handleDeleteResume}
-                  className="flex-1 text-sm font-medium text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 py-3 rounded-xl transition-colors"
+                  className="w-full text-sm font-medium text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 py-2.5 rounded-xl transition-colors"
                 >
-                  Delete
+                  Delete Resume
                 </button>
               </div>
               {/* Allow replacing */}

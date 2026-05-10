@@ -50,7 +50,14 @@ export default function ResumeBuilder() {
             languages: latest.languages || '',
             photo_url: latest.photo_url || '',
           });
-          if (latest.photo_url) setPhotoPreview(latest.photo_url);
+          // Restore photo preview: fetch through the authenticated API endpoint
+          // so we always get a valid blob URL regardless of the storage backend
+          // (Supabase key vs local path — neither is directly usable as <img> src).
+          if (latest.photo_url) {
+            api.get('/resume/photo/me', { responseType: 'blob' })
+              .then((res) => setPhotoPreview(URL.createObjectURL(res.data)))
+              .catch(() => setPhotoPreview(null));
+          }
           setIsSaved(true);  // data already exists on backend
           return;
         }
@@ -107,15 +114,11 @@ export default function ResumeBuilder() {
     try {
       let photoUrl = form.photo_url;
       if (photoFile) {
-        console.debug('[MediRoute] Photo upload start', {
-          name: photoFile.name, size: photoFile.size, type: photoFile.type,
-        });
         try {
           const fd = new FormData();
           fd.append('file', photoFile);
           // No Content-Type header — axios auto-sets multipart/form-data with boundary
-          const photoRes = await api.post('/resume/photo', fd, { timeout: 30000 });
-          console.debug('[MediRoute] Photo upload success', photoRes.status, photoRes.data);
+          const photoRes = await api.post('/resume/photo', fd, { timeout: 30000, headers: { 'Content-Type': undefined } });
           photoUrl = photoRes.data.photo_url;
           setForm((f) => ({ ...f, photo_url: photoUrl }));
           setPhotoFile(null);
@@ -138,7 +141,6 @@ export default function ResumeBuilder() {
         }
       }
       const payload = { ...form, photo_url: photoUrl };
-      console.debug('[MediRoute] Save payload', JSON.stringify(payload));
       await api.post('/resume/builder', payload);
       setIsSaved(true);
       showToast('Resume saved successfully!');
@@ -169,7 +171,6 @@ export default function ResumeBuilder() {
   async function handleDownloadPDF() {
     setError('');
     setDownloading(true);
-    console.debug('[MediRoute] PDF generate+download start');
     try {
       // Auto-save first so the backend always has the latest data.
       // This means Download PDF works even if user forgot to press Save.
@@ -180,7 +181,7 @@ export default function ResumeBuilder() {
             const fd = new FormData();
             fd.append('file', photoFile);
             // No Content-Type header — axios auto-sets multipart/form-data with boundary
-            const photoRes = await api.post('/resume/photo', fd, { timeout: 30000 });
+            const photoRes = await api.post('/resume/photo', fd, { timeout: 30000, headers: { 'Content-Type': undefined } });
             photoUrl = photoRes.data.photo_url;
             setForm((f) => ({ ...f, photo_url: photoUrl }));
             setPhotoFile(null);
@@ -203,7 +204,10 @@ export default function ResumeBuilder() {
       const safeFirst = ((form.full_name || '').trim().split(/\s+/)[0] || 'user')
         .toLowerCase().replace(/[^a-z0-9-]/g, '') || 'user';
       const fileName = `${safeFirst}_resume.pdf`;
-      await downloadPDF(blob, fileName);
+      const { savedTo } = await downloadPDF(blob, fileName);
+      if (savedTo === 'downloads') showToast('PDF saved to Downloads!');
+      else if (savedTo === 'documents') showToast('PDF saved to app Documents folder.');
+      else showToast('PDF downloaded!');
     } catch (err) {
       // User dismissed the native share sheet — not an error.
       if (err?.name === 'AbortError') return;

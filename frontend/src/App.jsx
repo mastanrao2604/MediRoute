@@ -2,7 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { GoogleOAuthProvider } from '@react-oauth/google';
 import { AuthProvider } from './context/AuthContext';
 import { useAuth } from './context/AuthContext';
-import { lazy, Suspense, Component } from 'react';
+import { lazy, Suspense, Component, useEffect, useRef } from 'react';
 import ProtectedRoute from './components/ProtectedRoute';
 import InstallPrompt from './components/InstallPrompt';
 import UpdatePrompt from './components/UpdatePrompt';
@@ -118,6 +118,7 @@ function AdminRoute({ children }) {
   }
   return children;
 }
+
 
 export default function App() {
   return (

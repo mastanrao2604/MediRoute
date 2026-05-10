@@ -537,3 +537,52 @@ def upload_resume_photo(
             detail=f"Failed to save photo: {exc}",
         )
     return {"photo_url": dest}
+
+
+# ─── Serve current user's profile photo ───────────────────────────────────────
+
+@router.get("/photo/me")
+def get_resume_photo(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return the authenticated user's resume profile photo as image bytes.
+
+    Used by the frontend to restore photoPreview after navigation/remount,
+    since the raw Supabase storage key cannot be used directly as an <img> src.
+    Returns 404 if no photo has been uploaded yet.
+    """
+    resumes = crud.get_resume_data(db, current_user.id)
+    if not resumes:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No resume found.")
+
+    photo_key = (resumes[-1].photo_url or "").strip()
+    if not photo_key:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No profile photo found.")
+
+    _ct_map = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+    ext = os.path.splitext(photo_key)[1].lower()
+    content_type = _ct_map.get(ext, "image/jpeg")
+
+    if storage.is_supabase_path(photo_key):
+        try:
+            photo_bytes = storage.download_bytes(BUCKET_PHOTOS, photo_key)
+        except RuntimeError:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo not found in storage.")
+        return Response(
+            content=photo_bytes,
+            media_type=content_type,
+            headers={"Cache-Control": "private, max-age=300"},
+        )
+
+    # Local disk fallback (dev environment)
+    if os.path.exists(photo_key):
+        with open(photo_key, "rb") as fh:
+            photo_bytes = fh.read()
+        return Response(
+            content=photo_bytes,
+            media_type=content_type,
+            headers={"Cache-Control": "private, max-age=300"},
+        )
+
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo file not found.")

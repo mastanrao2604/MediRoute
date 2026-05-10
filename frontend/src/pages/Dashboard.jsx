@@ -23,9 +23,7 @@ export default function Dashboard() {
         setProfile(data.profile ?? null);
         setPreferences(data.preferences ?? null);
       })
-      .catch(() => {
-        // Silently degrade — shell already visible, data sections stay empty
-      })
+      .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
 

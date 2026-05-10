@@ -130,14 +130,6 @@ export default function Login() {
         grantOfflineAccess: true,
       });
       const googleUser = await GoogleAuth.signIn();
-      // Debug: log full structure to see exact shape returned by this plugin version
-      console.log('[MediRoute] GoogleAuth.signIn() result:', JSON.stringify({
-        hasAuthentication: !!googleUser?.authentication,
-        idTokenInAuth: googleUser?.authentication?.idToken ? 'PRESENT' : 'NULL',
-        idTokenTopLevel: googleUser?.idToken ? 'PRESENT' : 'NULL',
-        serverAuthCode: googleUser?.serverAuthCode ? 'PRESENT' : 'NULL',
-        email: googleUser?.email,
-      }));
       // Try both idToken locations — plugin v3.x RC puts it in both places
       const idToken = googleUser?.authentication?.idToken || googleUser?.idToken;
       if (!idToken) throw new Error(
