@@ -483,13 +483,23 @@ def upload_resume_photo(
     current_user: models.User = Depends(get_current_user),
 ):
     """Upload a profile photo for use in the resume PDF. Returns the storage key."""
-    allowed_types = {"image/jpeg", "image/png", "image/webp"}
-    if file.content_type not in allowed_types:
+    # Android file pickers often send application/octet-stream regardless of the real
+    # image type — accept it here and rely on file-extension + magic-byte checks below.
+    allowed_content_types = {"image/jpeg", "image/png", "image/webp",
+                             "application/octet-stream", "binary/octet-stream"}
+    ct = (file.content_type or "").split(";")[0].strip().lower()
+    if ct and ct not in allowed_content_types:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Only JPEG, PNG, and WebP images are supported.",
         )
     ext = os.path.splitext(file.filename or "")[1].lower() or ".jpg"
+    # Reject unsupported extensions (guards against rename attacks when MIME is octet-stream)
+    if ext not in {".jpg", ".jpeg", ".png", ".webp"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only JPEG, PNG, and WebP images are supported.",
+        )
     uid = uuid.uuid4().hex[:8]
     # Bounded read — reject oversized images before buffering full body
     try:
