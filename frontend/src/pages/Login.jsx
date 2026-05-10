@@ -17,6 +17,7 @@ export default function Login() {
   const [phoneTouched, setPhoneTouched] = useState(false);
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
+  const [googleStatusMsg, setGoogleStatusMsg] = useState('Signing in with Google…');
   const [error, setError] = useState('');
   const [showPhoneForm, setShowPhoneForm] = useState(false);
   const navigate = useNavigate();
@@ -57,7 +58,12 @@ export default function Login() {
       const res = await api.post('/auth/send-otp', { phone: validation.cleaned });
       navigate('/verify-otp', { state: { phone: validation.cleaned, devOtp: res.data.dev_otp } });
     } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to send OTP. Try again.');
+      const raw = err?.response?.data?.detail;
+      setError(
+        typeof raw === 'string' ? raw
+          : Array.isArray(raw) ? raw.map((e) => e.msg || String(e)).join('. ')
+          : 'Failed to send OTP. Try again.',
+      );
     } finally {
       setLoading(false);
     }
@@ -65,22 +71,48 @@ export default function Login() {
 
   async function handleGoogleSuccess(credentialResponse) {
     setGoogleLoading(true);
+    setGoogleStatusMsg('Signing in with Google…');
     setError('');
     try {
-      const res = await api.post('/auth/google', { token: credentialResponse.credential });
+      // Use a 30s timeout — Render free-tier cold starts take 30-60s, far exceeding
+      // the 12s global default. /auth/google is idempotent so a single retry is safe.
+      let res;
+      try {
+        res = await api.post('/auth/google', { token: credentialResponse.credential }, { timeout: 30000 });
+      } catch (firstErr) {
+        const isTimeout = firstErr?.code === 'ECONNABORTED' || (firstErr?.message || '').includes('timeout');
+        if (!isTimeout) throw firstErr;
+        setGoogleStatusMsg('Server is waking up, retrying…');
+        await new Promise((r) => setTimeout(r, 1500));
+        setGoogleStatusMsg('Connecting securely…');
+        res = await api.post('/auth/google', { token: credentialResponse.credential }, { timeout: 40000 });
+      }
       if (res.data.phone_verification_required) {
         navigate('/link-phone', { state: { googleSessionToken: res.data.google_session_token } });
       } else {
+        // Backend is already warm — 20s is more than enough for /auth/me.
         const meRes = await api.get('/auth/me', {
           headers: { Authorization: `Bearer ${res.data.access_token}` },
+          timeout: 20000,
         });
         login(res.data.access_token, meRes.data, res.data.refresh_token);
         navigateAfterLogin(meRes.data, navigate);
       }
     } catch (err) {
-      setError(err.response?.data?.detail || 'Google sign-in failed. Try again.');
+      const isTimeout = err?.code === 'ECONNABORTED' || (err?.message || '').includes('timeout');
+      if (isTimeout) {
+        setError('Server is starting up. Please wait a moment and try again.');
+      } else {
+        const raw = err?.response?.data?.detail;
+        setError(
+          typeof raw === 'string' ? raw
+            : Array.isArray(raw) ? raw.map((e) => e.msg || String(e)).join('. ')
+            : 'Google sign-in failed. Try again.',
+        );
+      }
     } finally {
       setGoogleLoading(false);
+      setGoogleStatusMsg('Signing in with Google…');
     }
   }
 
@@ -114,12 +146,26 @@ export default function Login() {
         `idToken top-level: ${googleUser?.idToken}`
       );
       // Reuse the exact same backend endpoint as the web flow.
-      const res = await api.post('/auth/google', { token: idToken });
+      // 30s timeout for first attempt — covers Render cold start.
+      // /auth/google is idempotent so a single cold-start retry is safe.
+      let res;
+      try {
+        res = await api.post('/auth/google', { token: idToken }, { timeout: 30000 });
+      } catch (firstErr) {
+        const isTimeout = firstErr?.code === 'ECONNABORTED' || (firstErr?.message || '').includes('timeout');
+        if (!isTimeout) throw firstErr;
+        setGoogleStatusMsg('Server is waking up, retrying…');
+        await new Promise((r) => setTimeout(r, 1500));
+        setGoogleStatusMsg('Connecting securely…');
+        res = await api.post('/auth/google', { token: idToken }, { timeout: 40000 });
+      }
       if (res.data.phone_verification_required) {
         navigate('/link-phone', { state: { googleSessionToken: res.data.google_session_token } });
       } else {
+        // Backend is already warm — 20s is more than enough for /auth/me.
         const meRes = await api.get('/auth/me', {
           headers: { Authorization: `Bearer ${res.data.access_token}` },
+          timeout: 20000,
         });
         login(res.data.access_token, meRes.data, res.data.refresh_token);
         navigateAfterLogin(meRes.data, navigate);
@@ -130,13 +176,21 @@ export default function Login() {
         setGoogleLoading(false);
         return;
       }
-      const detail = err?.response?.data?.detail
-        || err?.message
-        || String(err)
-        || 'Google sign-in failed. Please try again.';
-      setError(detail);
+      const isTimeout = err?.code === 'ECONNABORTED' || (err?.message || '').includes('timeout');
+      if (isTimeout) {
+        setError('Server is starting up. Please wait a moment and try again.');
+      } else {
+        // Pydantic v2 may return detail as an array — coerce to string to avoid React Error #31.
+        const raw = err?.response?.data?.detail;
+        setError(
+          typeof raw === 'string' ? raw
+            : Array.isArray(raw) ? raw.map((e) => e.msg || String(e)).join('. ')
+            : err?.message || String(err) || 'Google sign-in failed. Please try again.',
+        );
+      }
     } finally {
       setGoogleLoading(false);
+      setGoogleStatusMsg('Signing in with Google…');
     }
   }
 
@@ -167,7 +221,7 @@ export default function Login() {
               {googleLoading ? (
                 <div className="w-full flex items-center justify-center gap-3 bg-indigo-600 text-white font-semibold py-3.5 rounded-xl">
                   <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  <span>Signing in with Google…</span>
+                  <span>{googleStatusMsg}</span>
                 </div>
               ) : IS_NATIVE ? (
                 /* ── Native APK: uses Android Google Sign-In SDK (SHA-1 based, no iframe) ── */

@@ -114,7 +114,16 @@ export default function ResumeBuilder() {
       setIsSaved(true);
       showToast('Resume saved successfully!');
     } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to save resume.');
+      // FastAPI Pydantic v2 validation errors return detail as an array of objects.
+      // Rendering an array/object in JSX causes React Error #31 (white screen).
+      const raw = err.response?.data?.detail;
+      setError(
+        typeof raw === 'string'
+          ? raw
+          : Array.isArray(raw)
+            ? raw.map((e) => e.msg || String(e)).join('. ')
+            : 'Failed to save resume.',
+      );
     } finally {
       setSaving(false);
     }
@@ -177,7 +186,16 @@ export default function ResumeBuilder() {
         try {
           const text = await err.response.data.text();
           const json = JSON.parse(text);
-          if (json.detail) msg = json.detail;
+          if (json.detail) {
+            // Pydantic v2 can return detail as an array of {type,loc,msg,input}.
+            // Coerce to a string — rendering objects in JSX causes React Error #31.
+            const d = json.detail;
+            msg = typeof d === 'string'
+              ? d
+              : Array.isArray(d)
+                ? d.map((e) => e.msg || String(e)).join('. ')
+                : 'PDF generation failed. Please try again.';
+          }
         } catch { /* ignore parse errors — fall through to default msg */ }
       } else if (err?.message) {
         msg = err.message;

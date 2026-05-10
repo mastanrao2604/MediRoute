@@ -134,10 +134,18 @@ export default function Profile() {
       setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
       const isTimeout = err.code === 'ECONNABORTED' || (err.message || '').includes('timeout');
+      // FastAPI Pydantic v2 validation errors return detail as an array of objects.
+      // Rendering an array/object directly in JSX causes React Error #31 (white screen).
+      const raw = err.response?.data?.detail;
+      const detailMsg = typeof raw === 'string'
+        ? raw
+        : Array.isArray(raw)
+          ? raw.map((e) => e.msg || String(e)).join('. ')
+          : 'Upload failed. Please try again.';
       setUploadError(
         isTimeout
           ? 'Upload timed out. The server may be starting up — please try again in a moment.'
-          : err.response?.data?.detail || 'Upload failed. Please try again.',
+          : detailMsg,
       );
     } finally {
       setUploading(false);
@@ -187,7 +195,14 @@ export default function Profile() {
       setSuccess('Resume deleted.');
       setTimeout(() => setSuccess(''), 2500);
     } catch (err) {
-      setUploadError(err.response?.data?.detail || 'Failed to delete resume.');
+      const raw = err.response?.data?.detail;
+      setUploadError(
+        typeof raw === 'string'
+          ? raw
+          : Array.isArray(raw)
+            ? raw.map((e) => e.msg || String(e)).join('. ')
+            : 'Failed to delete resume.',
+      );
     }
   }
 
