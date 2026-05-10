@@ -369,9 +369,9 @@ class ResumeBuilderCreate(BaseModel):
 
     # Required fields
     full_name: str
-    phone: str
     skills: str
     # Optional fields
+    phone: Optional[str] = None
     email: Optional[str] = None
     location: Optional[str] = None
     profile_summary: Optional[str] = None
@@ -389,7 +389,9 @@ class ResumeBuilderCreate(BaseModel):
 
     @field_validator("phone")
     @classmethod
-    def phone_min_digits(cls, v: str) -> str:
+    def phone_min_digits(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
         digits = "".join(c for c in v if c.isdigit())
         if len(digits) < 10:
             raise ValueError("phone must contain at least 10 digits")

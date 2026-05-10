@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
 import MainLayout from '../layouts/MainLayout';
+import { downloadPDF } from '../utils/downloadPdf';
 
 const EMPTY_FORM = {
   full_name: '',
@@ -78,7 +79,11 @@ export default function ResumeBuilder() {
   function handlePhotoChange(e) {
     const file = e.target.files[0];
     if (!file) return;
-    if (!file.type.startsWith('image/')) {
+    const allowed = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/jpg']);
+    const allowedExt = new Set(['.jpg', '.jpeg', '.png', '.webp']);
+    const ext = (file.name || '').toLowerCase().match(/\.[^.]+$/)?.[0] ?? '';
+    // Android file pickers sometimes report application/octet-stream — accept by extension
+    if (!allowed.has(file.type) && !allowedExt.has(ext)) {
       setError('Please select an image file (JPEG, PNG, or WebP).');
       return;
     }
@@ -102,18 +107,47 @@ export default function ResumeBuilder() {
     try {
       let photoUrl = form.photo_url;
       if (photoFile) {
-        const fd = new FormData();
-        fd.append('file', photoFile);
-        // No Content-Type header — axios auto-sets multipart/form-data with boundary
-        const photoRes = await api.post('/resume/photo', fd, { timeout: 30000 });
-        photoUrl = photoRes.data.photo_url;
-        setForm((f) => ({ ...f, photo_url: photoUrl }));
-        setPhotoFile(null);
+        console.debug('[MediRoute] Photo upload start', {
+          name: photoFile.name, size: photoFile.size, type: photoFile.type,
+        });
+        try {
+          const fd = new FormData();
+          fd.append('file', photoFile);
+          // No Content-Type header — axios auto-sets multipart/form-data with boundary
+          const photoRes = await api.post('/resume/photo', fd, { timeout: 30000 });
+          console.debug('[MediRoute] Photo upload success', photoRes.status, photoRes.data);
+          photoUrl = photoRes.data.photo_url;
+          setForm((f) => ({ ...f, photo_url: photoUrl }));
+          setPhotoFile(null);
+        } catch (photoErr) {
+          console.error('[MediRoute] Photo upload error', {
+            status: photoErr?.response?.status,
+            detail: photoErr?.response?.data?.detail,
+            message: photoErr?.message,
+          });
+          const raw = photoErr?.response?.data?.detail;
+          const msg = typeof raw === 'string' ? raw
+            : Array.isArray(raw) ? raw.map((e) => {
+                const field = Array.isArray(e.loc) ? e.loc.filter((f) => f !== 'body').join('.') : '';
+                return field ? `${field}: ${e.msg}` : (e.msg || String(e));
+              }).join('. ')
+            : (photoErr?.message || 'Photo upload failed.');
+          setSaving(false);
+          setError(`Photo upload failed: ${msg}`);
+          return;
+        }
       }
-      await api.post('/resume/builder', { ...form, photo_url: photoUrl });
+      const payload = { ...form, photo_url: photoUrl };
+      console.debug('[MediRoute] Save payload', JSON.stringify(payload));
+      await api.post('/resume/builder', payload);
       setIsSaved(true);
       showToast('Resume saved successfully!');
     } catch (err) {
+      console.error('[MediRoute] Save error', {
+        status: err?.response?.status,
+        detail: err?.response?.data?.detail,
+        message: err?.message,
+      });
       // FastAPI Pydantic v2 validation errors return detail as an array of objects.
       // Rendering an array/object in JSX causes React Error #31 (white screen).
       const raw = err.response?.data?.detail;
@@ -121,7 +155,10 @@ export default function ResumeBuilder() {
         typeof raw === 'string'
           ? raw
           : Array.isArray(raw)
-            ? raw.map((e) => e.msg || String(e)).join('. ')
+            ? raw.map((e) => {
+                const field = Array.isArray(e.loc) ? e.loc.filter((f) => f !== 'body').join('.') : '';
+                return field ? `${field}: ${e.msg}` : (e.msg || String(e));
+              }).join('. ')
             : 'Failed to save resume.',
       );
     } finally {
@@ -132,50 +169,41 @@ export default function ResumeBuilder() {
   async function handleDownloadPDF() {
     setError('');
     setDownloading(true);
+    console.debug('[MediRoute] PDF generate+download start');
     try {
       // Auto-save first so the backend always has the latest data.
       // This means Download PDF works even if user forgot to press Save.
       if (!isIncomplete) {
         let photoUrl = form.photo_url;
         if (photoFile) {
-          const fd = new FormData();
-          fd.append('file', photoFile);
-          // No Content-Type header — axios auto-sets multipart/form-data with boundary
-          const photoRes = await api.post('/resume/photo', fd, { timeout: 30000 });
-          photoUrl = photoRes.data.photo_url;
-          setForm((f) => ({ ...f, photo_url: photoUrl }));
-          setPhotoFile(null);
+          try {
+            const fd = new FormData();
+            fd.append('file', photoFile);
+            // No Content-Type header — axios auto-sets multipart/form-data with boundary
+            const photoRes = await api.post('/resume/photo', fd, { timeout: 30000 });
+            photoUrl = photoRes.data.photo_url;
+            setForm((f) => ({ ...f, photo_url: photoUrl }));
+            setPhotoFile(null);
+          } catch (photoErr) {
+            console.error('[MediRoute] Photo upload error (PDF flow)', {
+              status: photoErr?.response?.status,
+              detail: photoErr?.response?.data?.detail,
+              message: photoErr?.message,
+            });
+            // Continue without photo rather than blocking PDF download
+            photoUrl = form.photo_url;
+          }
         }
         await api.post('/resume/builder', { ...form, photo_url: photoUrl });
         setIsSaved(true);
       }
 
-      const res = await api.get('/resume/builder/pdf', { responseType: 'blob' });
+      const res = await api.get('/resume/builder/pdf', { responseType: 'blob', timeout: 60000 });
       const blob = new Blob([res.data], { type: 'application/pdf' });
       const safeFirst = ((form.full_name || '').trim().split(/\s+/)[0] || 'user')
         .toLowerCase().replace(/[^a-z0-9-]/g, '') || 'user';
       const fileName = `${safeFirst}_resume.pdf`;
-
-      // Android Capacitor WebView & mobile Chrome: use Web Share API with file.
-      // The anchor-download approach is silently ignored inside Android WebViews.
-      if (typeof navigator.canShare === 'function') {
-        const file = new File([blob], fileName, { type: 'application/pdf' });
-        if (navigator.canShare({ files: [file] })) {
-          await navigator.share({ files: [file], title: 'My Resume' });
-          return;
-        }
-      }
-
-      // Desktop browsers: anchor + blob URL download.
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = fileName;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      // Defer revoke so the browser has time to start the download before the URL is invalidated.
-      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      await downloadPDF(blob, fileName);
     } catch (err) {
       // User dismissed the native share sheet — not an error.
       if (err?.name === 'AbortError') return;

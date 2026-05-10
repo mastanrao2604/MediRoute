@@ -45,19 +45,36 @@ app = FastAPI(
 # carries correct CORS headers (middleware stack runs in reverse order).
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-# ─── Security headers middleware ──────────────────────────────────────────────
+# ─── Security + timing middleware ───────────────────────────────────────────
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
+    global _warm
     import time
     t0 = time.perf_counter()
+    is_cold = not _warm
     response: Response = await call_next(request)
+    elapsed_ms = (time.perf_counter() - t0) * 1000
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    # Expose response time for performance monitoring (safe — no secrets)
-    response.headers["X-Response-Time"] = f"{(time.perf_counter() - t0) * 1000:.1f}ms"
+    response.headers["X-Response-Time"] = f"{elapsed_ms:.1f}ms"
     if _IS_PRODUCTION:
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    # Log slow requests so we can distinguish cold-start vs warm inefficiency
+    label = "COLD" if is_cold else "WARM"
+    path = request.url.path
+    if elapsed_ms > 500 and path not in ("/health", "/health/db"):
+        _startup_log.warning(
+            "[PERF][%s] %s %s → %.0fms",
+            label, request.method, path, elapsed_ms
+        )
+    elif elapsed_ms > 100 and path not in ("/health", "/health/db"):
+        _startup_log.info(
+            "[PERF][%s] %s %s → %.0fms",
+            label, request.method, path, elapsed_ms
+        )
+    if not _warm:
+        _warm = True
     return response
 
 # ─── CORS ─────────────────────────────────────────────────────────────────────
@@ -91,7 +108,10 @@ app.add_middleware(
 # is temporarily unreachable (e.g., Supabase paused, network outage).
 # In production, Alembic handles all schema changes (alembic upgrade head).
 import logging as _logging
+import time as _time
 _startup_log = _logging.getLogger("uvicorn.error")
+_startup_time = _time.time()   # used by /health uptime + cold-start detection
+_warm = False                  # flips to True after first successful request
 try:
     models.Base.metadata.create_all(bind=engine)
 except Exception as _db_err:
@@ -117,10 +137,16 @@ app.include_router(dashboard.router)
 # ─── Health ───────────────────────────────────────────────────────────────────
 @app.get("/health", tags=["Health"])
 def health_check():
-    """Lightweight keep-alive endpoint for Render / UptimeRobot.
-    Returns immediately without a DB query so it never blocks.
+    """Lightweight keep-alive endpoint — safe for uptime monitors and cron pings.
+    Returns immediately with no DB query and no auth overhead.
     """
-    return {"status": "ok"}
+    import time
+    uptime_s = int(time.time() - _startup_time)
+    return {
+        "status": "healthy",
+        "service": "MediRoute API",
+        "uptime_seconds": uptime_s,
+    }
 
 
 # ─── Stats ────────────────────────────────────────────────────────────────────
@@ -136,39 +162,24 @@ def get_stats(db: Session = Depends(get_db)):
 
 @app.get("/health/db", tags=["Health"])
 def health_db(db: Session = Depends(get_db)):
-    """Verify database connectivity and return pool + table stats."""
+    """Lightweight DB connectivity check — SELECT 1 only. Safe for monitoring."""
     import time
-    from sqlalchemy import text, inspect
-    from .database import engine, DATABASE_URL
-
+    from sqlalchemy import text
     t0 = time.perf_counter()
     try:
         db.execute(text("SELECT 1"))
         latency_ms = round((time.perf_counter() - t0) * 1000, 1)
+        return {
+            "status": "healthy",
+            "database": "connected",
+            "latency_ms": latency_ms,
+        }
     except Exception as exc:
-        return {"status": "error", "detail": str(exc)}
-
-    inspector = inspect(engine)
-    tables = sorted(inspector.get_table_names())
-
-    pool = engine.pool
-    pool_info = {
-        "size": getattr(pool, "size", lambda: "n/a")(),
-        "checked_in": getattr(pool, "checkedin", lambda: "n/a")(),
-        "checked_out": getattr(pool, "checkedout", lambda: "n/a")(),
-        "overflow": getattr(pool, "overflow", lambda: "n/a")(),
-    }
-
-    db_host = DATABASE_URL.split("@")[-1] if "@" in DATABASE_URL else "local"
-
-    return {
-        "status": "ok",
-        "latency_ms": latency_ms,
-        "db_host": db_host,
-        "tables": tables,
-        "table_count": len(tables),
-        "pool": pool_info,
-    }
+        _startup_log.error("[health/db] DB unreachable: %s", exc)
+        return {
+            "status": "unhealthy",
+            "database": "unreachable",
+        }
 
 
 # ─── Seed Data ────────────────────────────────────────────────────────────────

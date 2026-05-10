@@ -3,6 +3,7 @@ import api from '../api/axios';
 import MainLayout from '../layouts/MainLayout';
 import Spinner from '../components/Spinner';
 import { useAuth } from '../context/AuthContext';
+import { downloadPDF } from '../utils/downloadPdf';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const JOB_TYPE_OPTIONS = [
@@ -105,7 +106,13 @@ export default function Profile() {
     const f = e.target.files?.[0];
     if (!f) return;
     setUploadError('');
-    if (!f.name.toLowerCase().endsWith('.pdf')) {
+    // Android file pickers may send application/octet-stream for PDFs,
+    // so accept by MIME type OR by file extension.
+    const isPDF =
+      f.type === 'application/pdf' ||
+      f.type === 'application/octet-stream' ||
+      f.name.toLowerCase().endsWith('.pdf');
+    if (!isPDF) {
       setUploadError('Only PDF files are accepted.');
       setSelectedFile(null);
       return;
@@ -124,15 +131,27 @@ export default function Profile() {
     setUploadError('');
     const formData = new FormData();
     formData.append('file', selectedFile);
+    console.debug('[MediRoute] PDF upload start', {
+      name: selectedFile.name,
+      size: selectedFile.size,
+      type: selectedFile.type,
+    });
     try {
       // 30-second timeout for file uploads — Render may need time to wake from cold start.
-      await api.post('/resume/upload', formData, { timeout: 30000 });
+      const res = await api.post('/resume/upload', formData, { timeout: 30000 });
+      console.debug('[MediRoute] PDF upload success', res.status, res.data);
       setHasResume(true);
       setSelectedFile(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
       setSuccess('Resume uploaded successfully!');
       setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
+      console.error('[MediRoute] PDF upload error', {
+        status: err?.response?.status,
+        detail: err?.response?.data?.detail,
+        code: err?.code,
+        message: err?.message,
+      });
       const isTimeout = err.code === 'ECONNABORTED' || (err.message || '').includes('timeout');
       // FastAPI Pydantic v2 validation errors return detail as an array of objects.
       // Rendering an array/object directly in JSX causes React Error #31 (white screen).
@@ -154,33 +173,23 @@ export default function Profile() {
 
   async function handleViewResume() {
     setUploadError('');
+    console.debug('[MediRoute] PDF download start');
     try {
-      const res = await api.get('/resume/me/file', { responseType: 'blob' });
+      const res = await api.get('/resume/me/file', { responseType: 'blob', timeout: 30000 });
+      console.debug('[MediRoute] PDF download response', {
+        status: res.status,
+        contentType: res.headers?.['content-type'],
+        blobSize: res.data?.size,
+      });
       const blob = new Blob([res.data], { type: 'application/pdf' });
-      // Android WebView blocks window.open() — use Web Share API when available.
       const safeFirst = ((user?.name || '').trim().split(/\s+/)[0] || 'user')
         .toLowerCase().replace(/[^a-z0-9-]/g, '') || 'user';
       const dlName = `${safeFirst}_resume.pdf`;
-      if (typeof navigator.canShare === 'function') {
-        const file = new File([blob], dlName, { type: 'application/pdf' });
-        if (navigator.canShare({ files: [file] })) {
-          await navigator.share({ files: [file], title: 'My Resume' });
-          return;
-        }
-      }
-      // window.open(blob) is silently blocked inside Capacitor WebView.
-      // Use anchor + click for reliable download on all platforms.
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = dlName;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      await downloadPDF(blob, dlName);
     } catch (err) {
       if (err?.name === 'AbortError') return;  // user dismissed share sheet
-      setUploadError('Could not open resume. Please try again.');
+      console.error('[MediRoute] PDF download error', { message: err?.message, code: err?.code });
+      setUploadError('Could not download resume. Please try again.');
     }
   }
 
