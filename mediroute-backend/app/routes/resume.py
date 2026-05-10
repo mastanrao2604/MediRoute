@@ -1,5 +1,6 @@
 ﻿import logging
 import os
+import re
 import uuid
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
@@ -36,6 +37,27 @@ def _resolve_path(stored: str) -> str:
         return stored
     # Legacy: strip leading slash then resolve relative to backend root
     return os.path.join(_BACKEND_ROOT, stored.lstrip("/").lstrip("\\"))
+
+
+def _safe_firstname(name: str) -> str:
+    """Return a safe, lowercase first-name slug for use in download filenames.
+
+    Rules:
+    - Take the first word of the name (first name only)
+    - Lowercase
+    - Keep only ASCII letters, digits, and hyphens (strip everything else)
+    - Fall back to 'user' if nothing remains after sanitization
+
+    Examples:
+        'Mastan Rao'  -> 'mastan'
+        'Priya'       -> 'priya'
+        'John Doe'    -> 'john'
+        '  '          -> 'user'
+        'José'        -> 'jos'  (non-ASCII stripped for filesystem safety)
+    """
+    first = (name or "").strip().split()[0] if (name or "").strip() else ""
+    slug = re.sub(r"[^a-z0-9-]", "", first.lower())
+    return slug if slug else "user"
 
 
 # â”€â”€â”€ Shared upload helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -154,7 +176,8 @@ def get_my_resume_file(
     path = _resolve_path(current_user.resume_url)
     if not os.path.exists(path):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resume file not found on server. Please re-upload your resume.")
-    return FileResponse(path=path, media_type="application/pdf", filename="my_resume.pdf", headers={"Content-Disposition": 'attachment; filename="my_resume.pdf"'})
+    dl_name = f"{_safe_firstname(current_user.name)}_resume.pdf"
+    return FileResponse(path=path, media_type="application/pdf", filename=dl_name, headers={"Content-Disposition": f'attachment; filename="{dl_name}"'})
 
 
 @router.delete("/me/file", status_code=status.HTTP_204_NO_CONTENT)
@@ -217,7 +240,8 @@ def download_candidate_resume(
     if not os.path.exists(path):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resume file not found on server.")
 
-    return FileResponse(path=path, media_type="application/pdf", filename=f"resume_{user_id}.pdf")
+    dl_name = f"{_safe_firstname(candidate.name)}_resume.pdf"
+    return FileResponse(path=path, media_type="application/pdf", filename=dl_name, headers={"Content-Disposition": f'attachment; filename="{dl_name}"'})
 
 
 # â”€â”€â”€ Resume builder (JSON-stored) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -281,11 +305,12 @@ def download_resume_pdf(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"PDF generation failed — {exc}",
         )
+    dl_name = f"{_safe_firstname(current_user.name)}_resume.pdf"
     return FileResponse(
         path=file_path,
         media_type="application/pdf",
-        filename="resume.pdf",
-        headers={"Content-Disposition": 'attachment; filename="resume.pdf"'},
+        filename=dl_name,
+        headers={"Content-Disposition": f'attachment; filename="{dl_name}"'},
     )
 
 
@@ -312,11 +337,12 @@ def download_german_resume_pdf(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"PDF generation failed — {exc}",
         )
+    dl_name = f"{_safe_firstname(current_user.name)}_german_resume.pdf"
     return FileResponse(
         path=file_path,
         media_type="application/pdf",
-        filename="german_resume.pdf",
-        headers={"Content-Disposition": 'attachment; filename="german_resume.pdf"'},
+        filename=dl_name,
+        headers={"Content-Disposition": f'attachment; filename="{dl_name}"'},
     )
 
 

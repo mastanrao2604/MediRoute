@@ -146,8 +146,11 @@ export default function Profile() {
       const res = await api.get('/resume/me/file', { responseType: 'blob' });
       const blob = new Blob([res.data], { type: 'application/pdf' });
       // Android WebView blocks window.open() — use Web Share API when available.
+      const safeFirst = ((user?.name || '').trim().split(/\s+/)[0] || 'user')
+        .toLowerCase().replace(/[^a-z0-9-]/g, '') || 'user';
+      const dlName = `${safeFirst}_resume.pdf`;
       if (typeof navigator.canShare === 'function') {
-        const file = new File([blob], 'my_resume.pdf', { type: 'application/pdf' });
+        const file = new File([blob], dlName, { type: 'application/pdf' });
         if (navigator.canShare({ files: [file] })) {
           await navigator.share({ files: [file], title: 'My Resume' });
           return;

@@ -147,7 +147,9 @@ export default function ResumeBuilder() {
 
       const res = await api.get('/resume/builder/pdf', { responseType: 'blob' });
       const blob = new Blob([res.data], { type: 'application/pdf' });
-      const fileName = `${form.full_name.replace(/\s+/g, '_') || 'resume'}.pdf`;
+      const safeFirst = ((form.full_name || '').trim().split(/\s+/)[0] || 'user')
+        .toLowerCase().replace(/[^a-z0-9-]/g, '') || 'user';
+      const fileName = `${safeFirst}_resume.pdf`;
 
       // Android Capacitor WebView & mobile Chrome: use Web Share API with file.
       // The anchor-download approach is silently ignored inside Android WebViews.
