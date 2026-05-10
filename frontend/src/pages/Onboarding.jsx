@@ -163,9 +163,10 @@ export default function Onboarding() {
     try {
       // 1. Save name + role
       const userRes = await api.post('/user/onboarding', { name: name.trim(), role });
-      login(token, userRes.data);
 
       if (role === 'recruiter') {
+        // Update user context BEFORE navigating so ProtectedRoute's role check passes.
+        login(token, userRes.data);
         navigate(userRes.data.company_name ? '/recruiter/dashboard' : '/recruiter/onboarding', { replace: true });
         return;
       }
@@ -204,7 +205,17 @@ export default function Onboarding() {
       navigate('/dashboard', { replace: true });
 
     } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to save. Please try again.');
+      // FastAPI returns `detail` as a List[ValidationError] on 422 — not a plain string.
+      // Rendering a plain object directly in JSX throws "Objects are not valid as a React child"
+      // which causes a white screen (no ErrorBoundary). Always coerce to string here.
+      const raw = err.response?.data?.detail;
+      setError(
+        typeof raw === 'string'
+          ? raw
+          : Array.isArray(raw)
+            ? raw.map((e) => e.msg || String(e)).join('. ')
+            : 'Failed to save. Please try again.',
+      );
     } finally {
       setLoading(false);
     }

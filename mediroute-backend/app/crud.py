@@ -317,7 +317,8 @@ def get_application_detail(db: Session, application_id: int) -> Optional[dict]:
         "resume_skills": resume.skills if resume else None,
         "resume_experience": resume.experience if resume else None,
         "candidate_user_id": user.id,
-        "has_resume": has_uploaded_resume(db, user.id),
+        # user.resume_url is already loaded via selectinload — no extra query needed.
+        "has_resume": bool(user.resume_url),
     }
 
 

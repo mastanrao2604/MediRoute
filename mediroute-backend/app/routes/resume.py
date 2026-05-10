@@ -3,8 +3,9 @@ import os
 import re
 import uuid
 from datetime import datetime
+from types import SimpleNamespace
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 from typing import List
 
@@ -14,6 +15,8 @@ from ..database import get_db
 from .. import crud, schemas, models
 from ..dependencies import get_current_user
 from ..utils.pdf_generator import generate_resume_pdf, generate_german_pdf
+from ..utils import storage
+from ..utils.storage import BUCKET_RESUMES, BUCKET_PHOTOS
 
 router = APIRouter(prefix="/resume", tags=["Resume"])
 
@@ -64,8 +67,13 @@ def _safe_firstname(name: str) -> str:
 
 def _save_pdf(file: UploadFile, user_id: int) -> str:
     """
-    Validate, size-check, verify PDF magic bytes, save with a stable
-    filename ({user_id}_{timestamp}.pdf), and return the stored path.
+    Validate, size-check, verify PDF magic bytes, then store the file.
+
+    Storage priority:
+      1. Supabase Storage  (production — survives Render restarts/deploys)
+      2. Local disk fallback  (dev only — ephemeral on Render, will be lost)
+
+    Returns a Supabase object key ('resumes/…') or a local absolute path.
     """
     # Validate extension
     ext = os.path.splitext(file.filename or "")[1].lower()
@@ -76,8 +84,8 @@ def _save_pdf(file: UploadFile, user_id: int) -> str:
         )
 
     # Validate MIME type from the Content-Type header sent by the browser.
-    # Some Android file pickers set this to application/octet-stream for all files;
-    # we still accept that case and rely on magic-byte verification below.
+    # Some Android file pickers send application/octet-stream for all files;
+    # we still accept that and rely on magic-byte verification below.
     allowed_content_types = {"application/pdf", "application/octet-stream", "binary/octet-stream"}
     ct = (file.content_type or "").split(";")[0].strip().lower()
     if ct and ct not in allowed_content_types:
@@ -86,8 +94,10 @@ def _save_pdf(file: UploadFile, user_id: int) -> str:
             detail="Only PDF files are accepted.",
         )
 
+    # Read with a hard cap — rejects oversized uploads BEFORE buffering the full
+    # body, preventing memory abuse / DoS on Render's 512 MB RAM limit.
     try:
-        contents = file.file.read()
+        contents = file.file.read(MAX_UPLOAD_BYTES + 1)
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -108,9 +118,22 @@ def _save_pdf(file: UploadFile, user_id: int) -> str:
             detail="File does not appear to be a valid PDF.",
         )
 
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
     from datetime import timezone
     ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+
+    # Attempt Supabase Storage first (production-safe, persists across Render restarts)
+    try:
+        return storage.upload_resume(contents, user_id, ts)
+    except RuntimeError:
+        # Supabase not configured — fall back to local disk (dev environment only).
+        # WARNING: local files are wiped on every Render deploy. Not for production.
+        logger.warning(
+            "Supabase Storage unavailable — falling back to local disk (user_id=%s). "
+            "Set SUPABASE_URL and SUPABASE_SERVICE_KEY on Render for production.",
+            user_id,
+        )
+
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
     filename = f"{user_id}_{ts}.pdf"  # always .pdf — never from client input
     dest = os.path.join(UPLOAD_DIR, filename)
     try:
@@ -137,23 +160,26 @@ def upload_resume(
     - Deletes the previous uploaded resume file if one exists.
     - Saves the new file and stores its URL on the user record.
     """
-    saved_path = _save_pdf(file, current_user.id)  # absolute path
-    # Store the absolute path directly — no leading-slash confusion.
-    resume_url = saved_path
+    object_key = _save_pdf(file, current_user.id)
 
-    # Delete old file if present (resolve old path correctly too)
+    # Delete old file from whichever storage it lives in
     if current_user.resume_url:
-        old_path = _resolve_path(current_user.resume_url)
-        if os.path.exists(old_path):
-            try:
-                os.remove(old_path)
-            except OSError:
-                pass
+        old = current_user.resume_url
+        if storage.is_supabase_path(old):
+            storage.delete_object(BUCKET_RESUMES, old)
+        else:
+            old_path = _resolve_path(old)
+            if os.path.exists(old_path):
+                try:
+                    os.remove(old_path)
+                except OSError:
+                    pass
 
-    current_user.resume_url = resume_url
+    current_user.resume_url = object_key
     db.commit()
 
-    return {"resume_url": resume_url}
+    # Return a safe success message — do NOT expose storage paths in the response.
+    return {"message": "Resume uploaded successfully."}
 
 
 # â”€â”€â”€ Candidate: view / delete own resume â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -173,11 +199,34 @@ def get_my_resume_file(
     """Stream the current user's uploaded resume PDF."""
     if not current_user.resume_url:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No uploaded resume found.")
-    path = _resolve_path(current_user.resume_url)
-    if not os.path.exists(path):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resume file not found on server. Please re-upload your resume.")
+
     dl_name = f"{_safe_firstname(current_user.name)}_resume.pdf"
-    return FileResponse(path=path, media_type="application/pdf", filename=dl_name, headers={"Content-Disposition": f'attachment; filename="{dl_name}"'})
+    stored = current_user.resume_url
+
+    if storage.is_supabase_path(stored):
+        # Production path: serve from Supabase Storage (survives Render restarts)
+        try:
+            file_bytes = storage.download_bytes(BUCKET_RESUMES, stored)
+        except RuntimeError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Resume file not found. Please re-upload your resume.",
+            )
+        return Response(
+            content=file_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{dl_name}"'},
+        )
+
+    # Legacy local path — may be gone after Render restart
+    path = _resolve_path(stored)
+    if not os.path.exists(path):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Resume file not found on server. Please re-upload your resume.",
+        )
+    return FileResponse(path=path, media_type="application/pdf", filename=dl_name,
+                        headers={"Content-Disposition": f'attachment; filename="{dl_name}"'})
 
 
 @router.delete("/me/file", status_code=status.HTTP_204_NO_CONTENT)
@@ -188,12 +237,16 @@ def delete_my_resume(
     """Delete the current user's uploaded resume (file + clears URL)."""
     if not current_user.resume_url:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No uploaded resume found.")
-    path = _resolve_path(current_user.resume_url)
-    if os.path.exists(path):
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+    stored = current_user.resume_url
+    if storage.is_supabase_path(stored):
+        storage.delete_object(BUCKET_RESUMES, stored)
+    else:
+        path = _resolve_path(stored)
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
     current_user.resume_url = None
     db.commit()
 
@@ -236,12 +289,25 @@ def download_candidate_resume(
     if not candidate.resume_url:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This candidate has not uploaded a resume.")
 
-    path = _resolve_path(candidate.resume_url)
+    dl_name = f"{_safe_firstname(candidate.name)}_resume.pdf"
+    stored = candidate.resume_url
+
+    if storage.is_supabase_path(stored):
+        try:
+            file_bytes = storage.download_bytes(BUCKET_RESUMES, stored)
+        except RuntimeError:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resume file not found on server.")
+        return Response(
+            content=file_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{dl_name}"'},
+        )
+
+    path = _resolve_path(stored)
     if not os.path.exists(path):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resume file not found on server.")
-
-    dl_name = f"{_safe_firstname(candidate.name)}_resume.pdf"
-    return FileResponse(path=path, media_type="application/pdf", filename=dl_name, headers={"Content-Disposition": f'attachment; filename="{dl_name}"'})
+    return FileResponse(path=path, media_type="application/pdf", filename=dl_name,
+                        headers={"Content-Disposition": f'attachment; filename="{dl_name}"'})
 
 
 # â”€â”€â”€ Resume builder (JSON-stored) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -294,10 +360,34 @@ def download_resume_pdf(
             detail="No resume data found. Please save your resume first, then download.",
         )
     data = resumes[-1]
+
+    # Resolve photo: if stored as a Supabase key, download to a temp file so
+    # ReportLab can read it as a local path during PDF generation.
+    temp_photo_path = None
+    if data.photo_url:
+        if storage.is_supabase_path(data.photo_url):
+            temp_photo_path = storage.download_photo_to_tempfile(data.photo_url)
+        elif os.path.exists(data.photo_url):
+            temp_photo_path = data.photo_url
+
+    # Build a snapshot to pass to the generator — avoids mutating the ORM object.
+    pdf_data = SimpleNamespace(
+        full_name=data.full_name,
+        email=data.email,
+        phone=data.phone,
+        location=data.location,
+        profile_summary=data.profile_summary,
+        education=data.education,
+        experience=data.experience,
+        skills=data.skills,
+        languages=data.languages,
+        photo_url=temp_photo_path or "",
+    )
+
     os.makedirs(PDF_DIR, exist_ok=True)
     file_path = os.path.join(PDF_DIR, f"resume_{current_user.id}.pdf")
     try:
-        generate_resume_pdf(data, file_path)
+        generate_resume_pdf(pdf_data, file_path)
         logger.info("Resume PDF generated: user_id=%s", current_user.id)
     except Exception as exc:
         logger.error("Resume PDF generation failed: user_id=%s error=%s", current_user.id, exc, exc_info=True)
@@ -305,6 +395,14 @@ def download_resume_pdf(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"PDF generation failed — {exc}",
         )
+    finally:
+        # Remove temp photo file only if we downloaded it from Supabase
+        if temp_photo_path and storage.is_supabase_path(data.photo_url or ""):
+            try:
+                os.unlink(temp_photo_path)
+            except OSError:
+                pass
+
     dl_name = f"{_safe_firstname(current_user.name)}_resume.pdf"
     return FileResponse(
         path=file_path,
@@ -326,10 +424,31 @@ def download_german_resume_pdf(
             detail="No resume data found. Please save your resume first, then download.",
         )
     data = resumes[-1]
+
+    temp_photo_path = None
+    if data.photo_url:
+        if storage.is_supabase_path(data.photo_url):
+            temp_photo_path = storage.download_photo_to_tempfile(data.photo_url)
+        elif os.path.exists(data.photo_url):
+            temp_photo_path = data.photo_url
+
+    pdf_data = SimpleNamespace(
+        full_name=data.full_name,
+        email=data.email,
+        phone=data.phone,
+        location=data.location,
+        profile_summary=data.profile_summary,
+        education=data.education,
+        experience=data.experience,
+        skills=data.skills,
+        languages=data.languages,
+        photo_url=temp_photo_path or "",
+    )
+
     os.makedirs(PDF_DIR, exist_ok=True)
     file_path = os.path.join(PDF_DIR, f"german_resume_{current_user.id}.pdf")
     try:
-        generate_german_pdf(data, file_path)
+        generate_german_pdf(pdf_data, file_path)
         logger.info("German resume PDF generated: user_id=%s", current_user.id)
     except Exception as exc:
         logger.error("German PDF generation failed: user_id=%s error=%s", current_user.id, exc, exc_info=True)
@@ -337,6 +456,13 @@ def download_german_resume_pdf(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"PDF generation failed — {exc}",
         )
+    finally:
+        if temp_photo_path and storage.is_supabase_path(data.photo_url or ""):
+            try:
+                os.unlink(temp_photo_path)
+            except OSError:
+                pass
+
     dl_name = f"{_safe_firstname(current_user.name)}_german_resume.pdf"
     return FileResponse(
         path=file_path,
@@ -356,19 +482,43 @@ def upload_resume_photo(
     file: UploadFile = File(...),
     current_user: models.User = Depends(get_current_user),
 ):
-    """Upload a profile photo for use in the resume PDF. Returns the saved file path."""
+    """Upload a profile photo for use in the resume PDF. Returns the storage key."""
     allowed_types = {"image/jpeg", "image/png", "image/webp"}
     if file.content_type not in allowed_types:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Only JPEG, PNG, and WebP images are supported.",
         )
-    os.makedirs(PHOTO_DIR, exist_ok=True)
     ext = os.path.splitext(file.filename or "")[1].lower() or ".jpg"
-    filename = f"photo_{current_user.id}_{uuid.uuid4().hex[:8]}{ext}"
+    uid = uuid.uuid4().hex[:8]
+    # Bounded read — reject oversized images before buffering full body
+    try:
+        contents = file.file.read(2 * 1024 * 1024 + 1)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to read photo: {exc}",
+        )
+    finally:
+        file.file.close()
+    if len(contents) > 2 * 1024 * 1024:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Image too large. Maximum size is 2 MB.",
+        )
+    # Attempt Supabase Storage first; fall back to local disk for dev
+    try:
+        object_key = storage.upload_photo(contents, current_user.id, ext, uid)
+        return {"photo_url": object_key}
+    except RuntimeError:
+        logger.warning(
+            "Supabase Storage unavailable — falling back to local disk for photo user_id=%s.",
+            current_user.id,
+        )
+    os.makedirs(PHOTO_DIR, exist_ok=True)
+    filename = f"photo_{current_user.id}_{uid}{ext}"
     dest = os.path.join(PHOTO_DIR, filename)
     try:
-        contents = file.file.read()
         with open(dest, "wb") as f:
             f.write(contents)
     except Exception as exc:
@@ -376,6 +526,4 @@ def upload_resume_photo(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to save photo: {exc}",
         )
-    finally:
-        file.file.close()
     return {"photo_url": dest}

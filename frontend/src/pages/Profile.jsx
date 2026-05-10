@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
 import api from '../api/axios';
 import MainLayout from '../layouts/MainLayout';
 import Spinner from '../components/Spinner';
@@ -38,7 +37,6 @@ function prefsToForm(d) {
 
 // ── Component ────────────────────────────────────────────────────────────────
 export default function Profile() {
-  const navigate = useNavigate();
   const { user } = useAuth();
 
   const [profile,       setProfile]       = useState(null);
@@ -127,14 +125,20 @@ export default function Profile() {
     const formData = new FormData();
     formData.append('file', selectedFile);
     try {
-      await api.post('/resume/upload', formData);
+      // 30-second timeout for file uploads — Render may need time to wake from cold start.
+      await api.post('/resume/upload', formData, { timeout: 30000 });
       setHasResume(true);
       setSelectedFile(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
       setSuccess('Resume uploaded successfully!');
       setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
-      setUploadError(err.response?.data?.detail || 'Upload failed. Please try again.');
+      const isTimeout = err.code === 'ECONNABORTED' || (err.message || '').includes('timeout');
+      setUploadError(
+        isTimeout
+          ? 'Upload timed out. The server may be starting up — please try again in a moment.'
+          : err.response?.data?.detail || 'Upload failed. Please try again.',
+      );
     } finally {
       setUploading(false);
     }
@@ -156,8 +160,15 @@ export default function Profile() {
           return;
         }
       }
+      // window.open(blob) is silently blocked inside Capacitor WebView.
+      // Use anchor + click for reliable download on all platforms.
       const url = URL.createObjectURL(blob);
-      window.open(url, '_blank');
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = dlName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 60000);
     } catch (err) {
       if (err?.name === 'AbortError') return;  // user dismissed share sheet
@@ -248,12 +259,18 @@ export default function Profile() {
 
       setSuccess('Profile saved!');
       await fetchAll();
-      setTimeout(() => {
-        setSuccess('');
-        navigate('/jobs');
-      }, 1200);
+      setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to save profile.');
+      // FastAPI returns `detail` as List[ValidationError] on 422 — coerce to string
+      // to prevent "Objects are not valid as a React child" white-screen crash.
+      const raw = err.response?.data?.detail;
+      setError(
+        typeof raw === 'string'
+          ? raw
+          : Array.isArray(raw)
+            ? raw.map((e) => e.msg || String(e)).join('. ')
+            : 'Failed to save profile.',
+      );
     } finally {
       setLoading(false);
     }

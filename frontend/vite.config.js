@@ -41,8 +41,9 @@ export default defineConfig({
         navigateFallbackDenylist: [/^\/api\//, /^\/uploads\//],
         runtimeCaching: [
           {
-            // API: network-first, fall back to cache
-            urlPattern: ({ url }) => url.pathname.startsWith('/api/') || url.port === '8000',
+            // API: network-first, fall back to cache.
+            // Matches both the production Render backend (onrender.com) and local dev (port 8000).
+            urlPattern: ({ url }) => url.hostname.includes('onrender.com') || url.port === '8000',
             handler: 'NetworkFirst',
             options: {
               cacheName: 'api-cache',

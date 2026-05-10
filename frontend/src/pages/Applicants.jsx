@@ -14,11 +14,12 @@ export default function Applicants() {
   const { jobId } = useParams();
   const navigate = useNavigate();
   const [applicants, setApplicants] = useState([]);
-  const [fetching, setFetching] = useState(true);
+  const [fetching, setFetching] = useState(false);
   const [error, setError] = useState('');
   const [resumeError, setResumeError] = useState('');
 
   useEffect(() => {
+    setFetching(true);
     api.get(`/recruiter/jobs/${jobId}/applicants`)
       .then((res) => setApplicants(res.data))
       .catch(() => setError('Failed to load applicants.'))
@@ -44,14 +45,6 @@ export default function Applicants() {
     }
   }
 
-  if (fetching) {
-    return (
-      <MainLayout>
-        <div className="flex justify-center py-20"><Spinner /></div>
-      </MainLayout>
-    );
-  }
-
   return (
     <MainLayout>
       <div className="max-w-3xl mx-auto px-4 py-6">
@@ -66,7 +59,9 @@ export default function Applicants() {
         {error && <p className="text-sm text-red-600 bg-red-50 px-3 py-2 rounded-lg mb-4">{error}</p>}
         {resumeError && <p className="text-sm text-red-600 bg-red-50 px-3 py-2 rounded-lg mb-4">{resumeError}</p>}
 
-        {applicants.length === 0 ? (
+        {fetching ? (
+          <div className="flex justify-center py-20"><Spinner /></div>
+        ) : applicants.length === 0 ? (
           <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-10 text-center">
             <p className="text-gray-500">No applicants yet for this job.</p>
           </div>

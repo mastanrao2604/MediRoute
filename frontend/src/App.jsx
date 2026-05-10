@@ -2,11 +2,48 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { GoogleOAuthProvider } from '@react-oauth/google';
 import { AuthProvider } from './context/AuthContext';
 import { useAuth } from './context/AuthContext';
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, Component } from 'react';
 import ProtectedRoute from './components/ProtectedRoute';
 import InstallPrompt from './components/InstallPrompt';
 import UpdatePrompt from './components/UpdatePrompt';
 import { getPostLoginRoute } from './utils/authNav';
+
+// ── Global Error Boundary ─────────────────────────────────────────────────────
+// Catches any render-time exception in the entire component tree.
+// Without this, any React render error produces a permanent white screen.
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, info) {
+    // Surface the error in the browser/logcat console for debugging.
+    console.error('[MediRoute ErrorBoundary]', error, info?.componentStack);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center px-6 text-center">
+          <div className="mb-4 text-4xl">⚠️</div>
+          <h1 className="text-xl font-bold text-gray-800 mb-2">Something went wrong</h1>
+          <p className="text-sm text-gray-500 mb-6">
+            {this.state.error?.message || 'An unexpected error occurred.'}
+          </p>
+          <button
+            onClick={() => { this.setState({ hasError: false, error: null }); window.location.href = '/'; }}
+            className="bg-indigo-600 text-white text-sm font-semibold px-5 py-2.5 rounded-xl hover:bg-indigo-700 transition-colors"
+          >
+            Go to Home
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 // Redirects to the right home based on role
 function RoleHome() {
@@ -86,6 +123,7 @@ export default function App() {
   return (
     <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
     <AuthProvider>
+      <ErrorBoundary>
       <BrowserRouter>
         <UpdatePrompt />
         <InstallPrompt />
@@ -122,6 +160,7 @@ export default function App() {
         </Routes>
         </Suspense>
       </BrowserRouter>
+      </ErrorBoundary>
     </AuthProvider>
     </GoogleOAuthProvider>
   );

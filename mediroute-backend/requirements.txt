@@ -24,6 +24,11 @@ pdfminer.six>=20221105
 pdfplumber>=0.11.0
 pillow>=10.0.0
 
+# ── Storage ───────────────────────────────────────────────────────────────────
+# Supabase Python client — used for persistent resume/photo storage.
+# Render's local filesystem is ephemeral; Supabase Storage survives deploys.
+supabase>=2.0.0
+
 # ── HTTP ─────────────────────────────────────────────────────────────────────
 requests>=2.31.0
 

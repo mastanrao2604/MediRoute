@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api/axios';
+import { useAuth } from '../context/AuthContext';
 import MainLayout from '../layouts/MainLayout';
-import Spinner from '../components/Spinner';
 
 const EMPTY_FORM = {
   full_name: '',
@@ -19,10 +19,11 @@ const EMPTY_FORM = {
 
 export default function ResumeBuilder() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [form, setForm] = useState(EMPTY_FORM);
   const [photoPreview, setPhotoPreview] = useState(null);
   const [photoFile, setPhotoFile] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [isSaved, setIsSaved] = useState(false);  // true once data has been saved to backend
@@ -52,12 +53,9 @@ export default function ResumeBuilder() {
           setIsSaved(true);  // data already exists on backend
           return;
         }
-        const [profileRes, userRes] = await Promise.allSettled([
-          api.get('/profile/me'),
-          api.get('/auth/me'),
-        ]);
-        const profile = profileRes.status === 'fulfilled' ? profileRes.value.data : null;
-        const user = userRes.status === 'fulfilled' ? userRes.value.data : null;
+        // Use cached user from AuthContext — avoids an extra /auth/me round-trip.
+        const profileRes = await api.get('/profile/me').catch(() => null);
+        const profile = profileRes?.data ?? null;
         setForm((f) => ({
           ...f,
           full_name: user?.name || '',
@@ -106,9 +104,8 @@ export default function ResumeBuilder() {
       if (photoFile) {
         const fd = new FormData();
         fd.append('file', photoFile);
-        const photoRes = await api.post('/resume/photo', fd, {
-          headers: { 'Content-Type': 'multipart/form-data' },
-        });
+        // No Content-Type header — axios auto-sets multipart/form-data with boundary
+        const photoRes = await api.post('/resume/photo', fd, { timeout: 30000 });
         photoUrl = photoRes.data.photo_url;
         setForm((f) => ({ ...f, photo_url: photoUrl }));
         setPhotoFile(null);
@@ -134,9 +131,8 @@ export default function ResumeBuilder() {
         if (photoFile) {
           const fd = new FormData();
           fd.append('file', photoFile);
-          const photoRes = await api.post('/resume/photo', fd, {
-            headers: { 'Content-Type': 'multipart/form-data' },
-          });
+          // No Content-Type header — axios auto-sets multipart/form-data with boundary
+          const photoRes = await api.post('/resume/photo', fd, { timeout: 30000 });
           photoUrl = photoRes.data.photo_url;
           setForm((f) => ({ ...f, photo_url: photoUrl }));
           setPhotoFile(null);
@@ -202,14 +198,6 @@ export default function ResumeBuilder() {
     !form.full_name.trim() ||
     form.phone.replace(/\D/g, '').length < 10 ||
     !form.skills.trim();
-
-  if (loading) {
-    return (
-      <MainLayout>
-        <div className="flex justify-center py-20"><Spinner /></div>
-      </MainLayout>
-    );
-  }
 
   return (
     <MainLayout>
