@@ -32,7 +32,7 @@ app = FastAPI(
         "Healthcare job platform — connecting medical professionals "
         "with opportunities in India and abroad."
     ),
-    version="2.0.0",
+    version="2.1.0",
     # Disable interactive docs in production — never expose schema to the public
     docs_url=None if _IS_PRODUCTION else "/docs",
     redoc_url=None if _IS_PRODUCTION else "/redoc",

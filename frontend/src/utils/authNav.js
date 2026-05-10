@@ -22,5 +22,13 @@ export function getPostLoginRoute(userData) {
 
 /** Call after a successful login to navigate to the correct screen. */
 export function navigateAfterLogin(userData, navigate) {
+  // Restore a pending deep link saved by AppLinkHandler when user was logged out
+  const pendingDeepLink = sessionStorage.getItem('mediroute_deep_link');
+  if (pendingDeepLink) {
+    sessionStorage.removeItem('mediroute_deep_link');
+    console.log('[MediRoute][DeepLink] restoring post-login deep link:', pendingDeepLink);
+    navigate(pendingDeepLink, { replace: true });
+    return;
+  }
   navigate(getPostLoginRoute(userData), { replace: true });
 }

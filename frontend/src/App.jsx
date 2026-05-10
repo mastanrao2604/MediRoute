@@ -120,12 +120,31 @@ function AdminRoute({ children }) {
 }
 
 /**
- * AppLinkHandler — listens for Android App Links opened while the app is running.
+ * Resolve a raw App Link URL to an in-app path.
+ * Returns the destination path (e.g. "/jobs/35") or null if not a recognised link.
+ */
+function _resolveDeepLinkPath(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    const match = url.pathname.match(/^\/share\/job\/(\d+)$/);
+    if (match) return `/jobs/${match[1]}`;
+  } catch { /* ignore */ }
+  return null;
+}
+
+/**
+ * AppLinkHandler — handles Android App Links for both cold-start and warm resumption.
  *
- * When a share link (https://mediroute-8az0.onrender.com/share/job/:id) is tapped
- * on a device with the app installed, Android fires the appUrlOpen event through
- * the Capacitor App plugin. This component extracts the job ID and navigates to
- * the correct in-app route without a full reload.
+ * COLD START (app not running when link is tapped):
+ *   Android launches the app then App.getLaunchUrl() returns the triggering URL.
+ *   We must read it immediately on mount before any navigation happens.
+ *
+ * WARM (app already running in foreground/background):
+ *   Android fires the appUrlOpen event which we catch with addListener.
+ *
+ * AUTH-AWARE:
+ *   If the user is not logged in when the deep link arrives, we save the
+ *   intended path to sessionStorage so navigateAfterLogin() can restore it.
  *
  * Must live inside <BrowserRouter> so useNavigate is available.
  */
@@ -136,20 +155,40 @@ function AppLinkHandler() {
     (async () => {
       try {
         const { App } = await import('@capacitor/app');
-        listenerHandle = await App.addListener('appUrlOpen', (event) => {
-          try {
-            const url = new URL(event.url);
-            // Match /share/job/:id → navigate to the in-app job detail
-            const match = url.pathname.match(/^\/share\/job\/(\d+)$/);
-            if (match) {
-              navigate(`/jobs/${match[1]}`, { replace: false });
-            }
-          } catch {
-            // Malformed URL — ignore
+
+        // Shared handler used for both cold-start and warm events
+        const handleUrl = (rawUrl) => {
+          console.log('[MediRoute][DeepLink] incoming URL:', rawUrl);
+          const destPath = _resolveDeepLinkPath(rawUrl);
+          if (!destPath) {
+            console.log('[MediRoute][DeepLink] no match — ignoring');
+            return;
           }
+          const isLoggedIn = !!localStorage.getItem('mediroute_token');
+          console.log('[MediRoute][DeepLink] dest:', destPath, '| loggedIn:', isLoggedIn);
+          if (isLoggedIn) {
+            navigate(destPath, { replace: false });
+          } else {
+            // Save so navigateAfterLogin() restores it post-auth
+            sessionStorage.setItem('mediroute_deep_link', destPath);
+            navigate('/login', { replace: true });
+          }
+        };
+
+        // COLD START — app was launched by tapping the link
+        const launchData = await App.getLaunchUrl();
+        console.log('[MediRoute][DeepLink] getLaunchUrl result:', launchData);
+        if (launchData?.url) {
+          handleUrl(launchData.url);
+        }
+
+        // WARM — link tapped while app is already running
+        listenerHandle = await App.addListener('appUrlOpen', (event) => {
+          handleUrl(event.url);
         });
-      } catch {
+      } catch (e) {
         // Not running in Capacitor (web/PWA) — App plugin not available, skip
+        console.log('[MediRoute][DeepLink] Capacitor App plugin not available:', e?.message);
       }
     })();
     return () => {
