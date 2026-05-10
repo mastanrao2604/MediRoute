@@ -1,8 +1,8 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { GoogleOAuthProvider } from '@react-oauth/google';
 import { AuthProvider } from './context/AuthContext';
 import { useAuth } from './context/AuthContext';
-import { lazy, Suspense, Component, useEffect, useRef } from 'react';
+import { lazy, Suspense, Component, useEffect } from 'react';
 import ProtectedRoute from './components/ProtectedRoute';
 import InstallPrompt from './components/InstallPrompt';
 import UpdatePrompt from './components/UpdatePrompt';
@@ -119,6 +119,46 @@ function AdminRoute({ children }) {
   return children;
 }
 
+/**
+ * AppLinkHandler — listens for Android App Links opened while the app is running.
+ *
+ * When a share link (https://mediroute-8az0.onrender.com/share/job/:id) is tapped
+ * on a device with the app installed, Android fires the appUrlOpen event through
+ * the Capacitor App plugin. This component extracts the job ID and navigates to
+ * the correct in-app route without a full reload.
+ *
+ * Must live inside <BrowserRouter> so useNavigate is available.
+ */
+function AppLinkHandler() {
+  const navigate = useNavigate();
+  useEffect(() => {
+    let listenerHandle;
+    (async () => {
+      try {
+        const { App } = await import('@capacitor/app');
+        listenerHandle = await App.addListener('appUrlOpen', (event) => {
+          try {
+            const url = new URL(event.url);
+            // Match /share/job/:id → navigate to the in-app job detail
+            const match = url.pathname.match(/^\/share\/job\/(\d+)$/);
+            if (match) {
+              navigate(`/jobs/${match[1]}`, { replace: false });
+            }
+          } catch {
+            // Malformed URL — ignore
+          }
+        });
+      } catch {
+        // Not running in Capacitor (web/PWA) — App plugin not available, skip
+      }
+    })();
+    return () => {
+      listenerHandle?.remove();
+    };
+  }, [navigate]);
+  return null;
+}
+
 
 export default function App() {
   return (
@@ -126,6 +166,7 @@ export default function App() {
     <AuthProvider>
       <ErrorBoundary>
       <BrowserRouter>
+        <AppLinkHandler />
         <UpdatePrompt />
         <InstallPrompt />
         <Suspense fallback={

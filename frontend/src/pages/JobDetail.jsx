@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import api from '../api/axios';
 import MainLayout from '../layouts/MainLayout';
 import Spinner from '../components/Spinner';
+import { shareJob } from '../utils/shareJob';
 
 export default function JobDetail() {
   const { id } = useParams();
@@ -37,6 +38,10 @@ export default function JobDetail() {
       setApplying(false);
     }
   }
+
+  const handleShare = useCallback(() => {
+    if (job) shareJob(job);
+  }, [job]);
 
   const jobTypeBadge = {
     india: 'bg-green-100 text-green-700',
@@ -139,17 +144,31 @@ export default function JobDetail() {
             </div>
           )}
 
-          <button
-            onClick={handleApply}
-            disabled={applying || applied}
-            className={`w-full font-semibold py-3 rounded-xl transition-colors ${
-              applied
-                ? 'bg-green-500 text-white cursor-default'
-                : 'bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white'
-            }`}
-          >
-            {applied ? 'Applied ✓' : applying ? 'Applying…' : 'Apply for this Job'}
-          </button>
+          <div className="flex gap-3">
+            <button
+              onClick={handleApply}
+              disabled={applying || applied}
+              className={`flex-1 font-semibold py-3 rounded-xl transition-colors ${
+                applied
+                  ? 'bg-green-500 text-white cursor-default'
+                  : 'bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white'
+              }`}
+            >
+              {applied ? 'Applied ✓' : applying ? 'Applying…' : 'Apply for this Job'}
+            </button>
+            {/* Share button — visible once job data is loaded */}
+            {job && (
+              <button
+                onClick={handleShare}
+                aria-label="Share job"
+                className="shrink-0 w-12 h-12 flex items-center justify-center rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-500 hover:text-indigo-600 transition-colors"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+                </svg>
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </MainLayout>

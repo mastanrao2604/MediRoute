@@ -1,7 +1,18 @@
+import { useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { shareJob } from '../utils/shareJob';
 
 export default function JobCard({ job, showApply = false, onApply, applyLoading = false }) {
   const navigate = useNavigate();
+
+  // Memoised so the share handler never causes the whole job list to rerender
+  const handleShare = useCallback(
+    (e) => {
+      e.stopPropagation(); // don't bubble to card click handlers
+      shareJob(job);
+    },
+    [job],
+  );
 
   const jobTypeBadge = {
     india: { label: 'India', color: 'bg-green-100 text-green-700' },
@@ -73,6 +84,16 @@ export default function JobCard({ job, showApply = false, onApply, applyLoading 
             {applyLoading ? 'Applying…' : 'Apply'}
           </button>
         )}
+        {/* Share — compact icon button, memoised to avoid list rerenders */}
+        <button
+          onClick={handleShare}
+          aria-label="Share job"
+          className="shrink-0 w-11 h-11 flex items-center justify-center rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-500 hover:text-indigo-600 transition-colors"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+          </svg>
+        </button>
       </div>
     </div>
   );

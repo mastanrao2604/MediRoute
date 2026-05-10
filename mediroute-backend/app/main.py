@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from .database import engine, SessionLocal, get_db
 from . import models, crud
-from .routes import auth, profile, preferences, jobs, applications, resume, user, recruiter, admin, dashboard
+from .routes import auth, profile, preferences, jobs, applications, resume, user, recruiter, admin, dashboard, share
 
 app = FastAPI(
     title="MediRoute API",
@@ -132,6 +132,8 @@ app.include_router(resume.router)
 app.include_router(recruiter.router)
 app.include_router(admin.router)
 app.include_router(dashboard.router)
+# Public sharing routes — no auth required, safe fields only
+app.include_router(share.router)
 
 
 # ─── Health ───────────────────────────────────────────────────────────────────
