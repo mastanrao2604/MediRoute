@@ -26,7 +26,6 @@ export function navigateAfterLogin(userData, navigate) {
   const pendingDeepLink = sessionStorage.getItem('mediroute_deep_link');
   if (pendingDeepLink) {
     sessionStorage.removeItem('mediroute_deep_link');
-    console.log('[MediRoute][DeepLink] restoring post-login deep link:', pendingDeepLink);
     navigate(pendingDeepLink, { replace: true });
     return;
   }

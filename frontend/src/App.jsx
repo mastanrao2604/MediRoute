@@ -158,14 +158,9 @@ function AppLinkHandler() {
 
         // Shared handler used for both cold-start and warm events
         const handleUrl = (rawUrl) => {
-          console.log('[MediRoute][DeepLink] incoming URL:', rawUrl);
           const destPath = _resolveDeepLinkPath(rawUrl);
-          if (!destPath) {
-            console.log('[MediRoute][DeepLink] no match — ignoring');
-            return;
-          }
+          if (!destPath) return;
           const isLoggedIn = !!localStorage.getItem('mediroute_token');
-          console.log('[MediRoute][DeepLink] dest:', destPath, '| loggedIn:', isLoggedIn);
           if (isLoggedIn) {
             navigate(destPath, { replace: false });
           } else {
@@ -177,7 +172,6 @@ function AppLinkHandler() {
 
         // COLD START — app was launched by tapping the link
         const launchData = await App.getLaunchUrl();
-        console.log('[MediRoute][DeepLink] getLaunchUrl result:', launchData);
         if (launchData?.url) {
           handleUrl(launchData.url);
         }
@@ -188,7 +182,6 @@ function AppLinkHandler() {
         });
       } catch (e) {
         // Not running in Capacitor (web/PWA) — App plugin not available, skip
-        console.log('[MediRoute][DeepLink] Capacitor App plugin not available:', e?.message);
       }
     })();
     return () => {
