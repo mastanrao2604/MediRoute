@@ -8,8 +8,8 @@ services:
     region: singapore   # closest free-tier region to India on Render
     plan: free
 
-    # Build: build React frontend first, then install Python deps + run DB migrations
-    buildCommand: cd ../frontend && npm ci && npm run build && cd ../mediroute-backend && pip install -r requirements.txt && alembic upgrade head
+    # Build: install Python deps + run DB migrations
+    buildCommand: pip install -r requirements.txt && alembic upgrade head
 
     # Start: read PORT from Render's injected env var (default 10000)
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 2

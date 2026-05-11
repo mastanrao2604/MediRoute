@@ -3,7 +3,7 @@ services:
     name: mediroute-backend
     runtime: python
     rootDir: mediroute-backend
-    buildCommand: cd ../frontend && npm ci && npm run build && cd ../mediroute-backend && pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt
     startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: ENV
