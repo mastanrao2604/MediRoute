@@ -149,6 +149,14 @@ app.include_router(share.router)
 app.include_router(legal.router)
 
 
+# ─── Root landing ─────────────────────────────────────────────────────────────
+@app.get("/", include_in_schema=False)
+def root():
+    """Root redirect for Play Store developer website verification."""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/privacy", status_code=302)
+
+
 # ─── Health ───────────────────────────────────────────────────────────────────
 @app.get("/health", tags=["Health"])
 def health_check():
