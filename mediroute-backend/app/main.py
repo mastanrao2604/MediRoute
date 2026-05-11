@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from .database import engine, SessionLocal, get_db
 from . import models, crud
 from .routes import auth, profile, preferences, jobs, applications, resume, user, recruiter, admin, dashboard, share
+from .services import otp_service as _otp_service
 
 app = FastAPI(
     title="MediRoute API",
@@ -120,6 +121,16 @@ except Exception as _db_err:
         "Backend will start; DB-dependent routes will return 503 until DB recovers. "
         "Error: %s", _db_err
     )
+
+# ─── OTP config validation ────────────────────────────────────────────────────
+# Validates MSG91 env vars at startup. Raises RuntimeError (and aborts startup)
+# if ENV=production but MSG91_AUTH_KEY / MSG91_TEMPLATE_ID are missing.
+try:
+    _otp_service.validate_production_config()
+except RuntimeError as _otp_cfg_err:
+    # Log the fatal error clearly before aborting
+    _startup_log.critical("%s", _otp_cfg_err)
+    raise
 
 # ─── Routers ──────────────────────────────────────────────────────────────────
 app.include_router(auth.router)

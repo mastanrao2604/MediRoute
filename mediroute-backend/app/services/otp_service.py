@@ -27,6 +27,25 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger("uvicorn.error")
 
+
+# ── Safe phone masking for logs ───────────────────────────────────────────────
+
+def _mask_phone(phone: str) -> str:
+    """Return a partially-masked phone number safe for production logs.
+
+    Shows country-code prefix and last 4 digits; masks the middle 6.
+
+    Examples:
+        "919876543210"  →  "91XXXXXX3210"
+        "9876543210"    →  "XXXXXX3210"
+    """
+    if len(phone) <= 4:
+        return "****"
+    # prefix = chars before the last 10 digits (e.g. "91" for E.164 Indian numbers)
+    prefix_len = max(0, len(phone) - 10)
+    return phone[:prefix_len] + "XXXXXX" + phone[-4:]
+
+
 # ── Phone validation ──────────────────────────────────────────────────────────
 
 _PHONE_RE = re.compile(r"^[6-9]\d{9}$")  # Indian mobile: starts with 6-9, 10 digits
@@ -124,12 +143,25 @@ def _msg91_send(phone_e164: str) -> None:
 
     auth_key = os.environ["MSG91_AUTH_KEY"]
     template_id = os.environ["MSG91_TEMPLATE_ID"]
+    sender_id = os.getenv("MSG91_SENDER_ID", "").strip()
 
-    payload = {
+    masked = _mask_phone(phone_e164)
+    logger.info(
+        "[OTP][MSG91] Initiating send | mobile=%s | template=%s | sender=%s",
+        masked,
+        template_id,
+        sender_id or "(not set)",
+    )
+
+    payload: dict = {
         "template_id": template_id,
         "mobile": phone_e164,
         "otp_length": 6,
+        "otp_expiry": 5,       # minutes — matches our rate-limit window
     }
+    if sender_id:
+        payload["sender"] = sender_id  # MSG91 v5 uses "sender" key
+
     headers = {
         "authkey": auth_key,
         "accept": "application/json",
@@ -144,13 +176,13 @@ def _msg91_send(phone_e164: str) -> None:
             timeout=10,
         )
     except _requests.exceptions.Timeout:
-        logger.error("MSG91 send-otp timed out for %s", phone_e164)
+        logger.error("[OTP][MSG91] Send timed out | mobile=%s", masked)
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             detail="OTP service timed out. Please try again.",
         )
     except _requests.exceptions.RequestException as exc:
-        logger.error("MSG91 send-otp request error: %s", exc)
+        logger.error("[OTP][MSG91] Send request error | mobile=%s | error=%s", masked, exc)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="OTP service unavailable. Please try again.",
@@ -161,18 +193,39 @@ def _msg91_send(phone_e164: str) -> None:
     except Exception:
         data = {}
 
+    logger.info(
+        "[OTP][MSG91] Send response | mobile=%s | http_status=%s | type=%r | message=%r",
+        masked,
+        resp.status_code,
+        data.get("type"),
+        data.get("message", "")[:100],
+    )
+
     if resp.status_code not in (200, 201) or data.get("type") == "error":
         logger.error(
-            "MSG91 send-otp failed | status=%s | body=%s",
+            "[OTP][MSG91] Send FAILED | mobile=%s | http_status=%s | body=%s",
+            masked,
             resp.status_code,
-            resp.text[:200],
+            resp.text[:400],
         )
+        # Translate MSG91 error detail into a user-safe message
+        msg91_msg = data.get("message", "").lower()
+        if "balance" in msg91_msg or "credit" in msg91_msg or "recharge" in msg91_msg:
+            detail = "SMS service is temporarily unavailable. Please try again later."
+        elif "template" in msg91_msg or "dlt" in msg91_msg:
+            detail = "SMS service configuration error. Please contact support."
+        elif "sender" in msg91_msg or "header" in msg91_msg:
+            detail = "SMS service configuration error. Please contact support."
+        elif "block" in msg91_msg or "spam" in msg91_msg:
+            detail = "This number cannot receive OTPs. Please use a different number."
+        else:
+            detail = "Failed to send OTP. Please try again."
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Failed to send OTP. Please try again later.",
+            detail=detail,
         )
 
-    logger.info("MSG91 OTP dispatched to %s", phone_e164)
+    logger.info("[OTP][MSG91] OTP dispatched successfully | mobile=%s", masked)
 
 
 def _msg91_verify(phone_e164: str, otp: str) -> bool:
@@ -180,6 +233,9 @@ def _msg91_verify(phone_e164: str, otp: str) -> bool:
     import requests as _requests
 
     auth_key = os.environ["MSG91_AUTH_KEY"]
+    masked = _mask_phone(phone_e164)
+
+    logger.info("[OTP][MSG91] Initiating verify | mobile=%s", masked)
 
     try:
         resp = _requests.get(
@@ -189,13 +245,13 @@ def _msg91_verify(phone_e164: str, otp: str) -> bool:
             timeout=10,
         )
     except _requests.exceptions.Timeout:
-        logger.error("MSG91 verify-otp timed out for %s", phone_e164)
+        logger.error("[OTP][MSG91] Verify timed out | mobile=%s", masked)
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             detail="OTP verification service timed out. Please try again.",
         )
     except _requests.exceptions.RequestException as exc:
-        logger.error("MSG91 verify-otp request error: %s", exc)
+        logger.error("[OTP][MSG91] Verify request error | mobile=%s | error=%s", masked, exc)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="OTP verification service unavailable. Please try again.",
@@ -206,11 +262,19 @@ def _msg91_verify(phone_e164: str, otp: str) -> bool:
     except Exception:
         data = {}
 
+    logger.info(
+        "[OTP][MSG91] Verify response | mobile=%s | http_status=%s | type=%r",
+        masked,
+        resp.status_code,
+        data.get("type"),
+    )
+
     if resp.status_code not in (200, 201):
         logger.error(
-            "MSG91 verify-otp failed | status=%s | body=%s",
+            "[OTP][MSG91] Verify API error | mobile=%s | http_status=%s | body=%s",
+            masked,
             resp.status_code,
-            resp.text[:200],
+            resp.text[:300],
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -218,7 +282,10 @@ def _msg91_verify(phone_e164: str, otp: str) -> bool:
         )
 
     # MSG91 returns {"type": "success", "message": "OTP verified successfully."} on match
-    return data.get("type") == "success"
+    success = data.get("type") == "success"
+    if not success:
+        logger.info("[OTP][MSG91] OTP mismatch | mobile=%s | type=%r", masked, data.get("type"))
+    return success
 
 
 # ── Dev mode (no MSG91_AUTH_KEY) ──────────────────────────────────────────────
@@ -307,6 +374,56 @@ def _is_production() -> bool:
         return False
     # Fallback: key-based auto-detection
     return bool(os.getenv("MSG91_AUTH_KEY"))
+
+
+def validate_production_config() -> None:
+    """
+    Call at startup to validate MSG91 configuration.
+
+    - Logs which OTP mode is active (production MSG91 / development)
+    - Logs which env vars are set (names only, never values)
+    - RAISES RuntimeError if ENV=production but required MSG91 vars are missing
+      (fail fast at deploy time, not silently at the first user OTP request)
+    """
+    env = os.getenv("ENV", "").lower()
+    auth_key_set = bool(os.getenv("MSG91_AUTH_KEY"))
+    template_id_set = bool(os.getenv("MSG91_TEMPLATE_ID"))
+    sender_id_set = bool(os.getenv("MSG91_SENDER_ID"))
+
+    logger.info(
+        "[OTP] Config | ENV=%r | MSG91_AUTH_KEY=%s | MSG91_TEMPLATE_ID=%s | MSG91_SENDER_ID=%s",
+        env,
+        "SET" if auth_key_set else "MISSING",
+        "SET" if template_id_set else "MISSING",
+        "SET" if sender_id_set else "not set (optional)",
+    )
+
+    if env == "production":
+        missing = [v for v, ok in [
+            ("MSG91_AUTH_KEY", auth_key_set),
+            ("MSG91_TEMPLATE_ID", template_id_set),
+        ] if not ok]
+        if missing:
+            raise RuntimeError(
+                f"[OTP] FATAL: ENV=production but required env vars are not set: "
+                f"{', '.join(missing)}. "
+                "Add these in the Render environment variables panel and redeploy."
+            )
+        logger.info("[OTP] Mode: PRODUCTION — real SMS will be sent via MSG91")
+    else:
+        mode = "PRODUCTION (key-based)" if _is_production() else "DEVELOPMENT (DB + log)"
+        logger.warning(
+            "[OTP] Mode: %s — ENV is %r (not 'production'). "
+            "Set ENV=production on Render to activate MSG91 SMS delivery.",
+            mode,
+            env or "(not set)",
+        )
+        if not _is_production():
+            logger.warning(
+                "[OTP] DEV MODE ACTIVE — OTPs written to otp_dev.log, NOT sent via SMS. "
+                "OTP values are returned in the API response body (dev_otp). "
+                "This must NEVER be active on a production deployment."
+            )
 
 
 def send_otp(phone: str, db: Optional[Session] = None) -> Optional[str]:
