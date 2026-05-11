@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from .database import engine, SessionLocal, get_db
 from . import models, crud
-from .routes import auth, profile, preferences, jobs, applications, resume, user, recruiter, admin, dashboard, share
+from .routes import auth, profile, preferences, jobs, applications, resume, user, recruiter, admin, dashboard, share, legal
 from .services import otp_service as _otp_service
 
 app = FastAPI(
@@ -145,6 +145,8 @@ app.include_router(admin.router)
 app.include_router(dashboard.router)
 # Public sharing routes — no auth required, safe fields only
 app.include_router(share.router)
+# Public legal pages — Privacy Policy + account deletion info (Play Store required)
+app.include_router(legal.router)
 
 
 # ─── Health ───────────────────────────────────────────────────────────────────

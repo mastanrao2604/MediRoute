@@ -5,6 +5,7 @@ import Spinner from '../components/Spinner';
 import { useAuth } from '../context/AuthContext';
 import { downloadPDF, viewPDF } from '../utils/downloadPdf';
 import { Capacitor } from '@capacitor/core';
+import { useNavigate } from 'react-router-dom';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const JOB_TYPE_OPTIONS = [
@@ -39,17 +40,22 @@ function prefsToForm(d) {
 
 // ── Component ────────────────────────────────────────────────────────────────
 export default function Profile() {
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
 
   const [profile,       setProfile]       = useState(null);
   const [preferences,   setPreferences]   = useState(null);
   const [isEditMode,    setIsEditMode]    = useState(false);
   const [form,          setForm]          = useState(EMPTY_PROFILE_FORM);
   const [prefsForm,     setPrefsForm]     = useState(EMPTY_PREFS_FORM);
-  const [fetching,      setFetching]      = useState(false);  // start false — shell renders immediately
+  const [fetching,      setFetching]      = useState(false);
   const [loading,       setLoading]       = useState(false);
   const [error,         setError]         = useState('');
   const [success,       setSuccess]       = useState('');
+
+  // ── Delete account state ──────────────────────────────────────────────────
+  const [deleteStep,    setDeleteStep]    = useState(0); // 0=hidden, 1=confirm, 2=deleting
+  const [deleteError,   setDeleteError]   = useState('');
 
   // ── Resume upload state ───────────────────────────────────────────────────
   const [hasResume,    setHasResume]    = useState(false);
@@ -217,6 +223,26 @@ export default function Profile() {
             ? raw.map((e) => e.msg || String(e)).join('. ')
             : 'Failed to delete resume.',
       );
+    }
+  }
+
+  // ── Account deletion ──────────────────────────────────────────────────────
+  async function handleDeleteAccount() {
+    setDeleteStep(2);
+    setDeleteError('');
+    try {
+      await api.delete('/user/me');
+      // Clear session immediately — tokens are now invalid server-side
+      await logout();
+      navigate('/login', { replace: true });
+    } catch (err) {
+      const raw = err.response?.data?.detail;
+      setDeleteError(
+        typeof raw === 'string'
+          ? raw
+          : 'Account deletion failed. Please try again or contact support@mediroute.in.',
+      );
+      setDeleteStep(1); // stay on confirm step so user can retry
     }
   }
 
@@ -612,6 +638,57 @@ export default function Profile() {
             </div>
           </form>
         )}
+
+        {/* ── DELETE ACCOUNT SECTION ─────────────────────────────────── */}
+        <section className="mt-8 bg-white rounded-2xl border border-red-100 shadow-sm p-5">
+          <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-1">Danger Zone</h2>
+          <p className="text-xs text-gray-400 mb-4">
+            Permanently delete your account and all associated data. This cannot be undone.
+          </p>
+
+          {deleteStep === 0 && (
+            <button
+              onClick={() => { setDeleteStep(1); setDeleteError(''); }}
+              className="w-full text-sm font-semibold text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 py-3 rounded-xl transition-colors"
+            >
+              Delete My Account
+            </button>
+          )}
+
+          {deleteStep >= 1 && (
+            <div className="flex flex-col gap-3">
+              <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+                <p className="text-sm font-semibold text-red-800 mb-1">Are you absolutely sure?</p>
+                <ul className="text-xs text-red-700 list-disc pl-4 flex flex-col gap-0.5">
+                  <li>Your profile, skills, and preferences will be deleted</li>
+                  <li>Your resume and applications will be deleted</li>
+                  <li>Your login access will be revoked immediately</li>
+                  <li>This action <strong>cannot be undone</strong></li>
+                </ul>
+              </div>
+              {deleteError && (
+                <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{deleteError}</p>
+              )}
+              <div className="flex gap-3">
+                <button
+                  onClick={() => { setDeleteStep(0); setDeleteError(''); }}
+                  disabled={deleteStep === 2}
+                  className="flex-1 border border-gray-300 hover:bg-gray-50 disabled:opacity-60 text-gray-700 text-sm font-semibold py-3 rounded-xl transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleDeleteAccount}
+                  disabled={deleteStep === 2}
+                  className="flex-1 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white text-sm font-semibold py-3 rounded-xl transition-colors"
+                >
+                  {deleteStep === 2 ? 'Deleting…' : 'Yes, Delete My Account'}
+                </button>
+              </div>
+            </div>
+          )}
+        </section>
+
       </div>
     </MainLayout>
   );

@@ -11,6 +11,43 @@ logger = logging.getLogger("uvicorn.error")
 from . import models
 
 
+def delete_user(db: Session, user: models.User) -> None:
+    """
+    Hard-delete a user and all their owned data in a single transaction.
+
+    Cascade rules (defined on the ORM relationships and FK constraints):
+      - Profile, UserPreference, Application, Resume, ResumeData, RefreshToken
+        all have ondelete="CASCADE" or cascade="all, delete-orphan" → auto-deleted.
+
+    Jobs posted by this recruiter:
+      - We null-out posted_by_user_id so existing job listings are preserved
+        (orphaning them is safer than deleting live job posts that applicants
+        may have applied to).  Recruiter-owned jobs are kept so candidates
+        aren't impacted, but the poster link is removed.
+
+    OTPCode records are keyed by phone — cleared separately for privacy.
+    """
+    user_id = user.id
+    phone = user.phone
+
+    # Null posted_by_user_id on any jobs this user posted (preserve job listings)
+    db.query(models.Job).filter(
+        models.Job.posted_by_user_id == user_id
+    ).update({"posted_by_user_id": None}, synchronize_session=False)
+
+    # Remove any OTP codes for this phone (privacy cleanup)
+    if phone:
+        db.query(models.OTPCode).filter(
+            models.OTPCode.phone == phone
+        ).delete(synchronize_session=False)
+
+    # Delete the user — cascade handles Profile, Preferences, Applications,
+    # Resumes, ResumeData, and RefreshTokens automatically.
+    db.delete(user)
+    db.commit()
+    logger.info("User %s permanently deleted.", user_id)
+
+
 def create_user(
     db: Session,
     name: str,
