@@ -1,6 +1,15 @@
 import axios from 'axios';
 
-const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+// For Capacitor APK builds: VITE_API_URL is set in the local .env file to the
+// production backend URL (https://mediroute-8az0.onrender.com).
+//
+// For web builds on Render (no .env file): VITE_API_URL is undefined, so we
+// fall back to window.location.origin — which IS the backend host when the
+// frontend is served from the same domain. This means API calls are same-origin
+// (no CORS overhead) and no additional env var config is needed on Render.
+const BASE_URL =
+  import.meta.env.VITE_API_URL ??
+  (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8000');
 
 const api = axios.create({
   baseURL: BASE_URL,

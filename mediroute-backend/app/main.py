@@ -17,6 +17,8 @@ if _SENTRY_DSN and _IS_PRODUCTION:
     )
 
 from fastapi import FastAPI, Request, Response, Depends
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
@@ -149,12 +151,23 @@ app.include_router(share.router)
 app.include_router(legal.router)
 
 
-# ─── Root landing ─────────────────────────────────────────────────────────────
-@app.get("/", include_in_schema=False)
-def root():
-    """Root redirect for Play Store developer website verification."""
-    from fastapi.responses import RedirectResponse
-    return RedirectResponse(url="/privacy", status_code=302)
+# ─── SPA static assets ────────────────────────────────────────────────────────
+# Resolve the Vite build output directory relative to this file so it works
+# both on Render (/opt/render/project/src/frontend/dist/) and locally.
+_FRONTEND_DIST = Path(__file__).parent.parent.parent / "frontend" / "dist"
+
+if _FRONTEND_DIST.exists():
+    _startup_log.info("[SPA] Serving frontend from %s", _FRONTEND_DIST)
+    # Serve hashed JS/CSS asset bundles (content-addressed, long-lived cache)
+    _assets_dir = _FRONTEND_DIST / "assets"
+    if _assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="vite-assets")
+    # Serve PWA icon sprites
+    _icons_dir = _FRONTEND_DIST / "icons"
+    if _icons_dir.exists():
+        app.mount("/icons", StaticFiles(directory=str(_icons_dir)), name="vite-icons")
+else:
+    _startup_log.warning("[SPA] frontend/dist not found — web UI unavailable (run: cd frontend && npm run build)")
 
 
 # ─── Health ───────────────────────────────────────────────────────────────────
@@ -387,3 +400,36 @@ def seed_data():
 
     finally:
         db.close()
+
+
+# ─── SPA catch-all (MUST be last) ─────────────────────────────────────────────
+# All backend API routes are registered above and take precedence.
+# This handler fires only for paths that match NO registered route — i.e.
+# React Router paths like /login, /profile, /dashboard, /jobs, /resume, etc.
+#
+# It also serves root-level Vite output files (sw.js, favicon.ico,
+# manifest.webmanifest, workbox-*.js) by checking if the file exists on disk
+# before falling back to index.html.
+#
+# Mobile APK: Capacitor bundles the dist/ folder directly — this route is
+# never hit from the APK (APK makes API calls, not page navigations).
+@app.get("/{full_path:path}", include_in_schema=False)
+def spa_fallback(full_path: str):
+    if not _FRONTEND_DIST.exists():
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"detail": "Frontend not available"}, status_code=404)
+
+    # Serve real files that live at the dist/ root (favicon, sw.js, manifest, etc.)
+    if full_path:
+        candidate = _FRONTEND_DIST / full_path
+        try:
+            # Resolve prevents path traversal attacks
+            resolved = candidate.resolve()
+            dist_resolved = _FRONTEND_DIST.resolve()
+            if resolved.is_relative_to(dist_resolved) and resolved.is_file():
+                return FileResponse(str(resolved))
+        except (ValueError, OSError):
+            pass
+
+    # SPA fallback: serve index.html so React Router handles the path
+    return FileResponse(str(_FRONTEND_DIST / "index.html"))
