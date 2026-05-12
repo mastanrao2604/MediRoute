@@ -182,7 +182,7 @@ def privacy_policy():
 
   <h2>9. Children&rsquo;s Privacy</h2>
   <p>
-    MediRoute is a professional healthcare hiring platform intended for users aged 18 and above.
+    MediRoute is a professional Real-Time Healthcare Staffing platform intended for users aged 18 and above.
     We do not knowingly collect data from anyone under 18.
   </p>
 

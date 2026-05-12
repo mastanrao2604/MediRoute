@@ -41,3 +41,8 @@ anyio>=4.0.0
 
 # ── Monitoring ───────────────────────────────────────────────────────────────
 sentry-sdk[fastapi]>=2.0.0
+
+# ── Push Notifications (FCM) ─────────────────────────────────────────────────
+# Credentials loaded from FIREBASE_CREDENTIALS_JSON env var (JSON content, not file path).
+# Missing credentials → graceful degradation (WS-only delivery, warning logged).
+firebase-admin>=6.0.0

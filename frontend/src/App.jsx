@@ -2,11 +2,13 @@ import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-route
 import { GoogleOAuthProvider } from '@react-oauth/google';
 import { AuthProvider } from './context/AuthContext';
 import { useAuth } from './context/AuthContext';
-import { lazy, Suspense, Component, useEffect } from 'react';
+import { lazy, Suspense, Component, useEffect, useState, useCallback } from 'react';
 import ProtectedRoute from './components/ProtectedRoute';
 import InstallPrompt from './components/InstallPrompt';
 import UpdatePrompt from './components/UpdatePrompt';
 import { getPostLoginRoute } from './utils/authNav';
+import { useWebSocket } from './hooks/useWebSocket';
+import DispatchOfferModal from './components/DispatchOfferModal';
 
 // ── Global Error Boundary ─────────────────────────────────────────────────────
 // Catches any render-time exception in the entire component tree.
@@ -67,6 +69,7 @@ const CandidateDetail     = lazy(() => import('./pages/CandidateDetail'));
 const RecruiterOnboarding = lazy(() => import('./pages/RecruiterOnboarding'));
 const AdminDashboard      = lazy(() => import('./pages/AdminDashboard'));
 const PhoneLinkVerify     = lazy(() => import('./pages/PhoneLinkVerify'));
+const DispatchOps         = lazy(() => import('./pages/DispatchOps'));
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 const ADMIN_PHONE = import.meta.env.VITE_ADMIN_PHONE || '';
@@ -192,6 +195,68 @@ function AppLinkHandler() {
 }
 
 
+/**
+ * DispatchManager — global dispatch WebSocket handler.
+ *
+ * Rendered once inside AuthProvider + BrowserRouter.
+ * For dispatch-eligible nurses: connects WebSocket, shows DispatchOfferModal on offer.
+ * For recruiters: connects WebSocket to receive shift status updates (wave progress, filled).
+ * Does nothing for unauthenticated users.
+ */
+const DISPATCH_ELIGIBLE_ROLES = new Set([
+  'nurse', 'staff_nurse', 'icu_nurse', 'ot_nurse', 'emergency_nurse',
+  'home_care_nurse', 'doctor', 'lab_tech', 'pharmacist', 'driver', 'front_office',
+]);
+
+function DispatchManager() {
+  const { user, token } = useAuth();
+  const [currentOffer, setCurrentOffer] = useState(null);
+
+  const handleMessage = useCallback((msg) => {
+    switch (msg.type) {
+      case 'dispatch_offer':
+        // Task 16: Deduplicate same offer_id (double WS delivery or pending recovery)
+        setCurrentOffer(prev => {
+          if (prev?.offer_id === msg.offer_id) return prev;
+          return DISPATCH_ELIGIBLE_ROLES.has(user?.role) ? msg : prev;
+        });
+        break;
+
+      case 'assignment_confirmed':
+        // Dismiss modal (we already handled this in modal itself, but belt-and-suspenders)
+        setCurrentOffer(null);
+        break;
+
+      case 'shift_filled':
+      case 'dispatch_started':
+      case 'dispatch_wave_update':
+      case 'shift_expired':
+      case 'dispatch_error':
+        // Hospital events — recruiter dashboard pages listen for these via the
+        // useDispatchStatus hook (future). For now logged for debugging.
+        console.debug('[dispatch]', msg.type, msg);
+        break;
+
+      default:
+        break;
+    }
+  }, [user?.role]);
+
+  // Only connect if authenticated (nurse eligible roles OR recruiter for hospital updates)
+  const shouldConnect = !!token && !!user;
+  useWebSocket(shouldConnect ? user : null, token, handleMessage);
+
+  if (!currentOffer) return null;
+
+  return (
+    <DispatchOfferModal
+      offer={currentOffer}
+      onClose={() => setCurrentOffer(null)}
+    />
+  );
+}
+
+
 export default function App() {
   return (
     <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
@@ -201,6 +266,7 @@ export default function App() {
         <AppLinkHandler />
         <UpdatePrompt />
         <InstallPrompt />
+        <DispatchManager />
         <Suspense fallback={
           <div className="min-h-screen flex items-center justify-center bg-gray-50">
             <div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
@@ -228,6 +294,7 @@ export default function App() {
 
           {/* Admin — only accessible to the VITE_ADMIN_PHONE user */}
           <Route path="/admin" element={<AdminRoute><AdminDashboard /></AdminRoute>} />
+          <Route path="/admin/ops" element={<AdminRoute><DispatchOps /></AdminRoute>} />
 
           <Route path="/" element={<ProtectedRoute><RoleHome /></ProtectedRoute>} />
           <Route path="*" element={<ProtectedRoute><RoleHome /></ProtectedRoute>} />

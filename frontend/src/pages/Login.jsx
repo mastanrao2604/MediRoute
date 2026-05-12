@@ -196,7 +196,7 @@ export default function Login() {
             <span className="text-indigo-600 font-extrabold text-4xl tracking-tight">Medi</span>
             <span className="text-green-500 font-extrabold text-4xl tracking-tight">Route</span>
           </div>
-          <p className="text-gray-500 text-sm font-medium">Healthcare Jobs Platform</p>
+          <p className="text-gray-500 text-sm font-medium">Real-Time Healthcare Staffing</p>
         </div>
 
         <div className="bg-white rounded-2xl shadow-md border border-gray-100 overflow-hidden">

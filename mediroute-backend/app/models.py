@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Column, Integer, String, ForeignKey, DateTime, Enum,
-    Text, Index, UniqueConstraint, Boolean, JSON,
+    Text, Index, UniqueConstraint, Boolean, JSON, Float,
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -265,4 +265,394 @@ class RefreshToken(Base):
 
     __table_args__ = (
         Index("idx_refresh_tokens_user", "user_id"),
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dispatch / Real-Time Staffing Models
+# These are entirely additive — no existing table is modified.
+# Phase 1: asyncio.Event dispatch, Haversine geo, single Render instance.
+# Phase 2+: swap asyncio.Event → Redis pub/sub, add Redis GEO. Zero model changes.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class PresenceStateEnum(str, enum.Enum):
+    """Fine-grained online state. Maps to Redis TTL key at Stage 2."""
+    offline = "offline"
+    online_available = "online_available"   # visible to dispatch
+    online_busy = "online_busy"             # on assignment — excluded from dispatch
+    background = "background"               # app open but backgrounded
+
+
+class DevicePlatform(str, enum.Enum):
+    android = "android"
+    ios = "ios"
+    web = "web"
+
+
+class ShiftUrgency(str, enum.Enum):
+    """Controls wave timeout, radius expansion, and notification priority."""
+    emergency = "emergency"   # P0: 30s waves, 3km start radius
+    urgent = "urgent"          # P1: 90s waves, 5km start radius
+    standard = "standard"      # P2: 300s waves, 10km start radius
+    planned = "planned"        # P3: next-day, 15km radius
+
+
+class ShiftRequestStatus(str, enum.Enum):
+    open = "open"             # posted, not yet dispatching
+    dispatching = "dispatching"
+    filled = "filled"
+    expired = "expired"       # all waves exhausted, no acceptance
+    cancelled = "cancelled"
+
+
+class DispatchSessionStatus(str, enum.Enum):
+    active = "active"
+    completed = "completed"
+    failed = "failed"
+    cancelled = "cancelled"
+
+
+class OfferStatus(str, enum.Enum):
+    pending = "pending"
+    accepted = "accepted"
+    declined = "declined"
+    timed_out = "timed_out"
+    cancelled = "cancelled"
+
+
+class OfferDeliveryMethod(str, enum.Enum):
+    websocket = "websocket"
+    fcm = "fcm"
+    both = "both"
+
+
+class AssignmentStatus(str, enum.Enum):
+    confirmed = "confirmed"
+    checked_in = "checked_in"
+    completed = "completed"
+    no_show = "no_show"
+    cancelled = "cancelled"
+
+
+class NurseAvailability(Base):
+    """
+    Current availability and last-known location for dispatch candidate selection.
+    One row per nurse (upserted on toggle + heartbeat).
+    Phase 1: PostGIS disabled — lat/lng stored as Float, Haversine used for distance.
+    Phase 2: Redis GEO replaces hot-path queries; this table retained for writes + analytics.
+    """
+    __tablename__ = "nurse_availability"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+    is_available = Column(Boolean, nullable=False, default=False)
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
+    city_id = Column(String(10), nullable=False, default="HYD")
+    last_seen = Column(DateTime, nullable=True)  # updated by heartbeat
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        # Dispatch candidate query: city + available + last_seen freshness check
+        Index("idx_avail_city_available", "city_id", "is_available"),
+        Index("idx_avail_last_seen", "last_seen"),
+        Index("idx_avail_user", "user_id"),
+    )
+
+
+class PresenceState(Base):
+    """
+    Fine-grained presence tracking. The 'supply inventory' of the platform.
+    Stale last_heartbeat (>5 min) = nurse is offline for dispatch purposes.
+
+    FUTURE hooks (columns present but not consumed by dispatch engine yet):
+    - historical_preferences: JSONB for ML training data
+    - preferred_shift_types: nurse-set or ML-inferred preferences
+    - preferred_radius_km: dispatch suppression if shift is beyond this
+    """
+    __tablename__ = "presence_state"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+    state = Column(
+        Enum(PresenceStateEnum),
+        nullable=False,
+        default=PresenceStateEnum.offline,
+        server_default="offline",
+    )
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
+    city_id = Column(String(10), nullable=False, default="HYD")
+    last_heartbeat = Column(DateTime, nullable=True)
+    last_location_at = Column(DateTime, nullable=True)
+
+    # FUTURE: ML dispatch ranking hooks (§24.1) — populated by future preference pipeline
+    historical_preferences = Column(JSON, nullable=True)
+    preferred_shift_types = Column(JSON, nullable=True)
+    preferred_radius_km = Column(Float, nullable=True)  # None = no restriction
+
+    __table_args__ = (
+        Index("idx_presence_city_state", "city_id", "state"),
+        Index("idx_presence_heartbeat", "last_heartbeat"),
+    )
+
+
+class DeviceToken(Base):
+    """
+    FCM device tokens — one per user per platform.
+    Upserted on every app launch via PUT /devices/token.
+    Stored separately from nurse_availability so tokens survive availability toggle.
+    """
+    __tablename__ = "device_tokens"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    fcm_token = Column(String, nullable=False)
+    platform = Column(
+        Enum(DevicePlatform), nullable=False, default=DevicePlatform.android
+    )
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "platform", name="uq_device_token_user_platform"),
+        Index("idx_device_tokens_user", "user_id"),
+        Index("idx_device_tokens_fcm", "fcm_token"),
+    )
+
+
+class ShiftRequest(Base):
+    """
+    A hospital's request for a healthcare worker — the demand side of the marketplace.
+
+    city_id is the shard key from day 1 (§22). All dispatch queries filter by city_id first.
+    idempotency_key prevents duplicate shifts from network retries.
+    """
+    __tablename__ = "shift_requests"
+
+    id = Column(Integer, primary_key=True)
+    city_id = Column(String(10), nullable=False, default="HYD")  # shard key — never rename
+    hospital_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    role_required = Column(Enum(UserRole), nullable=False)
+    specialty = Column(String, nullable=True)
+    hospital_name = Column(String, nullable=False)
+    hospital_latitude = Column(Float, nullable=False)
+    hospital_longitude = Column(Float, nullable=False)
+    shift_start = Column(DateTime, nullable=False)
+    shift_end = Column(DateTime, nullable=True)
+    status = Column(
+        Enum(ShiftRequestStatus),
+        nullable=False,
+        default=ShiftRequestStatus.open,
+        server_default="open",
+    )
+    urgency = Column(
+        Enum(ShiftUrgency),
+        nullable=False,
+        default=ShiftUrgency.standard,
+        server_default="standard",
+    )
+    pay_rate = Column(String, nullable=True)
+    notes = Column(Text, nullable=True)
+    idempotency_key = Column(String, nullable=True, unique=True)
+    dispatch_radius_km = Column(Float, nullable=False, default=10.0)
+    filled_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_shift_city_status", "city_id", "status"),
+        Index("idx_shift_hospital_user", "hospital_user_id", "created_at"),
+        Index("idx_shift_idempotency", "idempotency_key"),
+        Index("idx_shift_status_created", "status", "created_at"),
+    )
+
+
+class DispatchSession(Base):
+    """
+    One dispatch run per ShiftRequest. Tracks wave progression.
+    Unique per shift — a shift can only have one active dispatch session.
+    """
+    __tablename__ = "dispatch_sessions"
+
+    id = Column(Integer, primary_key=True)
+    shift_request_id = Column(
+        Integer, ForeignKey("shift_requests.id"), nullable=False, unique=True
+    )
+    status = Column(
+        Enum(DispatchSessionStatus),
+        nullable=False,
+        default=DispatchSessionStatus.active,
+    )
+    current_wave = Column(Integer, nullable=False, default=1)
+    waves_exhausted = Column(Boolean, nullable=False, default=False)
+    started_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("idx_dsession_shift", "shift_request_id"),
+        Index("idx_dsession_status", "status"),
+    )
+
+
+class DispatchOffer(Base):
+    """
+    One offer sent to one nurse as part of a dispatch wave.
+    First-accept-wins via SELECT FOR UPDATE SKIP LOCKED on acceptance.
+    expires_at enforces the wave timeout on the DB side.
+    """
+    __tablename__ = "dispatch_offers"
+
+    id = Column(Integer, primary_key=True)
+    session_id = Column(Integer, ForeignKey("dispatch_sessions.id"), nullable=False)
+    shift_request_id = Column(Integer, ForeignKey("shift_requests.id"), nullable=False)
+    nurse_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    status = Column(
+        Enum(OfferStatus), nullable=False, default=OfferStatus.pending
+    )
+    wave_number = Column(Integer, nullable=False, default=1)
+    offered_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False)
+    responded_at = Column(DateTime, nullable=True)
+    delivery_method = Column(
+        Enum(OfferDeliveryMethod),
+        nullable=False,
+        default=OfferDeliveryMethod.websocket,
+    )
+
+    __table_args__ = (
+        # Hot query: find pending offer for nurse (used in accept/decline handler)
+        Index("idx_offer_nurse_pending", "nurse_user_id", "status"),
+        Index("idx_offer_session", "session_id"),
+        Index("idx_offer_shift", "shift_request_id"),
+        # Janitor query: expire stale pending offers
+        Index("idx_offer_expires_status", "expires_at", "status"),
+    )
+
+
+class LiveAssignment(Base):
+    """
+    Confirmed nurse ↔ shift assignment. The terminal state of a successful dispatch.
+    check_in_latitude/longitude validated against hospital coords for attendance fraud prevention (§21.2).
+    """
+    __tablename__ = "live_assignments"
+
+    id = Column(Integer, primary_key=True)
+    shift_request_id = Column(
+        Integer, ForeignKey("shift_requests.id"), nullable=False, unique=True
+    )
+    nurse_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    offer_id = Column(Integer, ForeignKey("dispatch_offers.id"), nullable=False)
+    status = Column(
+        Enum(AssignmentStatus), nullable=False, default=AssignmentStatus.confirmed
+    )
+    confirmed_at = Column(DateTime, default=datetime.utcnow)
+    check_in_at = Column(DateTime, nullable=True)
+    check_out_at = Column(DateTime, nullable=True)
+    check_in_latitude = Column(Float, nullable=True)
+    check_in_longitude = Column(Float, nullable=True)
+
+    __table_args__ = (
+        Index("idx_assignment_nurse_status", "nurse_user_id", "status"),
+        Index("idx_assignment_shift", "shift_request_id"),
+    )
+
+
+class ReliabilityScore(Base):
+    """
+    Nurse reliability score — core dispatch ranking signal (not just a dashboard metric).
+    Score starts at 100.0 and decays on declines/timeouts/no-shows.
+    Phase 1: recalculated on each offer event. Phase 3+: background job.
+    """
+    __tablename__ = "reliability_scores"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+    score = Column(Float, nullable=False, default=100.0)
+    total_offers = Column(Integer, nullable=False, default=0)
+    accepted = Column(Integer, nullable=False, default=0)
+    declined = Column(Integer, nullable=False, default=0)
+    timed_out = Column(Integer, nullable=False, default=0)
+    no_shows = Column(Integer, nullable=False, default=0)
+    completed_shifts = Column(Integer, nullable=False, default=0)
+    last_calculated_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("idx_reliability_user", "user_id"),
+        # Dispatch ranking: sort by score DESC
+        Index("idx_reliability_score", "score"),
+    )
+
+
+class ShiftTimelineEvent(Base):
+    """
+    Immutable audit log for every significant dispatch action.
+    SACRED INFRASTRUCTURE (§24.8): every state change must emit an event.
+    Phase 1: written to PostgreSQL.
+    Phase 3: wrapped by Kafka producer — zero model changes needed.
+    actor_user_id is not a FK intentionally — allows recording events for deleted users.
+    """
+    __tablename__ = "shift_timeline_events"
+
+    id = Column(Integer, primary_key=True)
+    shift_request_id = Column(Integer, ForeignKey("shift_requests.id"), nullable=False)
+    event_type = Column(String(64), nullable=False)  # see dispatch/events.py
+    actor_user_id = Column(Integer, nullable=True)   # NOT FK — survives user deletion
+    city_id = Column(String(10), nullable=False, default="HYD")
+    payload = Column(JSON, nullable=True)
+    occurred_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("idx_timeline_shift_time", "shift_request_id", "occurred_at"),
+        Index("idx_timeline_city_type", "city_id", "event_type"),
+    )
+
+
+class DispatchZone(Base):
+    """
+    Hyperlocal geographic zone — the unit of marketplace liquidity (§22).
+    Density > Geography: launch 'Banjara Hills zone' not 'Hyderabad'.
+    dispatch_paused: ops can halt a zone without a deploy (ZoneOperationalConfig hook, §24.10).
+    """
+    __tablename__ = "dispatch_zones"
+
+    id = Column(Integer, primary_key=True)
+    city_id = Column(String(10), nullable=False)
+    zone_code = Column(String(20), unique=True, nullable=False)
+    zone_name = Column(String, nullable=False)
+    center_latitude = Column(Float, nullable=False)
+    center_longitude = Column(Float, nullable=False)
+    radius_km = Column(Float, nullable=False, default=10.0)
+    is_active = Column(Boolean, nullable=False, default=True)
+    # FUTURE: ZoneOperationalConfig (§24.10) — tune per zone without redeploy
+    dispatch_paused = Column(Boolean, nullable=False, default=False)
+    max_radius_km = Column(Float, nullable=True)   # operational cap on radius expansion
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_zone_city_active", "city_id", "is_active"),
+    )
+
+
+class SupplyDemandSnapshot(Base):
+    """
+    FUTURE: Zone stress tracking for supply-demand heatmap and surge/incentive systems (§24.2).
+    Not wired to dispatch engine in Phase 1. Table exists for future cron writer.
+    """
+    __tablename__ = "supply_demand_snapshots"
+
+    id = Column(Integer, primary_key=True)
+    zone_code = Column(String(20), nullable=False)
+    city_id = Column(String(10), nullable=False)
+    snapshot_at = Column(DateTime, nullable=False)
+    online_nurses = Column(Integer, nullable=False, default=0)
+    pending_shifts = Column(Integer, nullable=False, default=0)
+    avg_fill_time_sec = Column(Float, nullable=True)
+
+    __table_args__ = (
+        Index("idx_sds_zone_time", "zone_code", "snapshot_at"),
     )

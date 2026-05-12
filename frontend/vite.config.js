@@ -13,9 +13,9 @@ export default defineConfig({
       // Manifest is in public/manifest.json — plugin reads it automatically.
       // Duplicate here so the SW knows which assets to precache.
       manifest: {
-        name: 'MediRoute — Healthcare Jobs',
+        name: 'MediRoute — Real-Time Healthcare Staffing',
         short_name: 'MediRoute',
-        description: 'Healthcare hiring platform connecting medical professionals with opportunities.',
+        description: 'Real-Time Healthcare Staffing — connecting medical professionals with opportunities.',
         start_url: '/',
         display: 'standalone',
         orientation: 'portrait',

@@ -21,12 +21,17 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+import asyncio
 
 from sqlalchemy.orm import Session
 
 from .database import engine, SessionLocal, get_db
 from . import models, crud
 from .routes import auth, profile, preferences, jobs, applications, resume, user, recruiter, admin, dashboard, share, legal
+from .routes.availability import router as availability_router, device_router
+from .routes.shifts import router as shifts_router
+from .routes.dispatch_routes import router as ws_router, offer_router
+from .routes.ops import router as ops_router
 from .services import otp_service as _otp_service
 
 app = FastAPI(
@@ -41,6 +46,29 @@ app = FastAPI(
     redoc_url=None if _IS_PRODUCTION else "/redoc",
     openapi_url=None if _IS_PRODUCTION else "/openapi.json",
 )
+
+# ─── Dispatch janitor background task ─────────────────────────────────────────
+# Started once at app startup. Expires stale offers every 30s.
+_janitor_task = None
+
+@app.on_event("startup")
+async def start_janitor():
+    global _janitor_task
+    try:
+        from .dispatch.janitor import run_janitor
+        _janitor_task = asyncio.create_task(run_janitor())
+        _startup_log.info("[startup] dispatch janitor started")
+    except Exception as exc:
+        _startup_log.warning("[startup] janitor failed to start: %s", exc)
+
+@app.on_event("shutdown")
+async def stop_janitor():
+    if _janitor_task and not _janitor_task.done():
+        _janitor_task.cancel()
+        try:
+            await _janitor_task
+        except asyncio.CancelledError:
+            pass
 
 # ─── GZip compression ────────────────────────────────────────────────────────
 # Compress responses >= 1 KB. Reduces API payload sizes by 60-80% on mobile.
@@ -149,6 +177,13 @@ app.include_router(dashboard.router)
 app.include_router(share.router)
 # Public legal pages — Privacy Policy + account deletion info (Play Store required)
 app.include_router(legal.router)
+# ─── Dispatch / Real-time Staffing routes ─────────────────────────────────────
+app.include_router(availability_router)
+app.include_router(device_router)
+app.include_router(shifts_router)
+app.include_router(ws_router)        # WebSocket: /ws/{user_id}
+app.include_router(offer_router)     # /dispatch/offers/...
+app.include_router(ops_router)       # /admin/ops/...
 
 
 # ─── SPA static assets ────────────────────────────────────────────────────────

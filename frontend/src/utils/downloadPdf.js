@@ -1,58 +1,60 @@
 import { Capacitor } from '@capacitor/core';
 
 /**
- * Download or share a PDF blob, adapting to the runtime environment:
- *  - Native Android/iOS (Capacitor): writes to device cache dir, opens the
- *    native Android share sheet so the user can save, open, or share the file.
- *  - Web with File Share support (mobile Chrome on Android): uses the Web Share API.
- *  - Desktop / fallback: creates an anchor element with blob URL and auto-clicks.
+ * Download a PDF blob, adapting to the runtime environment:
  *
- * Throws on unexpected errors; callers should catch and show a user message.
- * AbortError (user dismissed share sheet) is silently swallowed here.
+ *  - Native Android/iOS (Capacitor):
+ *      1. Writes to the public Downloads folder.
+ *      2. Shows a system notification: "Resume Downloaded — Tap to open".
+ *      3. Tapping the notification opens the PDF in the default viewer.
+ *
+ *  - Web / desktop fallback:
+ *      Anchor + blob URL auto-click (standard browser download).
+ *
+ * Returns { savedTo: 'downloads' | 'documents' | 'browser' }
  */
+
+// Listener registered once per app session — avoid accumulating duplicates.
+let _notifListenerSetUp = false;
+
 export async function downloadPDF(blob, fileName) {
   // ── 1. Capacitor native (Android / iOS) ────────────────────────────────
   if (Capacitor.isNativePlatform()) {
     const { Filesystem, Directory } = await import('@capacitor/filesystem');
-    const { Share } = await import('@capacitor/share');
 
     const base64 = await _blobToBase64(blob);
-    const { uri } = await Filesystem.writeFile({
-      path: fileName,
-      data: base64,
-      directory: Directory.Cache,
-      recursive: true,
-    });
+
+    let uri;
+    let savedTo;
 
     try {
-      await Share.share({
-        title: fileName,
-        url: uri,
-        dialogTitle: 'Save or share your resume',
+      const result = await Filesystem.writeFile({
+        path: `Download/${fileName}`,
+        data: base64,
+        directory: Directory.ExternalStorage,
+        recursive: true,
       });
-    } catch (shareErr) {
-      // User dismissed the share sheet — not an error
-      if (shareErr?.name === 'AbortError' || shareErr?.message?.includes('cancel')) return;
-      throw shareErr;
+      uri = result.uri;
+      savedTo = 'downloads';
+    } catch {
+      // ExternalStorage unavailable — fall back to app Documents
+      const result = await Filesystem.writeFile({
+        path: fileName,
+        data: base64,
+        directory: Directory.Documents,
+        recursive: true,
+      });
+      uri = result.uri;
+      savedTo = 'documents';
     }
-    return;
+
+    // Show system notification — tap it to open the PDF
+    await _showDownloadNotification(uri, fileName);
+
+    return { savedTo, uri };
   }
 
-  // ── 2. Web with File Share API (mobile Chrome on Android via browser) ──
-  if (typeof navigator.canShare === 'function') {
-    const file = new File([blob], fileName, { type: 'application/pdf' });
-    if (navigator.canShare({ files: [file] })) {
-      try {
-        await navigator.share({ files: [file], title: 'My Resume' });
-        return;
-      } catch (shareErr) {
-        if (shareErr?.name === 'AbortError') return; // user dismissed
-        // Fall through to anchor approach if share fails
-      }
-    }
-  }
-
-  // ── 3. Desktop / fallback: anchor + blob URL ───────────────────────────
+  // ── 2. Web / desktop: anchor + blob URL ───────────────────────────────
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -60,8 +62,96 @@ export async function downloadPDF(blob, fileName) {
   document.body.appendChild(a);
   a.click();
   a.remove();
-  // Revoke after 60 s so the browser has time to start the download
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  return { savedTo: 'browser' };
+}
+
+// ── View (preview) PDF ────────────────────────────────────────────────────────
+
+/**
+ * Open a PDF blob for immediate viewing (no download, no notification):
+ *
+ *  - Native Android/iOS: writes to the app Cache directory then opens in the
+ *    device's default PDF viewer via FileOpener.
+ *  - Web / desktop: opens a blob URL in a new browser tab (inline display).
+ *
+ * Returns { openedIn: 'viewer' | 'browser' }
+ */
+export async function viewPDF(blob) {
+  if (Capacitor.isNativePlatform()) {
+    const { Filesystem, Directory } = await import('@capacitor/filesystem');
+    const { FileOpener } = await import('@capacitor-community/file-opener');
+
+    const base64 = await _blobToBase64(blob);
+
+    // Write to Cache (not Downloads) — temp file for viewing, no notification
+    const result = await Filesystem.writeFile({
+      path: 'preview_resume.pdf',
+      data: base64,
+      directory: Directory.Cache,
+      recursive: true,
+    });
+
+    // Opens immediately in the device's default PDF viewer (Adobe, Google Docs, etc.)
+    await FileOpener.open({ filePath: result.uri, contentType: 'application/pdf' });
+    return { openedIn: 'viewer' };
+  }
+
+  // Web: open blob URL in new tab — browser renders it inline
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank');
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  return { openedIn: 'browser' };
+}
+
+// ── Notification ──────────────────────────────────────────────────────────────
+
+async function _showDownloadNotification(uri, fileName) {
+  try {
+    const { LocalNotifications } = await import('@capacitor/local-notifications');
+    const { FileOpener } = await import('@capacitor-community/file-opener');
+
+    // Request permission (required on Android 13+ / API 33+)
+    const perm = await LocalNotifications.requestPermissions();
+    if (perm.display !== 'granted') return;
+
+    // Create notification channel (Android requires this; no-op on iOS)
+    await LocalNotifications.createChannel({
+      id: 'mediroute_downloads',
+      name: 'Downloads',
+      description: 'Resume download notifications',
+      importance: 4,  // HIGH — shows heads-up banner
+      sound: 'default',
+      vibration: true,
+    });
+
+    // Register tap listener once per app session
+    if (!_notifListenerSetUp) {
+      _notifListenerSetUp = true;
+      LocalNotifications.addListener('localNotificationActionPerformed', async (event) => {
+        const fileUri = event.notification?.extra?.fileUri;
+        if (fileUri) {
+          try {
+            await FileOpener.open({ filePath: fileUri, contentType: 'application/pdf' });
+          } catch { /* file may have been deleted — ignore */ }
+        }
+      });
+    }
+
+    const notifId = Date.now() % 2147483647; // 32-bit signed int limit
+    await LocalNotifications.schedule({
+      notifications: [{
+        id: notifId,
+        title: 'Resume Downloaded',
+        body: `${fileName} saved to Downloads. Tap to open.`,
+        channelId: 'mediroute_downloads',
+        extra: { fileUri: uri },
+        autoCancel: true,
+      }],
+    });
+  } catch {
+    // Notification is non-critical — file is already saved, silently skip
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -70,7 +160,6 @@ function _blobToBase64(blob) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onloadend = () => {
-      // result is "data:application/pdf;base64,XXXX" — strip the prefix
       const result = reader.result;
       resolve(typeof result === 'string' ? result.split(',')[1] : result);
     };

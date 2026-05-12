@@ -1,7 +1,7 @@
 {
-  "name": "MediRoute — Healthcare Jobs",
+  "name": "MediRoute — Real-Time Healthcare Staffing",
   "short_name": "MediRoute",
-  "description": "Connect medical professionals with healthcare opportunities.",
+  "description": "Real-Time Healthcare Staffing — connecting medical professionals with opportunities.",
   "start_url": "/",
   "display": "standalone",
   "orientation": "portrait",
