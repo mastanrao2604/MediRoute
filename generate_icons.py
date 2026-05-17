@@ -12,7 +12,8 @@ from pathlib import Path
 from PIL import Image
 
 SRC = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("source_icon.png")
-FRONTEND = Path("C:/Users/mv250058/Videos/MediRoute/MediRoute/frontend")
+# Resolve frontend/ relative to this script (works on any machine)
+FRONTEND = Path(__file__).parent / "frontend"
 ICONS_DIR = FRONTEND / "public" / "icons"
 ICONS_DIR.mkdir(parents=True, exist_ok=True)
 

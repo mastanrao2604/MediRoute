@@ -11,7 +11,10 @@
  * Android App Links intercept it and open the job inside the app.
  */
 
-const BACKEND_URL = 'https://mediroute-8az0.onrender.com';
+// Resolved at build time from VITE_API_URL; falls back to same-origin for web deploys.
+const BACKEND_URL =
+  import.meta.env.VITE_API_URL ??
+  (typeof window !== 'undefined' ? window.location.origin : '');
 
 /**
  * Build a share URL for a given job ID.
