@@ -43,3 +43,10 @@ FRAUD_FLAGGED          = "fraud.flagged"
 MANUAL_OVERRIDE        = "dispatch.manual_override"
 WAVE_EXHAUSTED         = "dispatch.wave_exhausted"
 DISPATCH_FAILED        = "dispatch.failed"
+# ── Manual ops recovery ────────────────────────────────────────────────────────
+# Emitted by POST /admin/ops/cancel-dispatch, /re-dispatch, /manual-assign,
+# and /close-session. Preserved in ShiftTimelineEvent for replay/audit.
+MANUAL_DISPATCH_CANCELLED = "dispatch.manual_cancelled"
+MANUAL_RETRY_TRIGGERED    = "dispatch.manual_retry"
+MANUAL_ASSIGNMENT_CREATED = "dispatch.manual_assigned"
+MANUAL_SESSION_CLOSED     = "dispatch.session_closed"

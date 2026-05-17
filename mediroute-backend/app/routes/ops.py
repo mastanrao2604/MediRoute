@@ -33,8 +33,13 @@ from ..ws_manager import ws_manager
 from ..dispatch.engine import (
     start_dispatch, get_dispatch_metrics, dispatch_events,
     is_dispatch_enabled, set_dispatch_enabled, get_semaphore_utilization,
+    cancel_dispatch_session,
 )
-from ..dispatch.events import MANUAL_OVERRIDE, SHIFT_CREATED, OFFER_TIMED_OUT
+from ..dispatch.events import (
+    MANUAL_OVERRIDE, SHIFT_CREATED, OFFER_TIMED_OUT,
+    MANUAL_DISPATCH_CANCELLED, MANUAL_RETRY_TRIGGERED,
+    MANUAL_ASSIGNMENT_CREATED, MANUAL_SESSION_CLOSED,
+)
 from ..dispatch.janitor import get_janitor_health, JANITOR_INTERVAL_SEC
 
 logger = logging.getLogger(__name__)
@@ -178,12 +183,34 @@ async def manual_assign(
     if not nurse:
         raise HTTPException(status_code=404, detail="Nurse not found.")
 
+    # Guard: prevent duplicate assignments (LiveAssignment.shift_request_id is UNIQUE)
+    existing_assignment = db.query(models.LiveAssignment).filter(
+        models.LiveAssignment.shift_request_id == req.shift_id,
+    ).first()
+    if existing_assignment:
+        raise HTTPException(status_code=409, detail="Shift already has an active assignment.")
+
     now = datetime.utcnow()
 
-    # Create a manual dispatch session if one doesn't exist
+    # If an active dispatch session is running, cancel it before assigning
     session = db.query(models.DispatchSession).filter(
         models.DispatchSession.shift_request_id == req.shift_id
     ).first()
+    if session and session.status == models.DispatchSessionStatus.active:
+        pending = db.query(models.DispatchOffer).filter(
+            models.DispatchOffer.session_id == session.id,
+            models.DispatchOffer.status == models.OfferStatus.pending,
+        ).all()
+        for o in pending:
+            o.status = models.OfferStatus.cancelled
+            o.responded_at = now
+        session.status = models.DispatchSessionStatus.cancelled
+        session.completed_at = now
+        db.flush()
+        # Wake up the dispatch engine so it stops at the next wave boundary
+        cancel_dispatch_session(session.id)
+
+    # Create a manual dispatch session if one doesn't exist
     if not session:
         session = models.DispatchSession(
             shift_request_id=req.shift_id,
@@ -235,10 +262,15 @@ async def manual_assign(
     # Timeline event
     event = models.ShiftTimelineEvent(
         shift_request_id=req.shift_id,
-        event_type=MANUAL_OVERRIDE,
+        event_type=MANUAL_ASSIGNMENT_CREATED,
         actor_user_id=admin.id,
         city_id=shift.city_id,
-        payload={"nurse_id": req.nurse_user_id, "reason": req.reason, "admin_id": admin.id},
+        payload={
+            "nurse_id": req.nurse_user_id,
+            "nurse_name": nurse.name or f"Nurse #{req.nurse_user_id}",
+            "reason": req.reason,
+            "admin_id": admin.id,
+        },
     )
     db.add(event)
     db.commit()
@@ -273,10 +305,19 @@ async def manual_assign(
 @router.post("/re-dispatch/{shift_id}")
 async def re_dispatch(
     shift_id: int,
+    reason: Optional[str] = None,
     admin: models.User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    """Restart dispatch for an expired or failed shift."""
+    """
+    Restart dispatch for an expired, failed, or cancelled shift.
+
+    Deletes old offers then session (required — DispatchSession.shift_request_id
+    has a unique constraint, so a new session cannot be created while the old one
+    exists). Shift-level timeline events are preserved.
+
+    Rejects if shift is currently dispatching — use cancel-dispatch first.
+    """
     shift = db.query(models.ShiftRequest).filter(
         models.ShiftRequest.id == shift_id
     ).first()
@@ -284,23 +325,42 @@ async def re_dispatch(
         raise HTTPException(status_code=404, detail="Shift not found.")
     if shift.status == models.ShiftRequestStatus.filled:
         raise HTTPException(status_code=409, detail="Shift is already filled.")
+    if shift.status == models.ShiftRequestStatus.dispatching:
+        raise HTTPException(
+            status_code=409,
+            detail="Dispatch is currently active. Use cancel-dispatch first.",
+        )
 
-    # Reset shift to open so dispatch engine will run it
-    shift.status = models.ShiftRequestStatus.open
-
-    # Remove old dispatch session so a new one can be created
+    # Clean up old session — must delete offers before session (FK constraint)
     old_session = db.query(models.DispatchSession).filter(
         models.DispatchSession.shift_request_id == shift_id
     ).first()
     if old_session:
+        db.query(models.DispatchOffer).filter(
+            models.DispatchOffer.session_id == old_session.id
+        ).delete(synchronize_session=False)
         db.delete(old_session)
+        db.flush()
 
+    # Reset shift to open
+    shift.status = models.ShiftRequestStatus.open
+
+    # Audit trail
+    db.add(models.ShiftTimelineEvent(
+        shift_request_id=shift_id,
+        event_type=MANUAL_RETRY_TRIGGERED,
+        actor_user_id=admin.id,
+        city_id=shift.city_id,
+        payload={"admin_id": admin.id, "reason": reason or ""},
+    ))
     db.commit()
 
-    # Start dispatch
     await start_dispatch(shift_id)
 
-    logger.info("[ops] re-dispatch triggered for shift %d by admin %d", shift_id, admin.id)
+    logger.info(
+        "[ops] re-dispatch triggered for shift %d by admin %d (reason: %s)",
+        shift_id, admin.id, reason,
+    )
     return {"success": True, "message": f"Dispatch restarted for shift {shift_id}"}
 
 
@@ -736,4 +796,187 @@ def supply_snapshot(
             "shift_cancelled": failures_by_type.get("shift.cancelled", 0),
         },
         "db_ok": True,
+    }
+
+
+# ── Cancel active dispatch ─────────────────────────────────────────────────────
+
+@router.post("/cancel-dispatch/{shift_id}")
+async def cancel_dispatch(
+    shift_id: int,
+    reason: Optional[str] = None,
+    admin: models.User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Stop an active dispatch for a shift.
+
+    - Cancels all pending offers (nurses will no longer see the offer)
+    - Marks the dispatch session as cancelled
+    - Resets shift status to 'open' (ready for re-dispatch or manual assign)
+    - Signals the dispatch engine to stop at the next wave boundary
+    - Emits MANUAL_DISPATCH_CANCELLED timeline event for full audit trail
+
+    Use when: dispatch is stuck, wrong nurses notified, or ops needs to intervene.
+    """
+    shift = db.query(models.ShiftRequest).filter(
+        models.ShiftRequest.id == shift_id
+    ).first()
+    if not shift:
+        raise HTTPException(status_code=404, detail="Shift not found.")
+    if shift.status != models.ShiftRequestStatus.dispatching:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Shift is not actively dispatching (status: {shift.status.value}). Nothing to cancel.",
+        )
+
+    session = db.query(models.DispatchSession).filter(
+        models.DispatchSession.shift_request_id == shift_id,
+        models.DispatchSession.status == models.DispatchSessionStatus.active,
+    ).first()
+    if not session:
+        # Shift status inconsistency — just reset it
+        shift.status = models.ShiftRequestStatus.open
+        db.commit()
+        return {
+            "success": True,
+            "cancelled_offers": 0,
+            "message": "Shift was dispatching but no active session found. Reset to open.",
+        }
+
+    now = datetime.utcnow()
+
+    # Cancel all pending offers
+    pending_offers = db.query(models.DispatchOffer).filter(
+        models.DispatchOffer.session_id == session.id,
+        models.DispatchOffer.status == models.OfferStatus.pending,
+    ).all()
+    cancelled_count = len(pending_offers)
+    for offer in pending_offers:
+        offer.status = models.OfferStatus.cancelled
+        offer.responded_at = now
+
+    # Close the session
+    session.status = models.DispatchSessionStatus.cancelled
+    session.completed_at = now
+
+    # Reset shift to open — admins choose whether to retry or manually assign
+    shift.status = models.ShiftRequestStatus.open
+
+    # Audit trail
+    db.add(models.ShiftTimelineEvent(
+        shift_request_id=shift_id,
+        event_type=MANUAL_DISPATCH_CANCELLED,
+        actor_user_id=admin.id,
+        city_id=shift.city_id,
+        payload={
+            "admin_id": admin.id,
+            "reason": reason or "",
+            "cancelled_offers": cancelled_count,
+            "session_id": session.id,
+        },
+    ))
+    db.commit()
+
+    # Signal dispatch engine to stop at next wave boundary (non-blocking)
+    cancel_dispatch_session(session.id)
+
+    # Notify hospital
+    await ws_manager.send(shift.hospital_user_id, {
+        "type": "dispatch_error",
+        "shift_id": shift_id,
+        "reason": "manual_cancelled",
+        "message": "Dispatch cancelled by operations team. Shift is open for re-dispatch.",
+    })
+
+    logger.warning(
+        "[ops] admin %d cancelled dispatch for shift %d (session %d, %d offers, reason: %s)",
+        admin.id, shift_id, session.id, cancelled_count, reason,
+    )
+    return {
+        "success": True,
+        "cancelled_offers": cancelled_count,
+        "session_id": session.id,
+        "message": f"Dispatch cancelled. {cancelled_count} pending offers expired. Shift reset to open.",
+    }
+
+
+# ── Close stuck / orphaned session ────────────────────────────────────────────
+
+@router.post("/close-session/{session_id}")
+def close_session(
+    session_id: int,
+    reason: Optional[str] = None,
+    admin: models.User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Force-close an orphaned dispatch session stuck in 'active' state.
+
+    Use when: the dispatch engine crashed or restarted mid-dispatch, leaving a
+    session in 'active' with no engine running for it. This cleans up the state
+    so the shift can be re-dispatched or manually assigned.
+
+    Any remaining pending offers are expired. Shift is reset to 'open'.
+    Emits MANUAL_SESSION_CLOSED timeline event for audit.
+    """
+    session = db.query(models.DispatchSession).filter(
+        models.DispatchSession.id == session_id,
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    if session.status != models.DispatchSessionStatus.active:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Session is not active (status: {session.status.value}). Already closed.",
+        )
+
+    now = datetime.utcnow()
+
+    # Expire remaining pending offers
+    pending_offers = db.query(models.DispatchOffer).filter(
+        models.DispatchOffer.session_id == session_id,
+        models.DispatchOffer.status == models.OfferStatus.pending,
+    ).all()
+    for offer in pending_offers:
+        offer.status = models.OfferStatus.timed_out
+        offer.responded_at = now
+
+    # Mark session failed
+    session.status = models.DispatchSessionStatus.failed
+    session.completed_at = now
+
+    # Get shift for timeline event + status reset
+    shift = db.query(models.ShiftRequest).filter(
+        models.ShiftRequest.id == session.shift_request_id
+    ).first()
+
+    # Reset shift if it was stuck in dispatching
+    if shift and shift.status == models.ShiftRequestStatus.dispatching:
+        shift.status = models.ShiftRequestStatus.open
+
+    # Audit trail
+    db.add(models.ShiftTimelineEvent(
+        shift_request_id=session.shift_request_id,
+        event_type=MANUAL_SESSION_CLOSED,
+        actor_user_id=admin.id,
+        city_id=shift.city_id if shift else "HYD",
+        payload={
+            "admin_id": admin.id,
+            "reason": reason or "",
+            "session_id": session_id,
+            "expired_offers": len(pending_offers),
+        },
+    ))
+    db.commit()
+
+    logger.warning(
+        "[ops] admin %d closed session %d (shift %d, %d offers expired)",
+        admin.id, session_id, session.shift_request_id, len(pending_offers),
+    )
+    return {
+        "success": True,
+        "session_id": session_id,
+        "expired_offers": len(pending_offers),
+        "message": f"Session {session_id} closed. {len(pending_offers)} pending offers expired.",
     }

@@ -196,6 +196,27 @@ _executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="dispatch-db")
 # Phase 2: replace with Redis key presence check.
 dispatch_events: dict[int, asyncio.Event] = {}
 
+# ── Manual cancellation signal ────────────────────────────────────────────────
+# session_ids cancelled via POST /admin/ops/cancel-dispatch.
+# Checked at every wave boundary so in-flight dispatches stop cleanly
+# without corrupting DB state. Cleaned up in the dispatch finally block.
+_cancelled_sessions: set[int] = set()
+
+
+def cancel_dispatch_session(session_id: int) -> None:
+    """
+    Signal the dispatch engine to stop a session at the next wave boundary.
+    Called by POST /admin/ops/cancel-dispatch. Thread-safe: set.add is atomic
+    in CPython. Caller is responsible for all DB state mutations.
+    Also fires the asyncio.Event so _wait_for_acceptance returns immediately
+    (avoids waiting out the full wave timeout).
+    """
+    _cancelled_sessions.add(session_id)
+    event = dispatch_events.get(session_id)
+    if event is not None:
+        event.set()
+
+
 # ── Per-urgency dispatch parameters ──────────────────────────────────────────
 URGENCY_CONFIG: dict[str, dict] = {
     "emergency": {
@@ -761,6 +782,15 @@ async def _run_dispatch_inner(db, shift_id: int) -> None:
 
     try:
         for wave_idx, wave_size in enumerate(wave_sizes):
+            # External cancellation check — set by cancel_dispatch_session()
+            # Checked before any DB work so no new offers are ever sent after cancel.
+            if session.id in _cancelled_sessions:
+                logger.info(
+                    "[dispatch] shift %d session %d: externally cancelled — stopping at wave boundary",
+                    shift_id, session.id,
+                )
+                filled = True  # skip the "all waves exhausted" / shift-expired handling
+                break
             wave_num = wave_idx + 1
             current_radius = base_radius + (wave_idx * radius_step)
 
@@ -1035,8 +1065,9 @@ async def _run_dispatch_inner(db, shift_id: int) -> None:
             logger.warning("[dispatch] shift %d EXPIRED after %d waves", shift_id, max_waves)
 
     finally:
-        # Always clean up dispatch event
+        # Always clean up dispatch event and cancellation signal
         dispatch_events.pop(session.id, None)
+        _cancelled_sessions.discard(session.id)
 
 
 async def start_dispatch(shift_id: int) -> asyncio.Task:

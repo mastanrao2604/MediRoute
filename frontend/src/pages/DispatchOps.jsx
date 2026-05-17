@@ -112,6 +112,10 @@ const EVENT_LABELS = {
   'assignment.completed':    { label: 'Completed',              color: 'green'  },
   'assignment.no_show':      { label: 'No Show',                color: 'red'    },
   'assignment.cancelled':    { label: 'Assignment Cancelled',   color: 'red'    },
+  'dispatch.manual_cancelled': { label: 'Dispatch Cancelled',     color: 'red'    },
+  'dispatch.manual_retry':     { label: 'Retry Triggered',        color: 'blue'   },
+  'dispatch.manual_assigned':  { label: 'Manually Assigned',      color: 'green'  },
+  'dispatch.session_closed':   { label: 'Session Closed',         color: 'gray'   },
 };
 
 const DOT_COLORS = {
@@ -148,6 +152,14 @@ function eventSummary(ev) {
       return p.distance_m != null ? `${Math.round(p.distance_m)}m from hospital` : null;
     case 'dispatch.manual_override':
       return p.reason ? `"${p.reason}"` : null;
+    case 'dispatch.manual_cancelled':
+      return p.reason ? `"${p.reason}"` : (p.cancelled_offers != null ? `${p.cancelled_offers} offers cancelled` : null);
+    case 'dispatch.manual_retry':
+      return p.reason ? `"${p.reason}"` : null;
+    case 'dispatch.manual_assigned':
+      return p.nurse_name ? `${p.nurse_name}${p.reason ? ` · "${p.reason}"` : ''}` : null;
+    case 'dispatch.session_closed':
+      return p.expired_offers != null ? `${p.expired_offers} offers expired` : null;
     default:
       return null;
   }
@@ -303,6 +315,62 @@ function TimelineDrawer({ shiftId, onClose, adminSecret }) {
 
 // â”€â”€ Manual Assign Modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+function CancelDispatchModal({ shiftId, onClose, adminSecret, onAction }) {
+  const [reason, setReason] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    try {
+      const params = reason.trim() ? `?reason=${encodeURIComponent(reason.trim())}` : '';
+      const res = await api.post(`/admin/ops/cancel-dispatch/${shiftId}${params}`, null, {
+        headers: { 'X-Admin-Secret': adminSecret },
+      });
+      onAction(res.data.message || 'Dispatch cancelled.');
+      onClose();
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Cancel failed.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6" onClick={e => e.stopPropagation()}>
+        <h3 className="font-bold text-gray-900 mb-1">Cancel Dispatch &mdash; Shift #{shiftId}</h3>
+        <p className="text-xs text-gray-500 mb-4">
+          Stops dispatch, cancels pending offers, resets shift to open.
+          Use when dispatch is stuck or incorrect nurses are being notified.
+        </p>
+        <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+          <input
+            type="text"
+            placeholder="Reason (optional)"
+            value={reason}
+            onChange={e => setReason(e.target.value)}
+            className="border border-gray-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-red-400"
+          />
+          {error && <p className="text-xs text-red-600">{error}</p>}
+          <div className="flex gap-2 mt-1">
+            <button type="button" onClick={onClose}
+              className="flex-1 border border-gray-300 text-gray-700 text-sm font-medium py-2.5 rounded-xl hover:bg-gray-50">
+              Back
+            </button>
+            <button type="submit" disabled={loading}
+              className="flex-1 bg-red-600 text-white text-sm font-semibold py-2.5 rounded-xl hover:bg-red-700 disabled:opacity-60">
+              {loading ? 'Cancelling…' : 'Cancel Dispatch'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function ManualAssignModal({ shiftId, onClose, adminSecret, onSuccess }) {
   const [nurseId, setNurseId] = useState('');
   const [reason, setReason] = useState('');
@@ -383,6 +451,7 @@ export default function DispatchOps() {
   const [activeTab, setActiveTab] = useState('live'); // 'live' | 'failed'
   const [timelineShiftId, setTimelineShiftId] = useState(null);
   const [assignShiftId, setAssignShiftId] = useState(null);
+  const [cancelDispatchShiftId, setCancelDispatchShiftId] = useState(null);
   const [toast, setToast] = useState('');
   const [toggling, setToggling] = useState(false);
   const [lookupId, setLookupId] = useState('');   // shift timeline lookup
@@ -499,6 +568,18 @@ export default function DispatchOps() {
     }
   }
 
+  async function handleCancelDispatch(shiftId, reason) {
+    try {
+      const params = reason ? `?reason=${encodeURIComponent(reason)}` : '';
+      const res = await api.post(`/admin/ops/cancel-dispatch/${shiftId}${params}`, null, { headers: hdrs() });
+      showToast(res.data.message || 'Dispatch cancelled.');
+      setCancelDispatchShiftId(null);
+      fetchLiveShifts();
+    } catch (err) {
+      showToast(err.response?.data?.detail || 'Cancel failed.');
+    }
+  }
+
   async function handleReDispatch(shiftId) {
     if (!window.confirm(`Re-dispatch shift ${shiftId}?`)) return;
     try {
@@ -581,6 +662,16 @@ export default function DispatchOps() {
           shiftId={timelineShiftId}
           onClose={() => setTimelineShiftId(null)}
           adminSecret={adminSecret}
+        />
+      )}
+
+      {/* Cancel dispatch modal */}
+      {cancelDispatchShiftId && (
+        <CancelDispatchModal
+          shiftId={cancelDispatchShiftId}
+          onClose={() => setCancelDispatchShiftId(null)}
+          adminSecret={adminSecret}
+          onAction={(msg) => { showToast(msg); fetchLiveShifts(); }}
         />
       )}
 
@@ -930,6 +1021,14 @@ export default function DispatchOps() {
                                 className="text-xs text-yellow-600 hover:underline"
                               >
                                 Expire
+                              </button>
+                            )}
+                            {s.status === 'dispatching' && (
+                              <button
+                                onClick={() => setCancelDispatchShiftId(s.shift_id)}
+                                className="text-xs text-red-600 hover:underline"
+                              >
+                                Cancel
                               </button>
                             )}
                             {s.status !== 'filled' && (
