@@ -659,6 +659,8 @@ async def run_dispatch(shift_id: int) -> None:
                     logger.error("[dispatch] unhandled error for shift %d: %s", shift_id, exc, exc_info=True)
                     _metrics["dispatches_failed"] += 1
                     try:
+                        shift_for_err = await _run_sync(_get_shift_sync, db, shift_id)
+                        city_id_for_err = shift_for_err.city_id if shift_for_err else "HYD"
                         session = await _run_sync(
                             lambda d: d.query(models.DispatchSession).filter(
                                 models.DispatchSession.shift_request_id == shift_id
@@ -673,6 +675,11 @@ async def run_dispatch(shift_id: int) -> None:
                         await _run_sync(
                             _update_shift_status_sync, db, shift_id,
                             models.ShiftRequestStatus.expired
+                        )
+                        # Emit dispatch.failed timeline event for operational debugging
+                        await _run_sync(
+                            _write_timeline_event_sync, db, shift_id, DISPATCH_FAILED,
+                            city_id_for_err, None, {"error": str(exc)[:200]},
                         )
                     except Exception:
                         pass

@@ -91,103 +91,215 @@ function KVRow({ label, value, valueClass }) {
   );
 }
 
-// â”€â”€ Timeline drawer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const EVENT_LABELS = {
-  'shift.created':          { label: 'Shift Created',     color: 'blue'   },
-  'shift.dispatching':      { label: 'Dispatching',        color: 'blue'   },
-  'shift.filled':           { label: 'Shift Filled',       color: 'green'  },
-  'shift.expired':          { label: 'Shift Expired',      color: 'red'    },
-  'shift.cancelled':        { label: 'Cancelled',          color: 'red'    },
-  'offer.sent':             { label: 'Offers Sent',        color: 'blue'   },
-  'offer.accepted':         { label: 'Offer Accepted',     color: 'green'  },
-  'offer.declined':         { label: 'Offer Declined',     color: 'yellow' },
-  'offer.timed_out':        { label: 'Offer Expired',      color: 'yellow' },
-  'offer.cancelled':        { label: 'Offer Cancelled',    color: 'gray'   },
-  'dispatch.wave_exhausted':{ label: 'Wave Exhausted',     color: 'yellow' },
-  'dispatch.failed':        { label: 'Dispatch Failed',    color: 'red'    },
-  'dispatch.manual_override':{ label: 'Manual Override',  color: 'blue'   },
+  'shift.created':           { label: 'Shift Created',         color: 'blue'   },
+  'shift.dispatching':       { label: 'Dispatching',            color: 'blue'   },
+  'shift.filled':            { label: 'Shift Filled',           color: 'green'  },
+  'shift.expired':           { label: 'Shift Expired',          color: 'red'    },
+  'shift.cancelled':         { label: 'Cancelled',              color: 'red'    },
+  'offer.sent':              { label: 'Offers Sent',            color: 'blue'   },
+  'offer.accepted':          { label: 'Offer Accepted',         color: 'green'  },
+  'offer.declined':          { label: 'Offer Declined',         color: 'yellow' },
+  'offer.timed_out':         { label: 'Offer Expired',          color: 'yellow' },
+  'offer.cancelled':         { label: 'Offer Cancelled',        color: 'gray'   },
+  'dispatch.wave_exhausted': { label: 'Wave Exhausted',         color: 'yellow' },
+  'dispatch.failed':         { label: 'Dispatch Failed',        color: 'red'    },
+  'dispatch.manual_override':{ label: 'Manual Override',        color: 'blue'   },
+  'assignment.created':      { label: 'Assigned',               color: 'green'  },
+  'assignment.checked_in':   { label: 'Checked In',             color: 'green'  },
+  'assignment.checked_out':  { label: 'Checked Out',            color: 'blue'   },
+  'assignment.completed':    { label: 'Completed',              color: 'green'  },
+  'assignment.no_show':      { label: 'No Show',                color: 'red'    },
+  'assignment.cancelled':    { label: 'Assignment Cancelled',   color: 'red'    },
 };
+
+const DOT_COLORS = {
+  green:  'bg-green-400',
+  red:    'bg-red-400',
+  yellow: 'bg-yellow-400',
+  blue:   'bg-blue-500',
+  gray:   'bg-gray-300',
+};
+
+// Human-readable summary line for key events; raw payload remains in collapsible details
+function eventSummary(ev) {
+  const p = ev.payload || {};
+  switch (ev.event_type) {
+    case 'offer.sent':
+      return `Wave ${p.wave ?? '?'} · ${p.nurse_count ?? '?'} nurses · ${p.radius_km ?? '?'}km radius`;
+    case 'dispatch.wave_exhausted':
+      return `Wave ${p.wave ?? '?'} · ${p.timed_out_count ?? 0} nurses timed out · expanding to ${p.next_radius_km ?? '?'}km`;
+    case 'shift.filled':
+      return p.fill_time_sec != null
+        ? `Fill time: ${secToHuman(p.fill_time_sec)} · Wave ${p.wave ?? '?'} · Offer #${p.offer_id ?? '?'}`
+        : null;
+    case 'shift.expired':
+      return p.nurses_offered != null
+        ? `${p.waves_tried ?? '?'} waves tried · ${p.nurses_offered} nurses offered — none accepted`
+        : null;
+    case 'offer.accepted':
+      return ev.actor_name ? `Accepted by ${ev.actor_name}` : (p.offer_id ? `Offer #${p.offer_id}` : null);
+    case 'offer.declined':
+      return ev.actor_name ? `Declined by ${ev.actor_name}` : null;
+    case 'dispatch.failed':
+      return p.error ? `Error: ${p.error}` : null;
+    case 'assignment.checked_in':
+      return p.distance_m != null ? `${Math.round(p.distance_m)}m from hospital` : null;
+    case 'dispatch.manual_override':
+      return p.reason ? `"${p.reason}"` : null;
+    default:
+      return null;
+  }
+}
+
+function deltaTime(prevIso, curIso) {
+  if (!prevIso) return null;
+  const diffSec = Math.round((new Date(curIso) - new Date(prevIso)) / 1000);
+  if (diffSec < 1) return null;
+  if (diffSec < 60) return `+${diffSec}s`;
+  const m = Math.floor(diffSec / 60);
+  const s = diffSec % 60;
+  return s > 0 ? `+${m}m ${s}s` : `+${m}m`;
+}
 
 function TimelineDrawer({ shiftId, onClose, adminSecret }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const cancelRef = useRef(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      setLoading(true);
-      setError('');
-      try {
-        const res = await api.get(`/admin/ops/timeline/${shiftId}`, {
-          headers: { 'X-Admin-Secret': adminSecret },
-        });
-        if (!cancelled) setData(res.data);
-      } catch {
-        if (!cancelled) setError('Failed to load timeline.');
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+  const load = useCallback(async () => {
+    cancelRef.current = false;
+    setLoading(true);
+    setError('');
+    try {
+      const res = await api.get(`/admin/ops/timeline/${shiftId}`, {
+        headers: { 'X-Admin-Secret': adminSecret },
+      });
+      if (!cancelRef.current) setData(res.data);
+    } catch {
+      if (!cancelRef.current) setError('Failed to load timeline.');
+    } finally {
+      if (!cancelRef.current) setLoading(false);
     }
-    load();
-    return () => { cancelled = true; };
   }, [shiftId, adminSecret]);
 
+  useEffect(() => {
+    load();
+    return () => { cancelRef.current = true; };
+  }, [load]);
+
+  const d = data;
+  const session = d?.dispatch_session;
+
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-end"
-      onClick={onClose}
-    >
+    <div className="fixed inset-0 z-50 flex items-start justify-end" onClick={onClose}>
       <div
-        className="relative bg-white w-full max-w-lg h-full shadow-2xl overflow-y-auto"
+        className="relative bg-white w-full max-w-xl h-full shadow-2xl overflow-y-auto flex flex-col"
         onClick={e => e.stopPropagation()}
       >
-        <div className="sticky top-0 bg-white border-b border-gray-200 px-5 py-4 flex items-center justify-between">
-          <div>
-            <h3 className="font-bold text-gray-900 text-sm">Shift #{shiftId} Timeline</h3>
-            {data && (
-              <p className="text-xs text-gray-500 mt-0.5">
-                {data.hospital_name} Â· {data.role} Â· {data.urgency} Â·{' '}
-                <span className="font-medium">{data.status}</span>
+        {/* Header */}
+        <div className="sticky top-0 bg-white border-b border-gray-200 px-5 py-3 flex items-start justify-between gap-3 z-10">
+          <div className="min-w-0">
+            <h3 className="font-bold text-gray-900 text-sm">Shift #{shiftId} · Timeline</h3>
+            {d && (
+              <p className="text-xs text-gray-500 mt-0.5 truncate">
+                {d.hospital_name} · {d.role} · <span className="font-medium">{d.urgency}</span> ·{' '}
+                <Pill color={d.status === 'filled' ? 'green' : d.status === 'expired' || d.status === 'cancelled' ? 'red' : 'blue'}>
+                  {d.status}
+                </Pill>
               </p>
             )}
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-700 text-xl leading-none px-1">&times;</button>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={load}
+              disabled={loading}
+              className="text-xs text-indigo-600 hover:underline disabled:opacity-40"
+            >
+              {loading ? '…' : 'Refresh'}
+            </button>
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-700 text-xl leading-none px-1">&times;</button>
+          </div>
         </div>
 
-        <div className="px-5 py-4">
-          {loading && <p className="text-sm text-gray-500">Loading timelineâ€¦</p>}
+        {/* Summary panel */}
+        {d && (
+          <div className="bg-gray-50 border-b border-gray-200 px-5 py-3 grid grid-cols-3 gap-3 text-center text-xs">
+            <div>
+              <p className="text-gray-400 uppercase tracking-wide mb-0.5">Outcome</p>
+              <p className={`font-bold ${d.status === 'filled' ? 'text-green-700' : d.status === 'expired' || d.status === 'cancelled' ? 'text-red-600' : 'text-blue-600'}`}>
+                {d.status.toUpperCase()}
+              </p>
+            </div>
+            <div>
+              <p className="text-gray-400 uppercase tracking-wide mb-0.5">Fill Time</p>
+              <p className="font-bold text-gray-800">{d.fill_time_sec != null ? secToHuman(d.fill_time_sec) : '—'}</p>
+            </div>
+            <div>
+              <p className="text-gray-400 uppercase tracking-wide mb-0.5">Waves</p>
+              <p className="font-bold text-gray-800">
+                {session ? `${session.current_wave}${session.waves_exhausted ? ' / all' : ''}` : '—'}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Timeline body */}
+        <div className="px-5 py-4 flex-1">
+          {loading && <p className="text-sm text-gray-400">Loading timeline…</p>}
           {error && <p className="text-sm text-red-600">{error}</p>}
-          {data && data.timeline.length === 0 && (
-            <p className="text-sm text-gray-400">No timeline events yet.</p>
+          {d && d.timeline.length === 0 && (
+            <p className="text-sm text-gray-400 py-4">No timeline events recorded for this shift yet.</p>
           )}
-          {data && data.timeline.length > 0 && (
-            <ol className="relative border-l border-gray-200 ml-2">
-              {data.timeline.map((ev, i) => {
+          {d && d.timeline.length > 0 && (
+            <ol className="relative border-l-2 border-gray-100 ml-3">
+              {d.timeline.map((ev, i) => {
                 const meta = EVENT_LABELS[ev.event_type] || { label: ev.event_type, color: 'gray' };
+                const dotClass = DOT_COLORS[meta.color] || DOT_COLORS.gray;
+                const summary = eventSummary(ev);
+                const delta = deltaTime(d.timeline[i - 1]?.occurred_at, ev.occurred_at);
+                const hasPayload = ev.payload && Object.keys(ev.payload).length > 0;
+
                 return (
-                  <li key={ev.id} className="mb-5 ml-4">
-                    <div className="absolute -left-1.5 w-3 h-3 rounded-full bg-gray-300 border-2 border-white" />
-                    <div className="flex items-center gap-2 mb-1">
+                  <li key={ev.id} className="mb-5 ml-5 relative">
+                    <span className={`absolute -left-[26px] top-1 w-3 h-3 rounded-full border-2 border-white ${dotClass}`} />
+                    <div className="flex items-center gap-2 flex-wrap">
                       <Pill color={meta.color}>{meta.label}</Pill>
-                      <span className="text-xs text-gray-400">{fmt(ev.occurred_at)}</span>
+                      <span className="text-xs text-gray-400 font-mono">{fmt(ev.occurred_at)}</span>
+                      {delta && <span className="text-xs text-gray-300 font-mono">{delta}</span>}
                     </div>
-                    {ev.payload && Object.keys(ev.payload).length > 0 && (
-                      <pre className="text-xs text-gray-600 bg-gray-50 rounded p-2 overflow-x-auto whitespace-pre-wrap">
-                        {JSON.stringify(ev.payload, null, 2)}
-                      </pre>
+                    {summary && (
+                      <p className="text-xs text-gray-700 mt-1 font-medium">{summary}</p>
+                    )}
+                    {ev.actor_name && !summary?.includes(ev.actor_name) && (
+                      <p className="text-xs text-gray-400 mt-0.5">by {ev.actor_name}</p>
+                    )}
+                    {hasPayload && (
+                      <details className="mt-1.5">
+                        <summary className="text-xs text-gray-400 cursor-pointer select-none hover:text-gray-600">
+                          raw payload
+                        </summary>
+                        <pre className="text-xs text-gray-600 bg-gray-50 rounded p-2 mt-1 overflow-x-auto whitespace-pre-wrap leading-relaxed">
+                          {JSON.stringify(ev.payload, null, 2)}
+                        </pre>
+                      </details>
                     )}
                   </li>
                 );
               })}
             </ol>
           )}
+          {d && d.event_count > 0 && (
+            <p className="text-xs text-gray-300 text-right mt-2">{d.event_count} events</p>
+          )}
         </div>
       </div>
     </div>
   );
 }
+
 
 // â”€â”€ Manual Assign Modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -273,6 +385,7 @@ export default function DispatchOps() {
   const [assignShiftId, setAssignShiftId] = useState(null);
   const [toast, setToast] = useState('');
   const [toggling, setToggling] = useState(false);
+  const [lookupId, setLookupId] = useState('');   // shift timeline lookup
 
   // Interval refs â€” cleared on unmount to prevent memory leaks
   const pollHealth = useRef(null);
@@ -731,6 +844,25 @@ export default function DispatchOps() {
 
         {/* â•â• SHIFT TABLES (Live + Failed) â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
         <section>
+          {/* Shift ID lookup */}
+          <div className="flex items-center gap-2 mb-3 flex-wrap">
+            <span className="text-xs text-gray-400 whitespace-nowrap">Jump to timeline:</span>
+            <input
+              type="number"
+              placeholder="Shift ID"
+              value={lookupId}
+              onChange={e => setLookupId(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && lookupId) setTimelineShiftId(parseInt(lookupId, 10)); }}
+              className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm w-28 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+            />
+            <button
+              onClick={() => { if (lookupId) setTimelineShiftId(parseInt(lookupId, 10)); }}
+              className="text-xs bg-indigo-50 text-indigo-700 hover:bg-indigo-100 px-3 py-1.5 rounded-lg font-medium"
+            >
+              View Timeline
+            </button>
+          </div>
+
           <div className="flex gap-1 border-b border-gray-200 mb-4">
             {['live', 'failed'].map(tab => (
               <button

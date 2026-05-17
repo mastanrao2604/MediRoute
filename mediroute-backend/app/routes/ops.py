@@ -495,7 +495,13 @@ def shift_timeline(
     """
     Chronological timeline of all dispatch events for a shift.
     Use this to debug incidents: what happened, when, and why.
-    Lightweight query — indexed on (shift_request_id, occurred_at).
+
+    Enhanced v2:
+    - actor_names: resolves all actor_user_ids to names in one query (no N+1)
+    - fill_time_sec: pre-calculated for summary display
+    - dispatch_session: session state context for the timeline header
+    - actor_name on each event: ready for direct display
+    - Bounded to 200 events max (shifts never approach this in practice)
     """
     shift = db.query(models.ShiftRequest).filter(
         models.ShiftRequest.id == shift_id
@@ -507,8 +513,28 @@ def shift_timeline(
         db.query(models.ShiftTimelineEvent)
         .filter(models.ShiftTimelineEvent.shift_request_id == shift_id)
         .order_by(models.ShiftTimelineEvent.occurred_at.asc())
+        .limit(200)
         .all()
     )
+
+    # Resolve actor names in one query — no N+1
+    actor_ids = {e.actor_user_id for e in events if e.actor_user_id is not None}
+    actor_names: dict = {}
+    if actor_ids:
+        rows = db.query(models.User.id, models.User.name).filter(
+            models.User.id.in_(actor_ids)
+        ).all()
+        actor_names = {row.id: (row.name or f"User #{row.id}") for row in rows}
+
+    # Dispatch session context
+    session = db.query(models.DispatchSession).filter(
+        models.DispatchSession.shift_request_id == shift_id
+    ).first()
+
+    # Pre-calculate fill time for summary display
+    fill_time_sec = None
+    if shift.filled_at and shift.created_at:
+        fill_time_sec = int((shift.filled_at - shift.created_at).total_seconds())
 
     return {
         "shift_id": shift_id,
@@ -518,12 +544,23 @@ def shift_timeline(
         "status": shift.status.value,
         "created_at": shift.created_at.isoformat() if shift.created_at else None,
         "filled_at": shift.filled_at.isoformat() if shift.filled_at else None,
+        "fill_time_sec": fill_time_sec,
+        "actor_names": actor_names,
+        "dispatch_session": {
+            "id": session.id,
+            "status": session.status.value,
+            "current_wave": session.current_wave,
+            "waves_exhausted": session.waves_exhausted,
+            "started_at": session.started_at.isoformat() if session.started_at else None,
+            "completed_at": session.completed_at.isoformat() if session.completed_at else None,
+        } if session else None,
         "timeline": [
             {
                 "id": e.id,
                 "event_type": e.event_type,
                 "occurred_at": e.occurred_at.isoformat(),
                 "actor_user_id": e.actor_user_id,
+                "actor_name": actor_names.get(e.actor_user_id) if e.actor_user_id else None,
                 "payload": e.payload or {},
             }
             for e in events
