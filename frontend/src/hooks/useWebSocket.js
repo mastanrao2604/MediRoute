@@ -128,6 +128,35 @@ export function useWebSocket(user, token, onMessage) {
     };
   }, [user?.id, token]); // reconnect if user/token changes
 
+  // App-resume reconnect: when Android brings the app back to foreground after
+  // Doze / NAT timeout killed the WS connection, reconnect immediately instead
+  // of waiting for the next backoff timer to fire.
+  useEffect(() => {
+    if (!user?.id || !token) return;
+    let listener;
+    (async () => {
+      try {
+        const { App } = await import('@capacitor/app');
+        listener = await App.addListener('appStateChange', ({ isActive }) => {
+          if (!isActive) return;
+          const ws = wsRef.current;
+          const isDead = !ws
+            || ws.readyState === WebSocket.CLOSED
+            || ws.readyState === WebSocket.CLOSING;
+          if (isDead && mountedRef.current) {
+            // Cancel any pending backoff timer and reconnect immediately
+            clearTimeout(reconnectTimer.current);
+            backoffRef.current = 1;
+            connectRef.current?.();
+          }
+        });
+      } catch {
+        // Not in Capacitor (browser / PWA) — skip
+      }
+    })();
+    return () => { listener?.remove?.(); };
+  }, [user?.id, token]);
+
   const isConnected = wsRef.current?.readyState === WebSocket.OPEN;
   return { isConnected };
 }

@@ -538,6 +538,23 @@ def _get_device_tokens_sync(db, user_ids: list[int]) -> dict[int, str]:
     return {r.user_id: r.fcm_token for r in rows}
 
 
+def _delete_device_token_sync(db, fcm_token: str) -> None:
+    """
+    Remove an invalid/unregistered FCM token from device_tokens.
+    Called after FCM returns 'invalid_token' to stop wasting sends.
+    """
+    try:
+        deleted = db.query(models.DeviceToken).filter(
+            models.DeviceToken.fcm_token == fcm_token
+        ).delete(synchronize_session=False)
+        db.commit()
+        if deleted:
+            logger.info("[dispatch] Deleted invalid FCM token: %s...", fcm_token[:12])
+    except Exception as exc:
+        logger.warning("[dispatch] Failed to delete invalid FCM token: %s", exc)
+        db.rollback()
+
+
 def _get_shift_with_hospital_sync(db, shift_id: int):
     """Return (shift, hospital_user) tuple."""
     shift = db.query(models.ShiftRequest).filter(
@@ -558,17 +575,29 @@ async def _run_sync(fn, *args):
 
 
 async def _notify_wave(
-    ws,
-    fcm,
+    db,
+    fcm: dict,
     offers: list[models.DispatchOffer],
     shift: models.ShiftRequest,
     wave_timeout_sec: int,
 ) -> None:
-    """Deliver dispatch offers to nurses via WebSocket + FCM fallback."""
+    """
+    Deliver dispatch offers to nurses via WebSocket (primary) + FCM (fallback).
+
+    FCM is sent in the thread-pool executor so it never blocks the event loop
+    (the Firebase Admin SDK makes a synchronous HTTP call internally).
+
+    Invalid FCM tokens returned by Firebase are immediately deleted from the DB
+    so future waves don't waste time sending to dead tokens.
+    """
     from ..ws_manager import ws_manager
     from ..utils.fcm import send_dispatch_offer
 
-    expires_at_str = offers[0].expires_at.strftime("%H:%M:%S") if offers else ""
+    loop = asyncio.get_running_loop()
+    ws_count = 0
+    fcm_count = 0
+    fcm_fail = 0
+    invalid_tokens: list[str] = []  # collected for cleanup after the loop
 
     for offer in offers:
         payload = {
@@ -591,21 +620,45 @@ async def _notify_wave(
         }
 
         ws_delivered = await ws_manager.send(offer.nurse_user_id, payload)
+        if ws_delivered:
+            ws_count += 1
 
-        # FCM fallback if not connected via WS
-        if not ws_delivered and fcm:
+        # FCM fallback: nurse not connected via WS (background / killed / offline)
+        elif fcm:
             token = fcm.get(offer.nurse_user_id)
             if token:
-                send_dispatch_offer(
-                    fcm_token=token,
-                    offer_id=offer.id,
-                    shift_id=shift.id,
-                    hospital_name=shift.hospital_name,
-                    role=shift.role_required.value,
-                    urgency=shift.urgency.value,
-                    expires_in_sec=wave_timeout_sec,
-                    pay_rate=shift.pay_rate,
+                # Run in executor — Firebase Admin SDK is blocking HTTP; must not touch event loop
+                ok, err_cat = await loop.run_in_executor(
+                    _executor,
+                    partial(
+                        send_dispatch_offer,
+                        fcm_token=token,
+                        offer_id=offer.id,
+                        shift_id=shift.id,
+                        hospital_name=shift.hospital_name,
+                        role=shift.role_required.value,
+                        urgency=shift.urgency.value,
+                        expires_in_sec=wave_timeout_sec,
+                        pay_rate=shift.pay_rate,
+                    ),
                 )
+                if ok:
+                    fcm_count += 1
+                else:
+                    fcm_fail += 1
+                    if err_cat == "invalid_token":
+                        invalid_tokens.append(token)
+
+    # Clean up invalid FCM tokens in executor (doesn't block dispatch)
+    for bad_token in invalid_tokens:
+        await loop.run_in_executor(
+            _executor, partial(_delete_device_token_sync, db, bad_token)
+        )
+
+    logger.info(
+        "[dispatch] shift %d wave notify: ws=%d fcm_ok=%d fcm_fail=%d nurses=%d",
+        shift.id, ws_count, fcm_count, fcm_fail, len(offers),
+    )
 
 
 async def _wait_for_acceptance(session_id: int, timeout_sec: int) -> bool:
@@ -854,8 +907,8 @@ async def _run_dispatch_inner(db, shift_id: int) -> None:
                 _executor, functools.partial(_get_device_tokens_sync, db, nurse_ids)
             )
 
-            # 7. Notify nurses (WS primary, FCM fallback)
-            await _notify_wave(None, fcm_tokens, offers, shift, wave_timeout)
+            # 7. Notify nurses (WS primary, FCM fallback — runs in executor)
+            await _notify_wave(db, fcm_tokens, offers, shift, wave_timeout)
 
             # Notify hospital: wave dispatched
             await _notify_hospital(shift.hospital_user_id, shift_id, "dispatch_wave_update", {

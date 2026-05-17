@@ -9,6 +9,7 @@ import InstallPrompt from './components/InstallPrompt';
 import UpdatePrompt from './components/UpdatePrompt';
 import { getPostLoginRoute } from './utils/authNav';
 import { useWebSocket } from './hooks/useWebSocket';
+import { usePushNotifications } from './hooks/usePushNotifications';
 import DispatchOfferModal from './components/DispatchOfferModal';
 
 // ── Global Error Boundary ─────────────────────────────────────────────────────
@@ -250,6 +251,10 @@ function DispatchManager() {
   // Only connect if authenticated (nurse eligible roles OR recruiter for hospital updates)
   const shouldConnect = !!token && !!user;
   useWebSocket(shouldConnect ? user : null, token, handleMessage);
+
+  // FCM token registration + notification tap routing (Capacitor Android only).
+  // onDispatchOffer reuses handleMessage so deduplication logic is shared.
+  usePushNotifications(shouldConnect ? user : null, token, handleMessage);
 
   if (!currentOffer) return null;
 

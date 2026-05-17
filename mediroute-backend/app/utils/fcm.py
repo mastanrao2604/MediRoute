@@ -9,8 +9,22 @@ Missing credentials → graceful degradation:
   - All push calls become no-ops
   - WebSocket delivery still works as primary channel
 
+Return type:
+    All public send_* functions return tuple[bool, str | None]:
+        (success, error_category)
+    error_category is None on success, or one of:
+        'invalid_token'  — token unregistered/invalid; caller should delete from DB
+        'quota'          — FCM quota exceeded; back off
+        'server_error'   — transient Firebase error; may retry later
+        'network'        — connection/timeout error; may retry
+        'unknown'        — unclassified; log and continue
+
 Usage:
-    from app.utils.fcm import send_dispatch_offer, send_assignment_confirmed
+    from app.utils.fcm import send_dispatch_offer
+
+    ok, err = send_dispatch_offer(fcm_token=token, ...)
+    if not ok and err == 'invalid_token':
+        # delete token from DB
 """
 import json
 import logging
@@ -21,6 +35,9 @@ logger = logging.getLogger(__name__)
 
 _fcm_app = None
 _fcm_enabled = False
+
+# Android notification channel ID — must match usePushNotifications.js createChannel id
+DISPATCH_CHANNEL_ID = "dispatch"
 
 
 def _init_firebase() -> bool:
@@ -53,21 +70,68 @@ def _init_firebase() -> bool:
         return False
 
 
+def _categorize_fcm_error(exc: Exception) -> str:
+    """
+    Classify a Firebase messaging exception for operational handling.
+
+    Returns one of: 'invalid_token', 'quota', 'server_error', 'network', 'unknown'
+    'invalid_token' means the token should be deleted from the DB — the device
+    has unregistered or the token is malformed.
+    """
+    exc_class = type(exc).__name__
+    exc_msg = str(exc).lower()
+
+    # Unregistered / invalid token — must be cleaned up to stop wasted sends
+    if exc_class in ("UnregisteredError", "SenderIdMismatchError"):
+        return "invalid_token"
+    if exc_class == "InvalidArgumentError" and "registration-token" in exc_msg:
+        return "invalid_token"
+    if any(p in exc_msg for p in (
+        "registration-token-not-registered",
+        "invalid registration token",
+        "not registered",
+    )):
+        return "invalid_token"
+
+    # Quota exceeded
+    if exc_class == "QuotaExceededError" or "quota" in exc_msg:
+        return "quota"
+
+    # Transient Firebase server error
+    if exc_class in ("InternalError", "UnavailableError"):
+        return "server_error"
+
+    # Network / timeout
+    if any(p in exc_msg for p in ("timeout", "connection", "socket", "network")):
+        return "network"
+
+    return "unknown"
+
+
 def send_push_notification(
     fcm_token: str,
     title: str,
     body: str,
     data: Optional[dict] = None,
     android_priority: str = "high",
-) -> bool:
+    channel_id: str = DISPATCH_CHANNEL_ID,
+) -> tuple[bool, Optional[str]]:
     """
-    Send a push notification via FCM. Returns True on success.
+    Send a push notification via FCM.
+
+    Returns (success, error_category):
+      (True, None)               — delivered
+      (False, 'invalid_token')   — token should be deleted from DB
+      (False, 'quota')           — rate-limited; back off
+      (False, 'server_error')    — transient Firebase error
+      (False, 'network')         — connection error
+      (False, 'unknown')         — unclassified
 
     Uses HIGH priority for dispatch offers so the OS wakes the app even in
     Doze mode (critical for Android background behavior on Indian mid-range devices).
     """
     if not _init_firebase():
-        return False
+        return False, None  # graceful no-op — WS is primary
 
     try:
         from firebase_admin import messaging
@@ -81,16 +145,29 @@ def send_push_notification(
                 notification=messaging.AndroidNotification(
                     title=title,
                     body=body,
+                    channel_id=channel_id,
                     priority="max" if android_priority == "high" else "default",
                     default_vibrate_timings=True,
                 ),
             ),
         )
         messaging.send(message, app=_fcm_app)
-        return True
+        logger.debug("[FCM] Delivered to token %s...", fcm_token[:12])
+        return True, None
+
     except Exception as exc:
-        logger.warning("[FCM] Push send failed (token=%s...): %s", fcm_token[:10], exc)
-        return False
+        category = _categorize_fcm_error(exc)
+        if category == "invalid_token":
+            logger.warning(
+                "[FCM] Invalid/unregistered token (token=%s...) — will be cleaned up: %s",
+                fcm_token[:12], exc,
+            )
+        else:
+            logger.warning(
+                "[FCM] Send failed [%s] (token=%s...): %s",
+                category, fcm_token[:12], exc,
+            )
+        return False, category
 
 
 def send_dispatch_offer(
@@ -102,17 +179,22 @@ def send_dispatch_offer(
     urgency: str,
     expires_in_sec: int,
     pay_rate: Optional[str] = None,
-) -> bool:
+) -> tuple[bool, Optional[str]]:
     """
     Send a full-screen dispatch offer notification.
-    Android HIGH priority — wakes the app immediately.
+
+    Android HIGH priority + DISPATCH_CHANNEL_ID = IMPORTANCE_HIGH heads-up banner.
+    Wakes the app immediately even in Doze / battery-saver mode.
+
+    Returns (success, error_category) — see send_push_notification for error values.
+    Call on: nurse not connected via WebSocket (WS is primary).
     """
-    urgency_emoji = {"emergency": "🚨", "urgent": "⚡", "standard": "📋", "planned": "📅"}.get(urgency, "📋")
-    title = f"{urgency_emoji} Shift Offer — {hospital_name}"
+    urgency_emoji = {"emergency": "\U0001f6a8", "urgent": "\u26a1", "standard": "\U0001f4cb", "planned": "\U0001f4c5"}.get(urgency, "\U0001f4cb")
+    title = f"{urgency_emoji} Shift Offer \u2014 {hospital_name}"
     body = f"{role.replace('_', ' ').title()} needed"
     if pay_rate:
-        body += f" • {pay_rate}"
-    body += f" • Respond in {expires_in_sec}s"
+        body += f" \u2022 {pay_rate}"
+    body += f" \u2022 Respond in {expires_in_sec}s"
 
     return send_push_notification(
         fcm_token=fcm_token,
@@ -126,6 +208,7 @@ def send_dispatch_offer(
             "expires_in_sec": expires_in_sec,
         },
         android_priority="high",
+        channel_id=DISPATCH_CHANNEL_ID,
     )
 
 
@@ -134,14 +217,15 @@ def send_assignment_confirmed(
     shift_id: int,
     hospital_name: str,
     shift_start: str,
-) -> bool:
+) -> tuple[bool, Optional[str]]:
     """Notify nurse that their assignment is confirmed."""
     return send_push_notification(
         fcm_token=fcm_token,
-        title="✅ Assignment Confirmed",
-        body=f"{hospital_name} — {shift_start}",
+        title="\u2705 Assignment Confirmed",
+        body=f"{hospital_name} \u2014 {shift_start}",
         data={"type": "assignment_confirmed", "shift_id": shift_id},
         android_priority="high",
+        channel_id=DISPATCH_CHANNEL_ID,
     )
 
 
@@ -150,12 +234,13 @@ def send_shift_filled_to_hospital(
     shift_id: int,
     nurse_name: str,
     fill_time_sec: int,
-) -> bool:
+) -> tuple[bool, Optional[str]]:
     """Notify hospital recruiter that their shift was filled."""
     return send_push_notification(
         fcm_token=fcm_token,
-        title="✅ Shift Filled",
+        title="\u2705 Shift Filled",
         body=f"{nurse_name} accepted in {fill_time_sec // 60}m {fill_time_sec % 60}s",
         data={"type": "shift_filled", "shift_id": shift_id},
         android_priority="normal",
+        channel_id="general",
     )

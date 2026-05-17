@@ -11,6 +11,10 @@
     ]
   },
   "plugins": {
+    "PushNotifications": {
+      "presentationOptions": [],
+      "importance": "high"
+    },
     "GoogleAuth": {
       "scopes": ["profile", "email"],
       "serverClientId": "461943303725-lqravijl3j6l251fp76j27nrg50elapc.apps.googleusercontent.com",
