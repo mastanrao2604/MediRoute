@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     MediRoute - One-Time Setup Script.
-    Run this ONCE on a new machine.
+    Run ONCE on a new machine. Installs deps and opens .env files.
     After filling .env files, run: scripts\build-android.ps1
 #>
 
@@ -34,31 +34,23 @@ Ok "$(& python --version)"
 
 # --- Check Java ---
 Step "Checking Java (required for Android)"
-$javaOk = (Get-Command java -ErrorAction SilentlyContinue) -ne $null
-if (-not $javaOk -and $env:JAVA_HOME) {
-    $javaOk = Test-Path (Join-Path $env:JAVA_HOME "bin\java.exe")
-}
-if (-not $javaOk) {
+$javaCmd = Get-Command java -ErrorAction SilentlyContinue
+if ($javaCmd) {
+    Ok "Java detected"
+} elseif ($env:JAVA_HOME -and (Test-Path "$env:JAVA_HOME\bin\java.exe")) {
+    Ok "Java detected via JAVA_HOME"
+} else {
     Warn "Java not found. Install Android Studio (includes JDK): https://developer.android.com/studio"
     Warn "Set JAVA_HOME after install, then re-run build-android.ps1"
-} else {
-    Ok "Java detected"
 }
 
 # --- Check Android SDK ---
 Step "Checking Android SDK"
 $androidHome = $env:ANDROID_HOME
 if (-not $androidHome) { $androidHome = $env:ANDROID_SDK_ROOT }
-if (-not $androidHome) {
-    $sdkCandidates = @(
-        "$env:LOCALAPPDATA\Android\Sdk",
-        "$env:USERPROFILE\AppData\Local\Android\Sdk"
-    )
-    foreach ($c in $sdkCandidates) {
-        if (Test-Path $c) { $androidHome = $c; break }
-    }
-}
-if ($androidHome -and (Test-Path $androidHome)) {
+if (-not $androidHome -and (Test-Path "$env:LOCALAPPDATA\Android\Sdk")) { $androidHome = "$env:LOCALAPPDATA\Android\Sdk" }
+if (-not $androidHome -and (Test-Path "$env:USERPROFILE\AppData\Local\Android\Sdk")) { $androidHome = "$env:USERPROFILE\AppData\Local\Android\Sdk" }
+if ($androidHome) {
     Ok "Android SDK: $androidHome"
 } else {
     Warn "Android SDK not found. Install Android Studio, then set ANDROID_HOME."
@@ -101,7 +93,6 @@ if (-not (Test-Path $backendEnv)) {
 } else {
     Ok "mediroute-backend/.env already exists"
 }
-
 $frontendEnv = Join-Path $frontend ".env"
 if (-not (Test-Path $frontendEnv)) {
     Copy-Item (Join-Path $frontend ".env.example") $frontendEnv
@@ -119,21 +110,19 @@ Write-Host ""
 Write-Host "  Opening both .env files in Notepad now." -ForegroundColor White
 Write-Host ""
 Write-Host "  mediroute-backend/.env - fill in:"
-Write-Host "    DATABASE_URL            (Supabase connection string, port 6543)"
-Write-Host "    SECRET_KEY              (run: python -c `"import secrets; print(secrets.token_hex(32))`")"
-Write-Host "    ADMIN_PHONE             (your 10-digit admin phone)"
-Write-Host "    ADMIN_SECRET            (choose any strong password)"
+Write-Host "    DATABASE_URL             (Supabase connection string, port 6543)"
+Write-Host "    SECRET_KEY               (run: python -c `"import secrets; print(secrets.token_hex(32))`")"
+Write-Host "    ADMIN_PHONE              (your 10-digit admin phone)"
+Write-Host "    ADMIN_SECRET             (choose a strong password)"
 Write-Host "    FIREBASE_CREDENTIALS_JSON  (full JSON from Firebase service account key)"
 Write-Host ""
 Write-Host "  frontend/.env - fill in:"
-Write-Host "    VITE_API_URL            (https://your-backend.onrender.com)"
-Write-Host "    VITE_GOOGLE_CLIENT_ID   (from Google Cloud Console)"
+Write-Host "    VITE_API_URL             (https://your-backend.onrender.com)"
+Write-Host "    VITE_GOOGLE_CLIENT_ID    (from Google Cloud Console)"
 Write-Host ""
-
 Start-Process notepad $backendEnv
 Start-Sleep -Milliseconds 500
 Start-Process notepad $frontendEnv
-
 Write-Host ""
 Write-Host "  Both files are open in Notepad." -ForegroundColor Cyan
 Write-Host "  Fill in values, save both, then press Enter to continue." -ForegroundColor Cyan
