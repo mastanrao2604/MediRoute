@@ -79,7 +79,7 @@ Ok "Backend dependencies installed"
 # --- Install frontend deps ---
 Step "Installing frontend dependencies"
 Push-Location $frontend
-& npm install --silent
+& npm.cmd install
 if ($LASTEXITCODE -ne 0) { Fail "npm install failed" }
 Pop-Location
 Ok "Frontend dependencies installed"
