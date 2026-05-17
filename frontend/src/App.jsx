@@ -3,6 +3,7 @@ import { GoogleOAuthProvider } from '@react-oauth/google';
 import { AuthProvider } from './context/AuthContext';
 import { useAuth } from './context/AuthContext';
 import { lazy, Suspense, Component, useEffect, useState, useCallback } from 'react';
+import * as Sentry from '@sentry/react';
 import ProtectedRoute from './components/ProtectedRoute';
 import InstallPrompt from './components/InstallPrompt';
 import UpdatePrompt from './components/UpdatePrompt';
@@ -24,6 +25,10 @@ class ErrorBoundary extends Component {
   componentDidCatch(error, info) {
     // Surface the error in the browser/logcat console for debugging.
     console.error('[MediRoute ErrorBoundary]', error, info?.componentStack);
+    // Forward to Sentry (no-op if VITE_SENTRY_DSN is not set)
+    Sentry.captureException(error, {
+      contexts: { react: { componentStack: info?.componentStack } },
+    });
   }
   render() {
     if (this.state.hasError) {

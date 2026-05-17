@@ -5,12 +5,33 @@ import { Capacitor } from '@capacitor/core'
 import './index.css'
 import App from './App.jsx'
 
-// Sentry is only active in production and only when VITE_SENTRY_DSN is set.
+// Sentry is only active when VITE_SENTRY_DSN is set (absent in dev / CI).
 if (import.meta.env.VITE_SENTRY_DSN) {
   Sentry.init({
     dsn: import.meta.env.VITE_SENTRY_DSN,
-    tracesSampleRate: 0.1,   // 10 % of navigations traced
+    integrations: [Sentry.browserTracingIntegration()],
+    tracesSampleRate: 0.1,            // 10 % of navigations traced
     environment: import.meta.env.MODE,
+    release: import.meta.env.VITE_APP_VERSION || 'unknown',
+    sendDefaultPii: false,            // never send cookies, auth headers, or IPs
+    // Tag every event with the runtime platform (web / android / ios)
+    initialScope: (scope) => {
+      scope.setTag('app.platform', Capacitor.getPlatform())
+      return scope
+    },
+    beforeSend(event) {
+      // Belt-and-suspenders PII scrub — strip tokens/OTPs from any captured request body
+      try {
+        const body = event?.request?.data
+        if (body && typeof body === 'object') {
+          const REDACT = ['otp', 'password', 'token', 'phone', 'authorization', 'auth_key']
+          for (const key of Object.keys(body)) {
+            if (REDACT.includes(key.toLowerCase())) body[key] = '[REDACTED]'
+          }
+        }
+      } catch { /* never crash the error reporter */ }
+      return event
+    },
   })
 }
 

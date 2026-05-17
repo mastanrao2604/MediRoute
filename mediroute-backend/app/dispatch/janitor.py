@@ -17,6 +17,8 @@ import time
 from datetime import datetime
 from functools import partial
 
+import sentry_sdk
+
 from ..database import SessionLocal
 from .. import models
 from .engine import dispatch_events, _executor, _update_reliability_on_event_sync, _offer_fatigue, _OFFER_FATIGUE_WINDOW_SEC
@@ -146,6 +148,7 @@ async def _janitor_tick() -> None:
             logger.info("[janitor] marked %d stale sessions as failed", len(stale_sessions))
 
     except Exception as exc:
+        sentry_sdk.capture_exception(exc)
         logger.error("[janitor] tick error: %s", exc, exc_info=True)
         if db is not None:
             try:
@@ -180,4 +183,5 @@ async def run_janitor() -> None:
             # Log and continue — one bad tick must never stop the janitor
             global _janitor_error_count
             _janitor_error_count += 1
+            sentry_sdk.capture_exception(exc)
             logger.error("[janitor] unhandled tick exception (loop continues): %s", exc, exc_info=True)

@@ -9,11 +9,47 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 import sentry_sdk
 _SENTRY_DSN = os.getenv("SENTRY_DSN", "")
 _IS_PRODUCTION = os.getenv("ENV", "development").lower() == "production"
+
+
+def _sentry_before_send(event, hint):
+    """
+    Strip PII / secrets before forwarding captured events to Sentry.
+    Called synchronously for every event — must be fast and never raise.
+    Runs even when send_default_pii=False as a belt-and-suspenders guard.
+    """
+    _REDACT = frozenset({
+        "otp", "password", "token", "access_token", "refresh_token",
+        "authorization", "auth_key", "phone", "x-admin-secret",
+    })
+    try:
+        body = event.get("request", {}).get("data")
+        if isinstance(body, dict):
+            for k in list(body):
+                if k.lower() in _REDACT:
+                    body[k] = "[REDACTED]"
+    except Exception:
+        pass
+    try:
+        hdrs = event.get("request", {}).get("headers", {})
+        for h in ("Authorization", "X-Admin-Secret", "Cookie"):
+            if h in hdrs:
+                hdrs[h] = "[REDACTED]"
+    except Exception:
+        pass
+    return event
+
+
 if _SENTRY_DSN and _IS_PRODUCTION:
+    from starlette.exceptions import HTTPException as _StarletteHTTPException
+    from fastapi.exceptions import RequestValidationError as _RequestValidationError
     sentry_sdk.init(
         dsn=_SENTRY_DSN,
-        traces_sample_rate=0.1,      # 10 % of requests traced — adjust as needed
+        traces_sample_rate=0.1,          # 10 % of requests traced — adjust as needed
         environment="production",
+        release=os.getenv("RENDER_GIT_COMMIT", "unknown"),
+        send_default_pii=False,          # never send IPs, cookies, or raw user data
+        ignore_errors=[_StarletteHTTPException, _RequestValidationError],
+        before_send=_sentry_before_send,
     )
 
 from fastapi import FastAPI, Request, Response, Depends
