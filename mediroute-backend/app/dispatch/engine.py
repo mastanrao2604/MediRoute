@@ -90,6 +90,20 @@ def get_dispatch_metrics() -> dict:
     return m
 
 
+def get_semaphore_utilization() -> dict:
+    """Return dispatch semaphore utilization. In-memory only. Safe to call from any route."""
+    sem = _dispatch_semaphore
+    if sem is None:
+        # Not yet created — no dispatch has run in this process
+        return {"capacity": _MAX_CONCURRENT_DISPATCHES, "in_use": 0, "available": _MAX_CONCURRENT_DISPATCHES}
+    in_use = max(0, _MAX_CONCURRENT_DISPATCHES - sem._value)
+    return {
+        "capacity": _MAX_CONCURRENT_DISPATCHES,
+        "in_use": in_use,
+        "available": max(0, sem._value),
+    }
+
+
 # ── Global kill switch (Task 11) ────────────────────────────────────────────────
 # Set DISPATCH_ENABLED=false in Render env vars to halt new dispatches without a deploy.
 # In-flight dispatches are NOT interrupted — they complete normally.

@@ -3,6 +3,8 @@ Operations Dashboard routes — manual dispatch control for ops team.
 These are mandatory, not optional (Swiggy lesson — §19 in ARCHITECTURE.md).
 
 Endpoints:
+  GET  /admin/ops/health-snapshot       — in-memory health (zero extra DB), poll 10s
+  GET  /admin/ops/supply-snapshot       — nurse presence + offer counts, poll 30s
   GET  /admin/ops/live-shifts           — active shifts with dispatch state
   GET  /admin/ops/presence              — online nurses in a city/zone
   POST /admin/ops/manual-assign         — force-assign nurse to shift
@@ -10,6 +12,9 @@ Endpoints:
   GET  /admin/ops/failed-shifts         — expired/unfilled shifts (last N hours)
   GET  /admin/ops/metrics               — live AUSFT and funnel metrics
   PATCH /admin/ops/zones/{zone_code}    — pause/resume a dispatch zone
+  GET  /admin/ops/timeline/{shift_id}   — chronological shift event log
+  POST /admin/ops/dispatch-toggle       — runtime kill switch
+  POST /admin/ops/expire-session/{id}   — force-expire stuck session
 """
 import logging
 import time
@@ -18,6 +23,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -26,7 +32,7 @@ from .. import models
 from ..ws_manager import ws_manager
 from ..dispatch.engine import (
     start_dispatch, get_dispatch_metrics, dispatch_events,
-    is_dispatch_enabled, set_dispatch_enabled,
+    is_dispatch_enabled, set_dispatch_enabled, get_semaphore_utilization,
 )
 from ..dispatch.events import MANUAL_OVERRIDE, SHIFT_CREATED, OFFER_TIMED_OUT
 from ..dispatch.janitor import get_janitor_health, JANITOR_INTERVAL_SEC
@@ -96,6 +102,7 @@ def live_shifts(
             "fill_time_sec": int((shift.filled_at - shift.created_at).total_seconds())
             if shift.filled_at and shift.created_at else None,
             "dispatch": {
+                "session_id": session.id,
                 "wave": session.current_wave if session else None,
                 "status": session.status.value if session else None,
             } if session else None,
@@ -433,16 +440,19 @@ def health_snapshot(
 ):
     """
     Lightweight real-time operational health check.
-    All data is in-memory — zero DB queries. Safe to poll every 10s.
-    Exposes: WS connections, dispatch state, janitor liveness, active session count.
+    All data is in-memory — zero additional DB queries. Safe to poll every 10s.
+    Exposes: WS connections, dispatch state, janitor liveness, semaphore, stale sockets.
     """
     janitor = get_janitor_health()
+    semaphore = get_semaphore_utilization()
     return {
         "ts": datetime.utcnow().isoformat(),
         "dispatch_enabled": is_dispatch_enabled(),
         "active_dispatch_sessions": len(dispatch_events),
         "ws_connections": ws_manager.connection_count,
+        "ws_stale": ws_manager.stale_count(),
         "janitor": janitor,
+        "semaphore": semaphore,
         "dispatch_metrics": get_dispatch_metrics(),
     }
 
@@ -588,4 +598,105 @@ def expire_session_offers(
         "expired_count": len(pending_offers),
         "session_id": session_id,
         "message": f"Force-expired {len(pending_offers)} pending offers. Dispatch engine will advance.",
+    }
+
+
+# ── Supply snapshot — nurse presence + offer counts (2 queries) ───────────────
+
+# Failure event types tracked for the failure breakdown panel
+_FAILURE_EVENT_TYPES = [
+    "dispatch.wave_exhausted",
+    "dispatch.failed",
+    "shift.expired",
+    "shift.cancelled",
+]
+
+@router.get("/supply-snapshot")
+def supply_snapshot(
+    city_id: str = "HYD",
+    hours: int = 4,
+    admin: models.User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Nurse presence counts + offer pipeline counts + failure breakdown.
+    3 efficient GROUP BY queries — all use indexed columns.
+    Safe to poll every 30s from dashboard.
+
+    Returns:
+      - nurses: presence state breakdown (fresh heartbeat only)
+      - offers: offer status breakdown for last N hours
+      - failures: timeline event type breakdown for last N hours
+      - db_ok: True (reaching here proves DB is reachable)
+    """
+    fresh_cutoff = datetime.utcnow() - timedelta(minutes=5)
+    time_cutoff = datetime.utcnow() - timedelta(hours=hours)
+
+    # ── 1. Nurse presence: GROUP BY state ─────────────────────────────────────
+    # Uses idx_presence_city_state. One query replaces 4 separate COUNTs.
+    presence_rows = (
+        db.query(models.PresenceState.state, func.count(models.PresenceState.id))
+        .filter(
+            models.PresenceState.city_id == city_id,
+            models.PresenceState.last_heartbeat >= fresh_cutoff,
+        )
+        .group_by(models.PresenceState.state)
+        .all()
+    )
+    nurses_by_state = {row[0].value: row[1] for row in presence_rows}
+
+    # ── 2. Offer counts: GROUP BY status for last N hours ─────────────────────
+    # Uses idx_offer_expires_status. Bounded by hours parameter.
+    offer_rows = (
+        db.query(models.DispatchOffer.status, func.count(models.DispatchOffer.id))
+        .filter(models.DispatchOffer.offered_at >= time_cutoff)
+        .group_by(models.DispatchOffer.status)
+        .all()
+    )
+    offers_by_status = {row[0].value: row[1] for row in offer_rows}
+
+    # ── 3. Failure breakdown: GROUP BY event_type ─────────────────────────────
+    # Uses idx_timeline_city_type. Only selects failure-related event types.
+    failure_rows = (
+        db.query(
+            models.ShiftTimelineEvent.event_type,
+            func.count(models.ShiftTimelineEvent.id),
+        )
+        .filter(
+            models.ShiftTimelineEvent.city_id == city_id,
+            models.ShiftTimelineEvent.occurred_at >= time_cutoff,
+            models.ShiftTimelineEvent.event_type.in_(_FAILURE_EVENT_TYPES),
+        )
+        .group_by(models.ShiftTimelineEvent.event_type)
+        .all()
+    )
+    failures_by_type = {row[0]: row[1] for row in failure_rows}
+
+    total_nurses = sum(nurses_by_state.values())
+
+    return {
+        "ts": datetime.utcnow().isoformat(),
+        "city_id": city_id,
+        "window_hours": hours,
+        "nurses": {
+            "online_available": nurses_by_state.get("online_available", 0),
+            "online_busy": nurses_by_state.get("online_busy", 0),
+            "background": nurses_by_state.get("background", 0),
+            "total_fresh": total_nurses,
+            "freshness_window_min": 5,
+        },
+        "offers": {
+            "pending": offers_by_status.get("pending", 0),
+            "accepted": offers_by_status.get("accepted", 0),
+            "declined": offers_by_status.get("declined", 0),
+            "timed_out": offers_by_status.get("timed_out", 0),
+            "cancelled": offers_by_status.get("cancelled", 0),
+        },
+        "failures": {
+            "wave_exhausted": failures_by_type.get("dispatch.wave_exhausted", 0),
+            "dispatch_failed": failures_by_type.get("dispatch.failed", 0),
+            "shift_expired": failures_by_type.get("shift.expired", 0),
+            "shift_cancelled": failures_by_type.get("shift.cancelled", 0),
+        },
+        "db_ok": True,
     }

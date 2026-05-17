@@ -129,6 +129,11 @@ class ConnectionManager:
     def is_connected(self, user_id: int) -> bool:
         return user_id in self._connections
 
+    def stale_count(self, threshold_sec: float = WS_STALE_TIMEOUT_SEC) -> int:
+        """Count (without closing) connections silent for longer than threshold_sec."""
+        now = time.monotonic()
+        return sum(1 for last in self._last_pong_at.values() if now - last > threshold_sec)
+
     @property
     def connection_count(self) -> int:
         return len(self._connections)
