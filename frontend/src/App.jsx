@@ -2,6 +2,8 @@ import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-route
 import { GoogleOAuthProvider } from '@react-oauth/google';
 import { AuthProvider } from './context/AuthContext';
 import { useAuth } from './context/AuthContext';
+import { AvailabilityProvider } from './context/AvailabilityContext';
+import { DispatchProvider, useDispatchEvents } from './context/DispatchContext';
 import { lazy, Suspense, Component, useEffect, useState, useCallback } from 'react';
 import * as Sentry from '@sentry/react';
 import ProtectedRoute from './components/ProtectedRoute';
@@ -217,11 +219,16 @@ const DISPATCH_ELIGIBLE_ROLES = new Set([
 function DispatchManager() {
   const { user, token } = useAuth();
   const [currentOffer, setCurrentOffer] = useState(null);
+  const { publish } = useDispatchEvents();
+
+  // WS reconnect banner: only shown after 4s of confirmed disconnection
+  // (avoids flashing on normal app start before first connection)
+  const [showReconnectBanner, setShowReconnectBanner] = useState(false);
 
   const handleMessage = useCallback((msg) => {
     switch (msg.type) {
       case 'dispatch_offer':
-        // Task 16: Deduplicate same offer_id (double WS delivery or pending recovery)
+        // Deduplicate same offer_id (double WS delivery or WS+FCM)
         setCurrentOffer(prev => {
           if (prev?.offer_id === msg.offer_id) return prev;
           return DISPATCH_ELIGIBLE_ROLES.has(user?.role) ? msg : prev;
@@ -229,40 +236,57 @@ function DispatchManager() {
         break;
 
       case 'assignment_confirmed':
-        // Dismiss modal (we already handled this in modal itself, but belt-and-suspenders)
         setCurrentOffer(null);
         break;
 
-      case 'shift_filled':
       case 'dispatch_started':
       case 'dispatch_wave_update':
+      case 'shift_filled':
       case 'shift_expired':
       case 'dispatch_error':
-        // Hospital events — recruiter dashboard pages listen for these via the
-        // useDispatchStatus hook (future). For now logged for debugging.
-        console.debug('[dispatch]', msg.type, msg);
+        // Publish to DispatchContext — RecruiterDashboard reads from there
+        publish(msg);
         break;
 
       default:
         break;
     }
-  }, [user?.role]);
+  }, [user?.role, publish]);
 
-  // Only connect if authenticated (nurse eligible roles OR recruiter for hospital updates)
   const shouldConnect = !!token && !!user;
-  useWebSocket(shouldConnect ? user : null, token, handleMessage);
+  const { isConnected } = useWebSocket(shouldConnect ? user : null, token, handleMessage);
 
   // FCM token registration + notification tap routing (Capacitor Android only).
-  // onDispatchOffer reuses handleMessage so deduplication logic is shared.
   usePushNotifications(shouldConnect ? user : null, token, handleMessage);
 
-  if (!currentOffer) return null;
+  // Reconnect banner logic: show only after sustained disconnection
+  useEffect(() => {
+    if (!shouldConnect) { setShowReconnectBanner(false); return; }
+    if (isConnected) { setShowReconnectBanner(false); return; }
+    const t = setTimeout(() => setShowReconnectBanner(true), 4000);
+    return () => clearTimeout(t);
+  }, [isConnected, shouldConnect]);
 
   return (
-    <DispatchOfferModal
-      offer={currentOffer}
-      onClose={() => setCurrentOffer(null)}
-    />
+    <>
+      {/* Reconnect banner — subtle, non-blocking, auto-dismisses on reconnect */}
+      {showReconnectBanner && (
+        <div
+          className="fixed top-0 inset-x-0 z-40 flex items-center justify-center gap-2 bg-amber-500 text-white text-xs font-medium py-1.5 px-4"
+          style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 0.375rem)' }}
+        >
+          <span className="w-2.5 h-2.5 border-2 border-white border-t-transparent rounded-full animate-spin shrink-0" />
+          Reconnecting to dispatch…
+        </div>
+      )}
+
+      {currentOffer && (
+        <DispatchOfferModal
+          offer={currentOffer}
+          onClose={() => setCurrentOffer(null)}
+        />
+      )}
+    </>
   );
 }
 
@@ -271,48 +295,63 @@ export default function App() {
   return (
     <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
     <AuthProvider>
+    <DispatchProvider>
       <ErrorBoundary>
       <BrowserRouter>
-        <AppLinkHandler />
-        <UpdatePrompt />
-        <InstallPrompt />
-        <DispatchManager />
-        <Suspense fallback={
-          <div className="min-h-screen flex items-center justify-center bg-gray-50">
-            <div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
-          </div>
-        }>
-        <Routes>
-          <Route path="/login" element={<PublicRoute><Login /></PublicRoute>} />
-          <Route path="/verify-otp" element={<OTPVerify />} />
-          <Route path="/link-phone" element={<PhoneLinkVerify />} />
-
-          <Route path="/onboarding" element={<ProtectedRoute><Onboarding /></ProtectedRoute>} />
-          <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-          <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
-          <Route path="/jobs" element={<ProtectedRoute><Jobs /></ProtectedRoute>} />
-          <Route path="/jobs/:id" element={<ProtectedRoute><JobDetail /></ProtectedRoute>} />
-          <Route path="/resume" element={<ProtectedRoute><ResumeBuilder /></ProtectedRoute>} />
-          <Route path="/resume-builder" element={<ProtectedRoute><ResumeBuilder /></ProtectedRoute>} />
-
-          {/* Recruiter — only accessible to users with role=recruiter */}
-          <Route path="/recruiter/onboarding" element={<ProtectedRoute allowedRole="recruiter"><RecruiterOnboarding /></ProtectedRoute>} />
-          <Route path="/recruiter/dashboard" element={<ProtectedRoute allowedRole="recruiter"><RecruiterDashboard /></ProtectedRoute>} />
-          <Route path="/recruiter/post-job" element={<ProtectedRoute allowedRole="recruiter"><PostJob /></ProtectedRoute>} />
-          <Route path="/recruiter/jobs/:jobId/applicants" element={<ProtectedRoute allowedRole="recruiter"><Applicants /></ProtectedRoute>} />
-          <Route path="/recruiter/applications/:applicationId" element={<ProtectedRoute allowedRole="recruiter"><CandidateDetail /></ProtectedRoute>} />
-
-          {/* Admin — only accessible to the VITE_ADMIN_PHONE user */}
-          <Route path="/admin" element={<AdminRoute><AdminDashboard /></AdminRoute>} />
-          <Route path="/admin/ops" element={<AdminRoute><DispatchOps /></AdminRoute>} />
-
-          <Route path="/" element={<ProtectedRoute><RoleHome /></ProtectedRoute>} />
-          <Route path="*" element={<ProtectedRoute><RoleHome /></ProtectedRoute>} />
-        </Routes>
-        </Suspense>
+        <AuthAwareShell />
       </BrowserRouter>
       </ErrorBoundary>
+    </DispatchProvider>
     </AuthProvider>
     </GoogleOAuthProvider>
+  );
+}
+
+/**
+ * AuthAwareShell — reads user from AuthContext, wraps everything in AvailabilityProvider.
+ * Must live inside AuthProvider + BrowserRouter so hooks work correctly.
+ */
+function AuthAwareShell() {
+  const { user } = useAuth();
+  return (
+    <AvailabilityProvider user={user}>
+      <AppLinkHandler />
+      <UpdatePrompt />
+      <InstallPrompt />
+      <DispatchManager />
+      <Suspense fallback={
+        <div className="min-h-screen flex items-center justify-center bg-gray-50">
+          <div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+        </div>
+      }>
+      <Routes>
+        <Route path="/login" element={<PublicRoute><Login /></PublicRoute>} />
+        <Route path="/verify-otp" element={<OTPVerify />} />
+        <Route path="/link-phone" element={<PhoneLinkVerify />} />
+
+        <Route path="/onboarding" element={<ProtectedRoute><Onboarding /></ProtectedRoute>} />
+        <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+        <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
+        <Route path="/jobs" element={<ProtectedRoute><Jobs /></ProtectedRoute>} />
+        <Route path="/jobs/:id" element={<ProtectedRoute><JobDetail /></ProtectedRoute>} />
+        <Route path="/resume" element={<ProtectedRoute><ResumeBuilder /></ProtectedRoute>} />
+        <Route path="/resume-builder" element={<ProtectedRoute><ResumeBuilder /></ProtectedRoute>} />
+
+        {/* Recruiter — only accessible to users with role=recruiter */}
+        <Route path="/recruiter/onboarding" element={<ProtectedRoute allowedRole="recruiter"><RecruiterOnboarding /></ProtectedRoute>} />
+        <Route path="/recruiter/dashboard" element={<ProtectedRoute allowedRole="recruiter"><RecruiterDashboard /></ProtectedRoute>} />
+        <Route path="/recruiter/post-job" element={<ProtectedRoute allowedRole="recruiter"><PostJob /></ProtectedRoute>} />
+        <Route path="/recruiter/jobs/:jobId/applicants" element={<ProtectedRoute allowedRole="recruiter"><Applicants /></ProtectedRoute>} />
+        <Route path="/recruiter/applications/:applicationId" element={<ProtectedRoute allowedRole="recruiter"><CandidateDetail /></ProtectedRoute>} />
+
+        {/* Admin — only accessible to the VITE_ADMIN_PHONE user */}
+        <Route path="/admin" element={<AdminRoute><AdminDashboard /></AdminRoute>} />
+        <Route path="/admin/ops" element={<AdminRoute><DispatchOps /></AdminRoute>} />
+
+        <Route path="/" element={<ProtectedRoute><RoleHome /></ProtectedRoute>} />
+        <Route path="*" element={<ProtectedRoute><RoleHome /></ProtectedRoute>} />
+      </Routes>
+      </Suspense>
+    </AvailabilityProvider>
   );
 }

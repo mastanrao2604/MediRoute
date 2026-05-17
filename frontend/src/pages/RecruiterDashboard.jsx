@@ -4,10 +4,12 @@ import api from '../api/axios';
 import MainLayout from '../layouts/MainLayout';
 import Spinner from '../components/Spinner';
 import { useAuth } from '../context/AuthContext';
+import { useDispatchEvents } from '../context/DispatchContext';
 
 export default function RecruiterDashboard() {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const { getRecentEvents } = useDispatchEvents();
   const [jobs, setJobs] = useState([]);
   const [fetching, setFetching] = useState(false);  // start false — shell renders immediately
   const [error, setError] = useState('');
@@ -82,6 +84,9 @@ export default function RecruiterDashboard() {
 
         {error && <p className="text-sm text-red-600 bg-red-50 px-3 py-2 rounded-lg mb-4">{error}</p>}
 
+        {/* Live Dispatch Activity — shows real-time events from the dispatch engine */}
+        <DispatchActivityPanel getRecentEvents={getRecentEvents} />
+
         {jobs.length === 0 ? (
           <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-10 text-center">
             <p className="text-gray-500 mb-4">No jobs posted yet.</p>
@@ -120,5 +125,71 @@ export default function RecruiterDashboard() {
         )}
       </div>
     </MainLayout>
+  );
+}
+
+// ── Dispatch Activity Panel ────────────────────────────────────────────────────
+// Shows real-time dispatch events for the hospital, delivered via WebSocket.
+// Events arrive in DispatchContext from the backend dispatch engine.
+
+const EVENT_META = {
+  dispatch_started:    { label: 'Searching',         dot: 'bg-blue-500',  text: 'text-blue-700',  bg: 'bg-blue-50'  },
+  dispatch_wave_update:{ label: 'In Progress',        dot: 'bg-indigo-500',text: 'text-indigo-700',bg: 'bg-indigo-50'},
+  shift_filled:        { label: 'Assigned',           dot: 'bg-green-500', text: 'text-green-700', bg: 'bg-green-50' },
+  shift_expired:       { label: 'No Nurses Found',    dot: 'bg-red-400',   text: 'text-red-700',   bg: 'bg-red-50'   },
+  dispatch_error:      { label: 'Error',              dot: 'bg-red-500',   text: 'text-red-700',   bg: 'bg-red-50'   },
+};
+
+function timeAgo(ts) {
+  const sec = Math.floor((Date.now() - ts) / 1000);
+  if (sec < 10)  return 'just now';
+  if (sec < 60)  return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60)  return `${min}m ago`;
+  return `${Math.floor(min / 60)}h ago`;
+}
+
+function DispatchActivityPanel({ getRecentEvents }) {
+  // Re-render every 15s to keep "X ago" timestamps fresh
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTick(n => n + 1), 15_000);
+    return () => clearInterval(t);
+  }, []);
+
+  const events = getRecentEvents(5);
+  if (events.length === 0) return null;
+
+  return (
+    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 mb-4">
+      <div className="flex items-center gap-2 mb-3">
+        <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+        <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+          Live Dispatch Activity
+        </h3>
+      </div>
+      <div className="flex flex-col gap-2">
+        {events.map((ev) => {
+          const meta = EVENT_META[ev.type] || EVENT_META.dispatch_wave_update;
+          return (
+            <div
+              key={`${ev.shift_id}-${ev._ts}`}
+              className={`flex items-start gap-2.5 rounded-xl px-3 py-2.5 ${meta.bg}`}
+            >
+              <div className={`mt-1 w-2 h-2 rounded-full shrink-0 ${meta.dot}`} />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-2">
+                  <span className={`text-xs font-semibold ${meta.text}`}>{meta.label}</span>
+                  <span className="text-xs text-gray-400 shrink-0">{timeAgo(ev._ts)}</span>
+                </div>
+                {ev.message && (
+                  <p className="text-xs text-gray-600 mt-0.5 leading-snug">{ev.message}</p>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }

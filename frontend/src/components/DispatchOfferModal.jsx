@@ -40,21 +40,26 @@ function formatTime(isoString) {
 export default function DispatchOfferModal({ offer, onClose }) {
   const [secondsLeft, setSecondsLeft] = useState(offer?.expires_in_sec || 30);
   const [responding, setResponding] = useState(false);
-  const [result, setResult] = useState(null); // 'accepted' | 'declined' | 'error'
+  const [result, setResult] = useState(null); // 'accepted' | 'declined' | 'error' | 'expired'
   const [errorMsg, setErrorMsg] = useState('');
   const timerRef = useRef(null);
+  const resultRef = useRef(null); // tracks result without stale closure
 
-  // Countdown timer
+  // Countdown timer — resets on each new offer
   useEffect(() => {
     if (!offer) return;
     const initialSec = offer.expires_in_sec || 30;
     setSecondsLeft(initialSec);
+    resultRef.current = null;
 
     timerRef.current = setInterval(() => {
       setSecondsLeft(prev => {
         if (prev <= 1) {
           clearInterval(timerRef.current);
-          if (!result) setResult('expired');
+          if (!resultRef.current) {
+            resultRef.current = 'expired';
+            setResult('expired');
+          }
           return 0;
         }
         return prev - 1;
@@ -64,19 +69,31 @@ export default function DispatchOfferModal({ offer, onClose }) {
     return () => clearInterval(timerRef.current);
   }, [offer?.offer_id]);
 
+  // Auto-close result screens — expired/declined close quickly; accepted/error are handled
+  // in their action handlers with appropriate delays.
+  useEffect(() => {
+    if (result !== 'expired') return;
+    const t = setTimeout(onClose, 2500);
+    return () => clearTimeout(t);
+  }, [result, onClose]);
+
   const handleAccept = useCallback(async () => {
     if (responding || result) return;
+    resultRef.current = 'accepting'; // prevents timer from triggering 'expired'
     setResponding(true);
     try {
       await api.post(`/dispatch/offers/${offer.offer_id}/accept`);
       clearInterval(timerRef.current);
+      resultRef.current = 'accepted';
       setResult('accepted');
       setTimeout(onClose, 2500);
     } catch (err) {
-      const msg = err.response?.data?.detail || 'Failed to accept. Please try again.';
+      const detail = err.response?.data?.detail;
+      const msg = typeof detail === 'string' ? detail : 'Failed to accept. Please try again.';
       setErrorMsg(msg);
+      resultRef.current = 'error';
       setResult('error');
-      setTimeout(onClose, 3000);
+      setTimeout(onClose, 3500);
     } finally {
       setResponding(false);
     }
@@ -84,17 +101,17 @@ export default function DispatchOfferModal({ offer, onClose }) {
 
   const handleDecline = useCallback(async () => {
     if (responding || result) return;
+    resultRef.current = 'declined';
     setResponding(true);
+    clearInterval(timerRef.current);
     try {
       await api.post(`/dispatch/offers/${offer.offer_id}/decline`);
-      clearInterval(timerRef.current);
-      setResult('declined');
-      setTimeout(onClose, 1500);
     } catch {
-      setResult('declined');
-      setTimeout(onClose, 1500);
+      // best-effort — always mark declined locally
     } finally {
+      setResult('declined');
       setResponding(false);
+      setTimeout(onClose, 1500);
     }
   }, [offer?.offer_id, responding, result, onClose]);
 
@@ -108,12 +125,17 @@ export default function DispatchOfferModal({ offer, onClose }) {
   // Result screens
   if (result === 'accepted') {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-green-600">
-        <div className="text-center text-white px-6">
-          <div className="text-6xl mb-4">✅</div>
-          <h2 className="text-2xl font-bold mb-2">Assignment Confirmed!</h2>
-          <p className="text-green-100">{offer.hospital_name}</p>
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-green-700">
+        <div className="text-center text-white px-6 max-w-sm">
+          <div className="w-16 h-16 rounded-full bg-white/20 flex items-center justify-center mx-auto mb-5">
+            <svg className="w-9 h-9 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
+          <h2 className="text-2xl font-bold mb-1">Assignment Confirmed</h2>
+          <p className="text-green-100 text-base mt-1">{offer.hospital_name}</p>
           <p className="text-green-200 text-sm mt-1">{formatTime(offer.shift_start)}</p>
+          <p className="text-green-300 text-xs mt-4">Please arrive on time. Good luck!</p>
         </div>
       </div>
     );
@@ -123,8 +145,8 @@ export default function DispatchOfferModal({ offer, onClose }) {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-700">
         <div className="text-center text-white px-6">
-          <div className="text-5xl mb-4">👋</div>
-          <h2 className="text-xl font-bold">Offer Declined</h2>
+          <div className="text-4xl mb-3 opacity-80">—</div>
+          <h2 className="text-lg font-semibold text-gray-200">Offer Declined</h2>
         </div>
       </div>
     );
@@ -134,9 +156,13 @@ export default function DispatchOfferModal({ offer, onClose }) {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-800">
         <div className="text-center text-white px-6">
-          <div className="text-5xl mb-4">⏰</div>
-          <h2 className="text-xl font-bold">Offer Expired</h2>
-          <p className="text-gray-300 text-sm mt-2">The offer window closed.</p>
+          <div className="w-14 h-14 rounded-full bg-white/10 flex items-center justify-center mx-auto mb-4">
+            <svg className="w-7 h-7 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+          <h2 className="text-lg font-semibold text-gray-200">Offer Expired</h2>
+          <p className="text-gray-400 text-sm mt-1">The response window closed.</p>
         </div>
       </div>
     );
@@ -146,9 +172,14 @@ export default function DispatchOfferModal({ offer, onClose }) {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-800">
         <div className="text-center text-white px-6 max-w-sm">
-          <div className="text-5xl mb-4">⚠️</div>
-          <h2 className="text-xl font-bold mb-2">Unable to Accept</h2>
+          <div className="w-14 h-14 rounded-full bg-red-500/20 flex items-center justify-center mx-auto mb-4">
+            <svg className="w-7 h-7 text-red-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+          <h2 className="text-lg font-semibold mb-2">Unable to Accept</h2>
           <p className="text-gray-300 text-sm">{errorMsg}</p>
+          <p className="text-gray-500 text-xs mt-3">This window will close automatically.</p>
         </div>
       </div>
     );
@@ -182,9 +213,12 @@ export default function DispatchOfferModal({ offer, onClose }) {
 
           {/* Shift details */}
           <div className="bg-white/15 rounded-2xl p-4 space-y-3 mb-6">
-            <DetailRow icon="📅" label="Shift" value={formatTime(offer.shift_start)} />
+            <DetailRow icon="📅" label="Shift starts" value={formatTime(offer.shift_start)} />
             {offer.shift_end && (
-              <DetailRow icon="🏁" label="Until" value={formatTime(offer.shift_end)} />
+              <DetailRow icon="🏁" label="Ends" value={formatTime(offer.shift_end)} />
+            )}
+            {offer.city_id && (
+              <DetailRow icon="📍" label="City" value={offer.city_id} />
             )}
             {offer.pay_rate && (
               <DetailRow icon="💰" label="Pay" value={offer.pay_rate} />
@@ -200,7 +234,9 @@ export default function DispatchOfferModal({ offer, onClose }) {
         <div>
           {/* Countdown */}
           <div className="text-center mb-6">
-            <span className={`text-5xl font-mono font-bold ${secondsLeft <= 10 ? 'text-red-200 animate-pulse' : 'text-white'}`}>
+            <span className={`text-5xl font-mono font-bold tabular-nums ${
+              secondsLeft <= 10 ? 'text-red-200' : 'text-white'
+            } ${secondsLeft <= 5 ? 'animate-pulse' : ''}`}>
               {secondsLeft}
             </span>
             <p className="text-white/60 text-xs mt-1 uppercase tracking-widest">seconds to respond</p>
@@ -211,24 +247,30 @@ export default function DispatchOfferModal({ offer, onClose }) {
             <button
               onClick={handleDecline}
               disabled={responding}
-              className="py-4 rounded-2xl bg-white/20 text-white font-semibold text-base active:scale-95 transition-transform disabled:opacity-50"
+              className="py-4 rounded-2xl bg-white/20 text-white font-semibold text-base active:scale-95 transition-transform disabled:opacity-40"
             >
               Decline
             </button>
             <button
               onClick={handleAccept}
               disabled={responding}
-              className={`py-4 rounded-2xl bg-white text-gray-900 font-bold text-base shadow-lg active:scale-95 transition-transform disabled:opacity-50 ${
-                responding ? 'opacity-70' : ''
-              }`}
+              className="py-4 rounded-2xl bg-white text-gray-900 font-bold text-base shadow-lg active:scale-95 transition-transform disabled:opacity-60"
             >
-              {responding ? '...' : 'Accept ✓'}
+              {responding ? (
+                <span className="flex items-center justify-center gap-2">
+                  <span className="w-4 h-4 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
+                  Accepting
+                </span>
+              ) : (
+                <span className="flex items-center justify-center gap-1.5">
+                  Accept
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                  </svg>
+                </span>
+              )}
             </button>
           </div>
-
-          <p className="text-white/40 text-xs text-center mt-4">
-            Accepting confirms you'll arrive on time
-          </p>
         </div>
       </div>
     </div>

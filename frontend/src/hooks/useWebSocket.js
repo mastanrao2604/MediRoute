@@ -11,7 +11,7 @@
  * Usage:
  *   const { isConnected } = useWebSocket(user, token, onMessage);
  */
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useState } from 'react';
 import api from '../api/axios';
 
 const BASE_URL =
@@ -30,6 +30,7 @@ export function useWebSocket(user, token, onMessage) {
   const backoffRef = useRef(1);
   const mountedRef = useRef(true);
   const connectRef = useRef(null); // Task 16: ref to latest connect fn (stale closure fix)
+  const [connected, setConnected] = useState(false);
 
   const clearTimers = () => {
     if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
@@ -64,6 +65,7 @@ export function useWebSocket(user, token, onMessage) {
     ws.onopen = () => {
       if (!mountedRef.current) { ws.close(); return; }
       backoffRef.current = 1; // reset backoff on success
+      setConnected(true);
 
       // Start keepalive ping
       clearInterval(pingTimer.current);
@@ -90,6 +92,7 @@ export function useWebSocket(user, token, onMessage) {
 
     ws.onclose = (event) => {
       clearInterval(pingTimer.current);
+      setConnected(false);
       if (!mountedRef.current) return;
 
       // 4001 = auth failure — don't reconnect
@@ -157,6 +160,9 @@ export function useWebSocket(user, token, onMessage) {
     return () => { listener?.remove?.(); };
   }, [user?.id, token]);
 
-  const isConnected = wsRef.current?.readyState === WebSocket.OPEN;
-  return { isConnected };
+  return {
+    isConnected: connected,
+    // Legacy: keep wsRef-based value as fallback for synchronous checks
+    isConnectedSync: wsRef.current?.readyState === WebSocket.OPEN,
+  };
 }

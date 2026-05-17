@@ -614,6 +614,7 @@ async def _notify_wave(
             "notes": shift.notes,
             "hospital_lat": shift.hospital_latitude,
             "hospital_lng": shift.hospital_longitude,
+            "city_id": shift.city_id,
             "expires_at": offer.expires_at.isoformat(),
             "expires_in_sec": wave_timeout_sec,
             "wave": offer.wave_number,

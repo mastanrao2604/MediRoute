@@ -3,7 +3,13 @@ import { useNavigate } from 'react-router-dom';
 import api from '../api/axios';
 import MainLayout from '../layouts/MainLayout';
 import Spinner from '../components/Spinner';
+import AvailabilityToggle from '../components/AvailabilityToggle';
 import { useAuth } from '../context/AuthContext';
+
+const DISPATCH_ELIGIBLE_ROLES = new Set([
+  'nurse', 'staff_nurse', 'icu_nurse', 'ot_nurse', 'emergency_nurse',
+  'home_care_nurse', 'doctor', 'lab_tech', 'pharmacist', 'driver', 'front_office',
+]);
 
 export default function Dashboard() {
   const { user } = useAuth();
@@ -62,6 +68,13 @@ export default function Dashboard() {
           <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
           <p className="text-sm text-gray-500 mt-1">Welcome back!</p>
         </div>
+
+        {/* Availability toggle — only for dispatch-eligible healthcare workers */}
+        {DISPATCH_ELIGIBLE_ROLES.has(user?.role) && (
+          <div className="mb-6">
+            <AvailabilityToggle />
+          </div>
+        )}
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
           <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
