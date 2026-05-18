@@ -111,8 +111,16 @@ Ok "APK build succeeded"
 
 # --- Find APK ---
 Step "Locating APK"
-$apkPattern = if ($Release) { "app\build\outputs\apk\release\*.apk" } else { "app\build\outputs\apk\debug\*.apk" }
-$apkFile = Get-ChildItem (Join-Path $androidDir $apkPattern) -ErrorAction SilentlyContinue | Select-Object -First 1
+$outputsRoot = Join-Path $androidDir "app\build\outputs"
+$apkFile = $null
+if (Test-Path $outputsRoot) {
+    $apkFile = Get-ChildItem -LiteralPath $outputsRoot -Recurse -Filter "*.apk" -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+}
+if (-not $apkFile) {
+    $apkPattern = if ($Release) { "app\build\outputs\apk\release\*.apk" } else { "app\build\outputs\apk\debug\*.apk" }
+    $apkFile = Get-ChildItem (Join-Path $androidDir $apkPattern) -ErrorAction SilentlyContinue | Select-Object -First 1
+}
 if (-not $apkFile) {
     $apkFile = Get-ChildItem (Join-Path $androidDir "app\build\outputs\apk\*\MediRoute.apk") -ErrorAction SilentlyContinue | Select-Object -First 1
 }
