@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { mlog } from '../utils/mobileLogger';
 
 // For Capacitor APK builds: VITE_API_URL is set in the local .env file to the
 // production backend URL (https://mediroute-8az0.onrender.com).
@@ -52,8 +53,16 @@ api.interceptors.response.use(
   async (error) => {
     const originalRequest = error.config;
 
+    // Log non-401 API failures (network errors, 5xx, 429, etc.)
+    const status = error.response?.status;
+    if (status !== 401) {
+      const method = originalRequest?.method?.toUpperCase() ?? '?';
+      const url    = originalRequest?.url ?? '?';
+      mlog('api', 'request_error', { method, url, status: status ?? null, code: error.code ?? null });
+    }
+
     // Only handle 401s that haven't already been retried
-    if (error.response?.status !== 401 || originalRequest._retry) {
+    if (status !== 401 || originalRequest._retry) {
       return Promise.reject(error);
     }
 

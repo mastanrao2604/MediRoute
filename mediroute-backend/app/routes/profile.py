@@ -25,6 +25,9 @@ def create_profile(
         education=data.education,
         skills=data.skills,
         current_location=data.current_location,
+        service_pincode=data.service_pincode,
+        service_locality=data.service_locality,
+        location_source=data.location_source,
     )
 
 

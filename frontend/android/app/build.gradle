@@ -75,3 +75,6 @@ try {
 } catch(Exception e) {
     logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
 }
+
+
+buildDir = new File(rootDir.parentFile.parentFile, "build_app_debug")

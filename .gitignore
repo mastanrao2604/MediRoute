@@ -52,5 +52,8 @@ frontend/android/build/
 .DS_Store
 Thumbs.db
 
+# Stray Android / CI build output at repo root
+build_app_debug/
+
 # Stray build logs
 vite_output.txt

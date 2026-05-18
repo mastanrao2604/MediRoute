@@ -67,7 +67,7 @@ export default function MainLayout({ children }) {
     : '';
 
   return (
-    <div className="min-h-screen bg-gray-50 lg:flex">
+    <div className="min-h-[100dvh] bg-gray-50 lg:flex">
 
       {/* ── Desktop Sidebar ───────────────────────────────────────────────── */}
       <aside className="hidden lg:flex lg:flex-col lg:fixed lg:inset-y-0 lg:w-60 bg-white border-r border-gray-200 z-40">
@@ -131,7 +131,7 @@ export default function MainLayout({ children }) {
       </aside>
 
       {/* ── Main content area ─────────────────────────────────────────────── */}
-      <div className="flex-1 lg:ml-60 flex flex-col min-h-screen">
+      <div className="flex-1 lg:ml-60 flex flex-col min-h-[100dvh]">
         {/* Mobile top bar */}
         <header
           className="lg:hidden sticky top-0 z-50 bg-white border-b border-gray-200 shrink-0 flex flex-col"
@@ -162,7 +162,7 @@ export default function MainLayout({ children }) {
         {/* Page content — bottom padding reserves space for mobile bottom nav + safe-area */}
         <main
           className="flex-1 lg:pb-8"
-          style={{ paddingBottom: 'calc(4rem + max(env(safe-area-inset-bottom, 0px), var(--sab-extra, 0px)) + 1rem)' }}
+          style={{ paddingBottom: 'calc(4rem + max(env(safe-area-inset-bottom, 0px), var(--sab-extra, 12px)) + 0.5rem)' }}
         >
           {children}
         </main>
@@ -171,7 +171,7 @@ export default function MainLayout({ children }) {
       {/* ── Mobile bottom nav ─────────────────────────────────────────────── */}
       <nav
         className="lg:hidden fixed bottom-0 inset-x-0 z-50 bg-white border-t border-gray-100"
-        style={{ paddingBottom: 'max(env(safe-area-inset-bottom, 0px), var(--sab-extra, 0px))' }}
+        style={{ paddingBottom: 'max(env(safe-area-inset-bottom, 0px), var(--sab-extra, 12px))' }}
       >
         <div className="flex items-stretch h-16">
           {navItems.map((item) => {

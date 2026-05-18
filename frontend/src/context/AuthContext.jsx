@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect } from 'react';
 import api from '../api/axios';
+import { mlog } from '../utils/mobileLogger';
 
 const AuthContext = createContext(null);
 
@@ -45,6 +46,7 @@ export function AuthProvider({ children }) {
       setToken(storedToken);
       setUser(cachedUser);
       setLoading(false);
+      mlog('auth', 'session_restored_from_cache', { role: cachedUser.role });
     }
 
     // ── Step 2: background validation ───────────────────────────────────────
@@ -55,10 +57,12 @@ export function AuthProvider({ children }) {
         setToken(latestToken);
         setUser(res.data);
         localStorage.setItem('mediroute_user', JSON.stringify(res.data));
+        mlog('auth', 'session_validated', { role: res.data.role });
       })
       .catch((err) => {
         if (err?.response?.status === 401 || err?.response?.status === 403) {
           // Token truly revoked — log the user out
+          mlog('auth', 'session_expired', { status: err.response.status });
           setToken(null);
           setUser(null);
           localStorage.removeItem('mediroute_token');
@@ -72,6 +76,29 @@ export function AuthProvider({ children }) {
         if (!cachedUser) setLoading(false);
       });
   }, []);
+
+  /**
+   * Re-validate the session by calling /auth/me.
+   * Used by WebSocket layer when it detects a suspected expired token.
+   * On 401/403 → logs the user out. On success → updates token + user state.
+   */
+  async function revalidate() {
+    try {
+      const res = await api.get('/auth/me');
+      const latestToken = localStorage.getItem('mediroute_token');
+      setToken(latestToken);
+      setUser(res.data);
+      localStorage.setItem('mediroute_user', JSON.stringify(res.data));
+    } catch (err) {
+      if (err?.response?.status === 401 || err?.response?.status === 403) {
+        setToken(null);
+        setUser(null);
+        localStorage.removeItem('mediroute_token');
+        localStorage.removeItem('mediroute_refresh_token');
+        localStorage.removeItem('mediroute_user');
+      }
+    }
+  }
 
   /**
    * Call after a successful login.
@@ -94,6 +121,7 @@ export function AuthProvider({ children }) {
    * Works even when the access token is already expired.
    */
   async function logout() {
+    mlog('auth', 'logout');
     const refreshToken = localStorage.getItem('mediroute_refresh_token');
     try {
       if (refreshToken) {
@@ -111,7 +139,7 @@ export function AuthProvider({ children }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, logout }}>
+    <AuthContext.Provider value={{ user, token, loading, login, logout, revalidate }}>
       {children}
     </AuthContext.Provider>
   );

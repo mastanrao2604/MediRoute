@@ -21,11 +21,13 @@ import {
   useCallback,
 } from 'react';
 import api from '../api/axios';
+import { geocodePincode, loadPincode } from '../utils/geocodePincode';
+import { mlog } from '../utils/mobileLogger';
 
 const HEARTBEAT_INTERVAL_MS = 90_000;
 
 // Must mirror DISPATCH_ELIGIBLE_ROLES in backend availability.py
-const DISPATCH_ELIGIBLE_ROLES = new Set([
+export const DISPATCH_ELIGIBLE_ROLES = new Set([
   'nurse', 'staff_nurse', 'icu_nurse', 'ot_nurse', 'emergency_nurse',
   'home_care_nurse', 'doctor', 'lab_tech', 'pharmacist', 'driver', 'front_office',
 ]);
@@ -56,6 +58,8 @@ export function AvailabilityProvider({ children, user }) {
   const [loading, setLoading]             = useState(isEligible); // hide toggle until state loads
   const [toggling, setToggling]           = useState(false);
   const [error, setError]                 = useState('');
+  // 'gps' | 'pincode' | 'none' — which location source was used when going online
+  const [locationSource, setLocationSource] = useState('none');
 
   // Persist last known coordinates for heartbeat
   const latRef  = useRef(null);
@@ -114,23 +118,54 @@ export function AvailabilityProvider({ children, user }) {
     setToggling(true);
     setError('');
 
+    if (wantAvailable) {
+      const serverPin = String(user?.service_pincode || '').replace(/\D/g, '');
+      if (serverPin.length !== 6) {
+        setError('Set your service area to receive nearby shifts. Save your pincode in Profile first.');
+        setToggling(false);
+        return;
+      }
+    }
+
     let lat = null;
     let lng = null;
 
+    let locSource = 'none';
     if (wantAvailable) {
-      // Request geolocation — needed for nurse-to-hospital distance matching.
-      // If denied/unavailable, we still toggle (backend accepts null coords).
+      // Step 1: Try GPS (preferred — most accurate)
       try {
         const pos = await getGeoPosition();
         lat = pos.coords.latitude;
         lng = pos.coords.longitude;
         latRef.current = lat;
         lngRef.current = lng;
-      } catch {
-        // Permission denied or not supported — proceed without coords.
-        // Backend will exclude this nurse from geo-filtered dispatches.
+        locSource = 'gps';
+        mlog('availability', 'location_gps', {});
+      } catch (gpsErr) {
+        // Step 2: GPS denied / unavailable — try stored pincode as fallback.
+        // Without coordinates the dispatch engine excludes this nurse entirely,
+        // so geocoding the pincode is critical for dispatch visibility.
+        const storedPincode = loadPincode();
+        if (storedPincode) {
+          try {
+            const result = await geocodePincode(storedPincode);
+            lat = result.lat;
+            lng = result.lng;
+            latRef.current = lat;
+            lngRef.current = lng;
+            locSource = 'pincode';
+            mlog('availability', 'location_pincode_fallback', {});
+          } catch {
+            // Geocode failed — proceed without coords (nurse still goes online
+            // but won't receive geo-filtered dispatch offers until location is set)
+            mlog('availability', 'location_none', { gps_err: gpsErr.message });
+          }
+        } else {
+          mlog('availability', 'location_none_no_pincode', { gps_err: gpsErr.message });
+        }
       }
     }
+    setLocationSource(wantAvailable ? locSource : 'none');
 
     try {
       const res = await api.put('/availability/toggle', {
@@ -147,7 +182,7 @@ export function AvailabilityProvider({ children, user }) {
     } finally {
       setToggling(false);
     }
-  }, [toggling, isEligible]);
+  }, [toggling, isEligible, user?.service_pincode]);
 
   const value = {
     isAvailable,
@@ -158,6 +193,7 @@ export function AvailabilityProvider({ children, user }) {
     error,
     toggle,
     isEligible,
+    locationSource,
   };
 
   return (

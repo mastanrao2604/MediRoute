@@ -3,8 +3,8 @@
   "appName": "MediRoute",
   "webDir": "dist",
   "server": {
-    "androidScheme": "https",
-    "cleartext": false,
+    "androidScheme": "http",
+    "cleartext": true,
     "allowNavigation": [
       "accounts.google.com",
       "oauth2.googleapis.com"
@@ -32,7 +32,7 @@
     }
   },
   "android": {
-    "allowMixedContent": false,
+    "allowMixedContent": true,
     "appendUserAgent": "MediRoute-Android"
   }
 }

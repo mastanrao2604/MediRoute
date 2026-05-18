@@ -17,6 +17,21 @@ logger = logging.getLogger("uvicorn.error")
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
+_SERVICE_AREA_ROLES = frozenset({
+    models.UserRole.nurse,
+    models.UserRole.staff_nurse,
+    models.UserRole.icu_nurse,
+    models.UserRole.ot_nurse,
+    models.UserRole.emergency_nurse,
+    models.UserRole.home_care_nurse,
+    models.UserRole.doctor,
+    models.UserRole.lab_tech,
+    models.UserRole.pharmacist,
+    models.UserRole.driver,
+    models.UserRole.front_office,
+})
+
+
 # ── Token issuance helper ─────────────────────────────────────────────────────
 
 def _issue_tokens(user: models.User, db: Session) -> dict:
@@ -127,19 +142,24 @@ def get_me(
 ):
     """Return the authenticated user's profile, with computed profile_complete flag."""
     profile = crud.get_profile(db, current_user.id)
-    user_dict = schemas.UserResponse.model_validate(current_user).model_dump()
+    row = schemas.UserResponse.model_validate(current_user).model_dump()
+    row["service_pincode"] = getattr(profile, "service_pincode", None) if profile else None
+    row["service_locality"] = getattr(profile, "service_locality", None) if profile else None
 
     if current_user.role == models.UserRole.recruiter:
-        # Recruiters have their own onboarding — profile_complete not applicable
-        user_dict["profile_complete"] = True
+        row["profile_complete"] = True
     else:
-        user_dict["profile_complete"] = bool(
+        complete = bool(
             profile
             and profile.experience_years is not None
             and profile.skills
             and profile.current_location
         )
-    return user_dict
+        if complete and current_user.role in _SERVICE_AREA_ROLES:
+            clean_pc = "".join(c for c in str(profile.service_pincode or "") if c.isdigit())
+            complete = len(clean_pc) == 6
+        row["profile_complete"] = complete
+    return row
 
 
 # ── Google OAuth ──────────────────────────────────────────────────────────────

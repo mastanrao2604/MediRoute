@@ -30,7 +30,9 @@ export default function Jobs() {
       if (filters.location) params.location = filters.location;
       if (filters.job_type) params.job_type = filters.job_type;
       const res = await api.get('/jobs', { params });
-      setJobs(res.data);
+      //setJobs(res.data);
+      const data = res.data;
+      setJobs(Array.isArray(data) ? data : (data?.items?? data?.jobs ??[]));
     } catch (err) {
       const detail = err.response?.data?.detail || err.message || 'Network error';
       setError(`Failed to load jobs — ${detail}. Tap 'Search Jobs' to retry.`);

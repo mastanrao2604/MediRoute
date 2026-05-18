@@ -7,6 +7,7 @@ import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
 import { navigateAfterLogin } from '../utils/authNav';
 import { validateIndianPhone, stripCountryCode } from '../utils/phoneValidation';
+import { mlog, mlogError } from '../utils/mobileLogger';
 
 // True only inside the Android/iOS Capacitor shell — false in browser.
 const IS_NATIVE = Capacitor.isNativePlatform();
@@ -54,10 +55,17 @@ export default function Login() {
     }
     setError('');
     setLoading(true);
+    mlog('otp', 'send_start');
     try {
+      console.log('[OTP] sending to', validation.cleaned);
       const res = await api.post('/auth/send-otp', { phone: validation.cleaned });
+      const devMode = !!res.data.dev_otp;
+      console.log('[OTP] response status', res.status, 'dev_otp present:', devMode);
+      mlog('otp', 'send_success', { dev_mode: devMode });
       navigate('/verify-otp', { state: { phone: validation.cleaned, devOtp: res.data.dev_otp } });
     } catch (err) {
+      console.error('[OTP] send-otp error:', err?.message, err?.response?.status, err?.response?.data);
+      mlogError('otp', 'send_fail', err);
       const raw = err?.response?.data?.detail;
       setError(
         typeof raw === 'string' ? raw

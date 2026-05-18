@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..dependencies import get_current_user
-from .. import models
+from .. import models, crud
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/availability", tags=["Availability"])
@@ -203,6 +203,20 @@ def toggle_availability(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only healthcare workers can toggle availability.",
         )
+
+    # Require saved service pincode before going online (dispatch prioritisation).
+    if req.is_available:
+        prof = crud.get_profile(db, current_user.id)
+        raw = getattr(prof, "service_pincode", None) if prof else None
+        clean_pc = "".join(c for c in str(raw or "") if c.isdigit())
+        if len(clean_pc) != 6:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Set your service area to receive nearby shifts. "
+                    "Add your pincode under Profile before going online."
+                ),
+            )
 
     # Block going offline if currently on active assignment
     if not req.is_available:

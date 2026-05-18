@@ -25,26 +25,44 @@ const HOSPITAL_EVENT_TYPES = new Set([
   'dispatch_wave_update',
   'shift_filled',
   'shift_expired',
+  'shift_cancelled',
   'dispatch_error',
 ]);
 
 const DispatchContext = createContext(null);
 
 export function DispatchProvider({ children }) {
-  // { shiftId: { ...event, _ts: timestamp, _key: shiftId } }
+  // { shiftId: { ...event, _ts: timestamp } }
   const [events, setEvents] = useState({});
+  // { shiftId: timestamp } — when dispatch_started first arrived for each shift
+  const [startTimes, setStartTimes] = useState({});
 
   const publish = useCallback((msg) => {
     const shiftId = msg?.shift_id;
     if (!shiftId || !HOSPITAL_EVENT_TYPES.has(msg.type)) return;
 
+    const now = Date.now();
+
+    // Record dispatch start time — only set once per shift (never overwritten)
+    if (msg.type === 'dispatch_started') {
+      setStartTimes(prev => prev[shiftId] ? prev : { ...prev, [shiftId]: now });
+    }
+
+    // Terminal: shift removed from active staffing — suppress stale elapsed indicators
+    if (msg.type === 'shift_cancelled') {
+      setStartTimes(prev => {
+        const next = { ...prev };
+        delete next[shiftId];
+        return next;
+      });
+    }
+
     setEvents(prev => {
-      const next = { ...prev, [shiftId]: { ...msg, _ts: Date.now() } };
+      const next = { ...prev, [shiftId]: { ...msg, _ts: now } };
 
       // Prune if we exceed MAX_EVENTS_STORED (rare — only in high-volume scenarios)
       const keys = Object.keys(next);
       if (keys.length > MAX_EVENTS_STORED) {
-        // Remove the oldest entry
         const oldest = keys.reduce((a, b) => (next[a]._ts < next[b]._ts ? a : b));
         delete next[oldest];
       }
@@ -76,8 +94,13 @@ export function DispatchProvider({ children }) {
       .slice(0, limit);
   }, [events]);
 
+  /** Returns the timestamp when dispatch_started was first received for a shift. */
+  const getDispatchStartTime = useCallback((shiftId) => {
+    return startTimes[shiftId] ?? null;
+  }, [startTimes]);
+
   return (
-    <DispatchContext.Provider value={{ publish, getShiftStatus, getRecentEvents }}>
+    <DispatchContext.Provider value={{ publish, getShiftStatus, getRecentEvents, getDispatchStartTime }}>
       {children}
     </DispatchContext.Provider>
   );

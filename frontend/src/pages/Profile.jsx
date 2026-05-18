@@ -6,6 +6,8 @@ import { useAuth } from '../context/AuthContext';
 import { downloadPDF, viewPDF } from '../utils/downloadPdf';
 import { Capacitor } from '@capacitor/core';
 import { useNavigate } from 'react-router-dom';
+import { DISPATCH_ELIGIBLE_ROLES } from '../context/AvailabilityContext';
+import { reverseGeocodeCoords, normalizeIndianPincode, savePincode } from '../utils/geocodePincode';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const JOB_TYPE_OPTIONS = [
@@ -19,7 +21,15 @@ const PASSPORT_OPTIONS = [
   { value: 'unknown', label: 'Not Sure' },
 ];
 
-const EMPTY_PROFILE_FORM = { experience_years: '', education: '', skills: '', current_location: '' };
+const EMPTY_PROFILE_FORM = {
+  experience_years: '',
+  education: '',
+  skills: '',
+  current_location: '',
+  service_pincode: '',
+  service_locality: '',
+  location_source: '',
+};
 const EMPTY_PREFS_FORM   = { job_type: 'india', preferred_country: '', passport_status: 'unknown' };
 
 function profileToForm(d) {
@@ -28,6 +38,9 @@ function profileToForm(d) {
     education:        d.education        ?? '',
     skills:           d.skills           ?? '',
     current_location: d.current_location ?? '',
+    service_pincode:   d.service_pincode   ?? '',
+    service_locality:  d.service_locality ?? '',
+    location_source:   d.location_source  ?? '',
   };
 }
 function prefsToForm(d) {
@@ -40,7 +53,7 @@ function prefsToForm(d) {
 
 // ── Component ────────────────────────────────────────────────────────────────
 export default function Profile() {
-  const { user, logout } = useAuth();
+  const { user, logout, revalidate } = useAuth();
   const navigate = useNavigate();
 
   const [profile,       setProfile]       = useState(null);
@@ -64,6 +77,11 @@ export default function Profile() {
   const [uploadError,  setUploadError]  = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
   const fileInputRef = useRef(null);
+  const [serviceCapturing, setServiceCapturing] = useState(false);
+
+  function needsServiceArea() {
+    return user?.role && DISPATCH_ELIGIBLE_ROLES.has(user.role);
+  }
 
   // ── Fetch both on mount ───────────────────────────────────────────────────
   async function fetchAll() {
@@ -283,16 +301,31 @@ export default function Profile() {
       setError('Skills must not be empty.');
       return;
     }
+    if (needsServiceArea()) {
+      const pc = normalizeIndianPincode(form.service_pincode);
+      if (!pc) {
+        setError('Set your service area (6-digit pincode) to receive nearby shifts.');
+        return;
+      }
+    }
 
     setLoading(true);
     try {
       const profilePayload = {
-        ...form,
         experience_years: Number(form.experience_years),
         skills:           form.skills.trim(),
-        education:        form.education.trim()        || null,
+        education:        form.education.trim() || null,
         current_location: form.current_location.trim() || null,
       };
+      if (needsServiceArea()) {
+        const pc = normalizeIndianPincode(form.service_pincode);
+        profilePayload.service_pincode = pc || undefined;
+        profilePayload.service_locality = form.service_locality.trim() || null;
+        const src = form.location_source === 'gps' ? 'gps' : 'manual';
+        profilePayload.location_source = src;
+        if (pc) savePincode(pc);
+      }
+
       const prefsPayload = {
         ...prefsForm,
         preferred_country: prefsForm.preferred_country.trim() || null,
@@ -313,6 +346,7 @@ export default function Profile() {
       }
 
       setSuccess('Profile saved!');
+      await revalidate?.();
       await fetchAll();
       setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
@@ -476,6 +510,12 @@ export default function Profile() {
                 <ProfileField label="Skills"              value={profile.skills           ?? '—'} />
                 {profile.education        && <ProfileField label="Education" value={profile.education} />}
                 {profile.current_location && <ProfileField label="Location"  value={profile.current_location} />}
+                {needsServiceArea() && profile.service_pincode && (
+                  <ProfileField
+                    label="Service pincode"
+                    value={`${profile.service_pincode}${profile.service_locality ? ` — ${profile.service_locality}` : ''}${profile.location_source ? ` (${profile.location_source})` : ''}`}
+                  />
+                )}
               </div>
             </section>
 
@@ -555,6 +595,54 @@ export default function Profile() {
                   className="w-full border border-gray-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 transition"
                 />
               </div>
+
+              {needsServiceArea() && (
+                <div className="rounded-xl border border-indigo-100 bg-indigo-50/60 p-4 space-y-3">
+                  <h3 className="text-xs font-semibold text-indigo-800 uppercase tracking-wide">Service area (dispatch)</h3>
+                  <p className="text-xs text-gray-600">
+                    Set your service area to receive nearby shifts. One-time GPS uses your postcode only — we do not display coordinates here.
+                  </p>
+                  <button
+                    type="button"
+                    disabled={serviceCapturing}
+                    onClick={captureServiceAreaFromGPS}
+                    className="w-full py-2.5 px-3 rounded-xl text-sm font-semibold border border-indigo-600 text-indigo-700 bg-white hover:bg-indigo-50 disabled:opacity-50"
+                  >
+                    {serviceCapturing ? 'Refreshing…' : '📍 Refresh pincode from my location'}
+                  </button>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">6-digit pincode</label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      maxLength={6}
+                      value={form.service_pincode}
+                      onChange={(e) => {
+                        const v = e.target.value.replace(/\D/g, '').slice(0, 6);
+                        setForm((f) => ({
+                          ...f,
+                          service_pincode: v,
+                          location_source:
+                            normalizeIndianPincode(v) ? 'manual' : (f.location_source || ''),
+                        }));
+                      }}
+                      placeholder="500032"
+                      className="w-full border border-gray-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 transition"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">Area / locality (optional)</label>
+                    <input
+                      type="text"
+                      value={form.service_locality}
+                      onChange={(e) => setForm((f) => ({ ...f, service_locality: e.target.value }))}
+                      placeholder="e.g. Banjara Hills"
+                      className="w-full border border-gray-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 transition"
+                    />
+                  </div>
+                </div>
+              )}
+
             </section>
 
             {/* Section 2 — Job Preferences */}

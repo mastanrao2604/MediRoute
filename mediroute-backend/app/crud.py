@@ -128,6 +128,9 @@ def create_profile(
     education: Optional[str],
     skills: Optional[str],
     current_location: Optional[str],
+    service_pincode: Optional[str] = None,
+    service_locality: Optional[str] = None,
+    location_source: Optional[str] = None,
 ) -> models.Profile:
     profile = models.Profile(
         user_id=user_id,
@@ -135,6 +138,9 @@ def create_profile(
         education=education,
         skills=skills,
         current_location=current_location,
+        service_pincode=service_pincode,
+        service_locality=service_locality,
+        location_source=location_source,
     )
     db.add(profile)
     db.commit()

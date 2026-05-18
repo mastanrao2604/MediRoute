@@ -6,11 +6,15 @@
             <certificates src="system" />
         </trust-anchors>
     </base-config>
-    <!-- Allow cleartext to local addresses in debug builds only -->
+    <!-- Allow cleartext to local/dev addresses -->
+    <!-- 10.0.2.2     = Android emulator host-loopback alias                  -->
+    <!-- 127.0.0.1    = loopback                                               -->
+    <!-- 10.116.142.143 = dev machine WiFi IP (update if network changes)      -->
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="true">10.0.2.2</domain>
         <domain includeSubdomains="true">localhost</domain>
         <domain includeSubdomains="true">127.0.0.1</domain>
+        <domain includeSubdomains="true">10.116.142.143</domain>
     </domain-config>
     <!-- Trust user-installed CAs in debug builds (e.g. Charles Proxy) -->
     <debug-overrides>

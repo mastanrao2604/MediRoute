@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
 import { navigateAfterLogin } from '../utils/authNav';
+import { mlog, mlogError } from '../utils/mobileLogger';
 
 const RESEND_COOLDOWN = 30; // seconds
 
@@ -14,6 +15,11 @@ export default function OTPVerify() {
   const { login } = useAuth();
 
   const [otp, setOtp] = useState(devOtp);
+
+  useEffect(() => {
+    // Never logs the actual OTP value — only whether dev autofill hints were present
+    mlog('otp', 'verify_screen_open', { autofilled: !!devOtp });
+  }, [devOtp]);
   const [loading, setLoading] = useState(false);
   const [resending, setResending] = useState(false);
   const [error, setError] = useState('');
@@ -39,6 +45,7 @@ export default function OTPVerify() {
     }
     setError('');
     setLoading(true);
+    mlog('otp', 'verify_start');
     try {
       const res = await api.post('/auth/verify-otp', { phone, otp: otp.trim() });
       const { access_token: accessToken, refresh_token: refreshToken } = res.data;
@@ -46,9 +53,11 @@ export default function OTPVerify() {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       const userData = meRes.data;
+      mlog('auth', 'login_success', { role: userData.role });
       login(accessToken, userData, refreshToken);
       navigateAfterLogin(userData, navigate);
     } catch (err) {
+      mlogError('otp', 'verify_fail', err);
       setError(err.response?.data?.detail || 'Invalid OTP. Please try again.');
     } finally {
       setLoading(false);

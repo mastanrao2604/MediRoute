@@ -101,9 +101,9 @@ if ($Release) {
     if (-not (Test-Path $keystoreFile)) {
         Fail "Release build requires frontend/android/keystore.properties.`nCopy from keystore.properties.example and fill in your signing credentials."
     }
-    & .\gradlew.bat assembleRelease
+    & .\gradlew.bat assembleRelease --no-daemon
 } else {
-    & .\gradlew.bat assembleDebug
+    & .\gradlew.bat assembleDebug --no-daemon
 }
 
 if ($LASTEXITCODE -ne 0) { Fail "Gradle build failed" }

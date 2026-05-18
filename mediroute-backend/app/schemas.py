@@ -146,6 +146,8 @@ class UserResponse(BaseModel):
     is_verified: bool = False
     # Computed: True when the user has filled essential candidate profile fields
     profile_complete: bool = False
+    service_pincode: Optional[str] = None
+    service_locality: Optional[str] = None
 
 
 # ─── Profile ──────────────────────────────────────────────────────────────────
@@ -157,6 +159,9 @@ class ProfileCreate(BaseModel):
     education: Optional[str] = None
     skills: str
     current_location: Optional[str] = None
+    service_pincode: Optional[str] = None
+    service_locality: Optional[str] = None
+    location_source: Optional[str] = None
 
     @field_validator("experience_years")
     @classmethod
@@ -172,6 +177,34 @@ class ProfileCreate(BaseModel):
             raise ValueError("skills must not be empty")
         return v.strip()
 
+    @field_validator("service_pincode")
+    @classmethod
+    def service_pincode_normalize(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or not str(v).strip():
+            return None
+        clean = "".join(c for c in str(v) if c.isdigit())
+        if len(clean) != 6:
+            raise ValueError("service_pincode must be exactly 6 digits")
+        return clean
+
+    @field_validator("service_locality", mode="before")
+    @classmethod
+    def locality_strip(cls, v):
+        if v is None or not isinstance(v, str):
+            return None
+        s = v.strip()
+        return s[:255] if s else None
+
+    @field_validator("location_source")
+    @classmethod
+    def loc_source_normalize(cls, v: Optional[str]) -> Optional[str]:
+        if not v:
+            return None
+        vv = str(v).strip().lower()
+        if vv in ("gps", "manual"):
+            return vv
+        raise ValueError("location_source must be 'gps', 'manual', or omitted")
+
 
 class ProfileResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -182,6 +215,9 @@ class ProfileResponse(BaseModel):
     education: Optional[str] = None
     skills: Optional[str] = None
     current_location: Optional[str] = None
+    service_pincode: Optional[str] = None
+    service_locality: Optional[str] = None
+    location_source: Optional[str] = None
     created_at: datetime
 
 

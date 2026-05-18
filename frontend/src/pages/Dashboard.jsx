@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api/axios';
 import MainLayout from '../layouts/MainLayout';
@@ -11,6 +11,13 @@ const DISPATCH_ELIGIBLE_ROLES = new Set([
   'home_care_nurse', 'doctor', 'lab_tech', 'pharmacist', 'driver', 'front_office',
 ]);
 
+const URGENCY_LABEL = {
+  emergency: { label: 'Right Now',         color: 'bg-red-100 text-red-700' },
+  urgent:    { label: 'Within Few Hours',  color: 'bg-orange-100 text-orange-700' },
+  standard:  { label: "Today's Shift",     color: 'bg-blue-100 text-blue-700' },
+  planned:   { label: 'Plan Ahead',        color: 'bg-gray-100 text-gray-700' },
+};
+
 export default function Dashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -18,6 +25,21 @@ export default function Dashboard() {
   const [profile, setProfile] = useState(null);
   const [preferences, setPreferences] = useState(null);
   const [loading, setLoading] = useState(false);  // start false — shell renders immediately
+
+  // Pending dispatch offers — loaded on mount + after visibility toggle
+  const [pendingOffers, setPendingOffers]   = useState([]);
+  const [acceptingId,   setAcceptingId]     = useState(null);
+  const [offerError,    setOfferError]      = useState('');
+
+  const isDispatchEligible = DISPATCH_ELIGIBLE_ROLES.has(user?.role);
+
+  const fetchPendingOffers = useCallback(async () => {
+    if (!isDispatchEligible) return;
+    try {
+      const res = await api.get('/dispatch/offers/pending');
+      setPendingOffers(res.data?.offers || []);
+    } catch { /* non-critical */ }
+  }, [isDispatchEligible]);
 
   useEffect(() => {
     // Single /dashboard call replaces 3 separate requests (profile + preferences + applications).
@@ -31,7 +53,30 @@ export default function Dashboard() {
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, []);
+
+    // Load pending dispatch offers (missed WebSocket deliveries)
+    fetchPendingOffers();
+  }, [fetchPendingOffers]);
+
+  async function handleAcceptOffer(offerId) {
+    setAcceptingId(offerId);
+    setOfferError('');
+    try {
+      await api.post(`/dispatch/offers/${offerId}/accept`);
+      setPendingOffers(prev => prev.filter(o => o.offer_id !== offerId));
+    } catch (err) {
+      setOfferError(err.response?.data?.detail || 'Could not accept offer. Try again.');
+    } finally {
+      setAcceptingId(null);
+    }
+  }
+
+  async function handleDeclineOffer(offerId) {
+    try {
+      await api.post(`/dispatch/offers/${offerId}/decline`);
+      setPendingOffers(prev => prev.filter(o => o.offer_id !== offerId));
+    } catch { /* ignore */ }
+  }
 
   function profileCompletionScore() {
     if (!profile) return 0;
@@ -71,8 +116,74 @@ export default function Dashboard() {
 
         {/* Availability toggle — only for dispatch-eligible healthcare workers */}
         {DISPATCH_ELIGIBLE_ROLES.has(user?.role) && (
-          <div className="mb-6">
+          <div className="mb-4">
             <AvailabilityToggle />
+          </div>
+        )}
+
+        {/* Pending Dispatch Offers — missed WebSocket deliveries recovered from API */}
+        {isDispatchEligible && pendingOffers.length > 0 && (
+          <div className="mb-6">
+            <div className="flex items-center gap-2 mb-2">
+              <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+              <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide">
+                Active Shift Offers
+              </h2>
+              <span className="text-xs bg-red-100 text-red-700 px-1.5 py-0.5 rounded-full font-semibold">
+                {pendingOffers.length}
+              </span>
+            </div>
+            {offerError && (
+              <p className="text-xs text-red-600 mb-2 bg-red-50 px-3 py-1.5 rounded-lg">{offerError}</p>
+            )}
+            <div className="flex flex-col gap-3">
+              {pendingOffers.map((offer) => {
+                const urgMeta = URGENCY_LABEL[offer.urgency] || URGENCY_LABEL.standard;
+                const expiresMin = Math.max(0, Math.round((offer.expires_in_sec || 0) / 60));
+                return (
+                  <div
+                    key={offer.offer_id}
+                    className="bg-white rounded-2xl border border-orange-200 shadow-sm p-4"
+                  >
+                    <div className="flex items-start justify-between gap-3 mb-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold text-gray-900 truncate">{offer.hospital_name}</p>
+                        <p className="text-xs text-gray-500 mt-0.5">
+                          {offer.role?.replace(/_/g, ' ')} · starts {new Date(offer.shift_start).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </p>
+                        {offer.pay_rate && (
+                          <p className="text-xs text-green-600 mt-0.5 font-medium">{offer.pay_rate}</p>
+                        )}
+                      </div>
+                      <div className="shrink-0 flex flex-col items-end gap-1">
+                        <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${urgMeta.color}`}>
+                          {urgMeta.label}
+                        </span>
+                        {expiresMin > 0 && (
+                          <span className="text-xs text-amber-600">Expires in {expiresMin}m</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleAcceptOffer(offer.offer_id)}
+                        disabled={acceptingId === offer.offer_id}
+                        className="flex-1 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-semibold py-2.5 rounded-xl text-sm transition-colors"
+                      >
+                        {acceptingId === offer.offer_id ? 'Accepting…' : 'Accept Shift'}
+                      </button>
+                      <button
+                        onClick={() => handleDeclineOffer(offer.offer_id)}
+                        disabled={acceptingId === offer.offer_id}
+                        className="px-4 bg-gray-100 hover:bg-gray-200 disabled:opacity-50 text-gray-700 font-semibold py-2.5 rounded-xl text-sm transition-colors"
+                      >
+                        Decline
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
 

@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
+import { DISPATCH_ELIGIBLE_ROLES } from '../context/AvailabilityContext';
+import { savePincode, loadPincode, reverseGeocodeCoords, normalizeIndianPincode } from '../utils/geocodePincode';
 
 const ROLES = [
   { value: 'nurse',           label: 'Nurse' },
@@ -64,6 +66,10 @@ function chipToCountry(chip, custom) {
 // Whether a role value is a job-seeker (not recruiter)
 const isJobSeeker = (r) => r && r !== 'recruiter';
 
+function needsServiceArea(r) {
+  return r && DISPATCH_ELIGIBLE_ROLES.has(r);
+}
+
 export default function Onboarding() {
   const navigate = useNavigate();
   const { login, token, user } = useAuth();
@@ -76,6 +82,12 @@ export default function Onboarding() {
   // ── Professional details (job seeker only) ────────────────────────────────
   const [expYears,         setExpYears]         = useState(null);
   const [city,             setCity]             = useState('');
+  const [pincode,          setPincode]          = useState(() => loadPincode());
+  const [serviceLocality, setServiceLocality]   = useState('');
+  /** How service pincode was set — required with 6-digit pin for dispatch-eligible roles */
+  const [locationSource,   setLocationSource]   = useState(() => '');
+  const [capturingGeo, setCapturingGeo]         = useState(false);
+
   const [skills,           setSkills]           = useState('');
   const [jobType,          setJobType]          = useState('');
   const [passport,         setPassport]         = useState('unknown');
@@ -113,7 +125,15 @@ export default function Onboarding() {
       if (profileRes.status === 'fulfilled') {
         const p = profileRes.value.data;
         if (p.experience_years != null) setExpYears(p.experience_years);
-        if (p.current_location)         setCity(p.current_location);
+        if (p.current_location)          setCity(p.current_location);
+        if (p.service_pincode) {
+          const pc = normalizeIndianPincode(p.service_pincode);
+          if (pc) setPincode(pc);
+        }
+        if (p.service_locality)       setServiceLocality(p.service_locality);
+        if (p.location_source === 'gps' || p.location_source === 'manual') {
+          setLocationSource(p.location_source);
+        }
         if (p.skills)                   setSkills(p.skills);
       }
       if (prefsRes.status === 'fulfilled') {
@@ -143,6 +163,42 @@ export default function Onboarding() {
     }
   }
 
+  // ── Service area via GPS — reverse-geocode → pincode (no lat/long shown to user) ──
+  function captureServiceAreaFromGPS() {
+    if (!navigator.geolocation) {
+      setError('Location is not supported on this device. Enter your pincode manually.');
+      return;
+    }
+    setCapturingGeo(true);
+    setError('');
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        try {
+          const rev = await reverseGeocodeCoords(pos.coords.latitude, pos.coords.longitude);
+          const pc = normalizeIndianPincode(rev.pincode);
+          if (!pc) {
+            setError('Could not read a postal code from your location. Enter your pincode manually.');
+            setCapturingGeo(false);
+            return;
+          }
+          setPincode(pc);
+          savePincode(pc);
+          setServiceLocality(rev.locality || '');
+          setLocationSource('gps');
+        } catch {
+          setError('Area lookup failed. Try again or enter your pincode manually.');
+        } finally {
+          setCapturingGeo(false);
+        }
+      },
+      () => {
+        setError('Location access denied — enter your 6-digit service pincode manually.');
+        setCapturingGeo(false);
+      },
+      { timeout: 15000, maximumAge: 120000, enableHighAccuracy: false },
+    );
+  }
+
   // ── Submit ────────────────────────────────────────────────────────────────
   async function handleSubmit(e) {
     e.preventDefault();
@@ -155,6 +211,18 @@ export default function Onboarding() {
     if (isJobSeeker(role) && (expYears === null || !skills.trim())) {
       setError('Please select your experience level and add at least one skill.');
       return;
+    }
+
+    if (isJobSeeker(role) && needsServiceArea(role)) {
+      const cleanPin = normalizeIndianPincode(pincode);
+      if (!cleanPin) {
+        setError('Set your service area to receive nearby shifts: enter your 6-digit pincode.');
+        return;
+      }
+      if (locationSource !== 'gps' && locationSource !== 'manual') {
+        setError('Use "Use my current location" or enter your pincode manually.');
+        return;
+      }
     }
 
     setLoading(true);
@@ -176,12 +244,23 @@ export default function Onboarding() {
         experience_years: expYears,
         skills: skills.trim(),
         current_location: city.trim() || undefined,
+        ...(needsServiceArea(role) ? {
+          service_pincode: normalizeIndianPincode(pincode),
+          service_locality: serviceLocality.trim() || undefined,
+          location_source: locationSource,
+        } : {}),
       };
       try {
         await api.put('/profile/me', profileData);
       } catch (err) {
         if (err.response?.status === 404) await api.post('/profile/', profileData);
         else throw err;
+      }
+
+      // 2a. Mirror service pincode locally for availability geocode fallback
+      if (needsServiceArea(role)) {
+        const pc = normalizeIndianPincode(pincode);
+        if (pc) savePincode(pc);
       }
 
       // 3. Validate country if abroad/both selected
@@ -335,6 +414,48 @@ export default function Onboarding() {
                         className="w-full border border-gray-300 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
                       />
                     </div>
+
+                    {/* Service area — mandatory for realtime dispatch */}
+                    {needsServiceArea(role) && (
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                          Service area (pincode) <span className="text-red-500">*</span>
+                          <span className="ml-1.5 text-xs text-indigo-600 font-normal">for nearby urgent shifts</span>
+                        </label>
+                        <p className="text-xs text-gray-500 mb-2">
+                          Use your phone location once, or enter your area pincode. We never show map coordinates here.
+                        </p>
+                        <div className="flex flex-wrap gap-2 mb-3">
+                          <button
+                            type="button"
+                            disabled={capturingGeo}
+                            onClick={captureServiceAreaFromGPS}
+                            className="flex-1 min-w-[8rem] py-2.5 px-3 rounded-xl text-sm font-semibold border border-indigo-600 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 disabled:opacity-50 transition-colors"
+                          >
+                            {capturingGeo ? 'Getting location…' : '📍 Use my current location'}
+                          </button>
+                        </div>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          maxLength={6}
+                          value={pincode}
+                          onChange={(e) => {
+                            const v = e.target.value.replace(/\D/g, '');
+                            setPincode(v);
+                            if (normalizeIndianPincode(v)) setLocationSource('manual');
+                          }}
+                          placeholder="Or type 6-digit pincode manually"
+                          className="w-full border border-gray-300 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
+                        />
+                        {(locationSource === 'gps' || locationSource === 'manual') && (
+                          <p className="text-xs text-gray-500 mt-1">
+                            Saved as: <span className="font-medium">{locationSource === 'gps' ? 'Live location → pincode' : 'Manual pincode'}</span>
+                            {serviceLocality ? ` · ${serviceLocality}` : ''}
+                          </p>
+                        )}
+                      </div>
+                    )}
 
                     {/* Skills */}
                     <div>

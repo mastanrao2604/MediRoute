@@ -106,6 +106,10 @@ class Profile(Base):
     education = Column(String, nullable=True)
     skills = Column(Text, nullable=True)
     current_location = Column(String, nullable=True)
+    # Nurse service area for dispatch prioritisation (6-digit postal code, India).
+    service_pincode = Column(String(10), nullable=True)
+    service_locality = Column(String(255), nullable=True)
+    location_source = Column(String(32), nullable=True)  # 'gps' | 'manual' | None
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="profile")
@@ -441,6 +445,7 @@ class ShiftRequest(Base):
     hospital_name = Column(String, nullable=False)
     hospital_latitude = Column(Float, nullable=False)
     hospital_longitude = Column(Float, nullable=False)
+    hospital_pincode = Column(String(10), nullable=True)
     shift_start = Column(DateTime, nullable=False)
     shift_end = Column(DateTime, nullable=True)
     status = Column(

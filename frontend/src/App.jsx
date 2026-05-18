@@ -11,6 +11,7 @@ import InstallPrompt from './components/InstallPrompt';
 import UpdatePrompt from './components/UpdatePrompt';
 import { getPostLoginRoute } from './utils/authNav';
 import { useWebSocket } from './hooks/useWebSocket';
+import { mlog } from './utils/mobileLogger';
 import { usePushNotifications } from './hooks/usePushNotifications';
 import DispatchOfferModal from './components/DispatchOfferModal';
 
@@ -78,6 +79,7 @@ const RecruiterOnboarding = lazy(() => import('./pages/RecruiterOnboarding'));
 const AdminDashboard      = lazy(() => import('./pages/AdminDashboard'));
 const PhoneLinkVerify     = lazy(() => import('./pages/PhoneLinkVerify'));
 const DispatchOps         = lazy(() => import('./pages/DispatchOps'));
+const PostShift           = lazy(() => import('./pages/PostShift'));
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 const ADMIN_PHONE = import.meta.env.VITE_ADMIN_PHONE || '';
@@ -217,32 +219,64 @@ const DISPATCH_ELIGIBLE_ROLES = new Set([
 ]);
 
 function DispatchManager() {
-  const { user, token } = useAuth();
+  const { user, token, revalidate } = useAuth();
   const [currentOffer, setCurrentOffer] = useState(null);
+  // minimizedOffer: offer was dismissed (×) but NOT declined — banner shown so nurse can reopen
+  const [minimizedOffer, setMinimizedOffer] = useState(null);
   const { publish } = useDispatchEvents();
 
   // WS reconnect banner: only shown after 4s of confirmed disconnection
   // (avoids flashing on normal app start before first connection)
   const [showReconnectBanner, setShowReconnectBanner] = useState(false);
 
+  // Dismiss (×): close the sheet but keep offer accessible via mini-banner
+  const handleModalClose = useCallback(() => {
+    setMinimizedOffer(prev => currentOffer ?? prev);
+    setCurrentOffer(null);
+  }, [currentOffer]);
+
+  // Reopen: tap mini-banner to restore the sheet
+  const handleBannerTap = useCallback(() => {
+    if (!minimizedOffer) return;
+    setCurrentOffer(minimizedOffer);
+    setMinimizedOffer(null);
+  }, [minimizedOffer]);
+
   const handleMessage = useCallback((msg) => {
     switch (msg.type) {
       case 'dispatch_offer':
         // Deduplicate same offer_id (double WS delivery or WS+FCM)
+        // Attach receivedAt so remaining time can be calculated on reopen
+        setMinimizedOffer(null); // new offer supersedes any minimized one
         setCurrentOffer(prev => {
           if (prev?.offer_id === msg.offer_id) return prev;
-          return DISPATCH_ELIGIBLE_ROLES.has(user?.role) ? msg : prev;
+          return DISPATCH_ELIGIBLE_ROLES.has(user?.role)
+            ? { ...msg, _receivedAt: Date.now() }
+            : prev;
         });
         break;
 
+      case 'offer_revoked': {
+        const sid = Number(msg.shift_id);
+        setCurrentOffer(prev =>
+          (Number(prev?.shift_id) === sid ? null : prev),
+        );
+        setMinimizedOffer(prev =>
+          (Number(prev?.shift_id) === sid ? null : prev),
+        );
+        break;
+      }
+
       case 'assignment_confirmed':
         setCurrentOffer(null);
+        setMinimizedOffer(null);
         break;
 
       case 'dispatch_started':
       case 'dispatch_wave_update':
       case 'shift_filled':
       case 'shift_expired':
+      case 'shift_cancelled':
       case 'dispatch_error':
         // Publish to DispatchContext — RecruiterDashboard reads from there
         publish(msg);
@@ -254,7 +288,7 @@ function DispatchManager() {
   }, [user?.role, publish]);
 
   const shouldConnect = !!token && !!user;
-  const { isConnected } = useWebSocket(shouldConnect ? user : null, token, handleMessage);
+  const { isConnected } = useWebSocket(shouldConnect ? user : null, token, handleMessage, revalidate);
 
   // FCM token registration + notification tap routing (Capacitor Android only).
   usePushNotifications(shouldConnect ? user : null, token, handleMessage);
@@ -267,10 +301,29 @@ function DispatchManager() {
     return () => clearTimeout(t);
   }, [isConnected, shouldConnect]);
 
+  // Re-render minimized banner every second so the countdown stays accurate
+  const [, setMiniBannerTick] = useState(0);
+  useEffect(() => {
+    if (!minimizedOffer) return undefined;
+    const id = setInterval(() => setMiniBannerTick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [minimizedOffer]);
+
+  // Compute remaining offer seconds for the mini-banner countdown label
+  const miniSecondsLeft = minimizedOffer
+    ? Math.max(0, (minimizedOffer.expires_in_sec || 30) - Math.floor((Date.now() - (minimizedOffer._receivedAt || Date.now())) / 1000))
+    : 0;
+
+  // Clear stale minimized state once the offer window has passed
+  useEffect(() => {
+    if (!minimizedOffer || miniSecondsLeft > 0) return;
+    setMinimizedOffer(null);
+  }, [minimizedOffer, miniSecondsLeft]);
+
   return (
     <>
       {/* Reconnect banner — subtle, non-blocking, auto-dismisses on reconnect */}
-      {showReconnectBanner && (
+      {showReconnectBanner && !minimizedOffer && (
         <div
           className="fixed top-0 inset-x-0 z-40 flex items-center justify-center gap-2 bg-amber-500 text-white text-xs font-medium py-1.5 px-4"
           style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 0.375rem)' }}
@@ -280,10 +333,22 @@ function DispatchManager() {
         </div>
       )}
 
+      {/* Minimized offer mini-banner — tapping reopens the dispatch sheet */}
+      {!currentOffer && minimizedOffer && miniSecondsLeft > 0 && (
+        <button
+          onClick={handleBannerTap}
+          className="fixed top-0 inset-x-0 z-40 flex items-center justify-center gap-2 bg-orange-500 text-white text-xs font-semibold py-1.5 px-4 w-full text-left"
+          style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 0.375rem)' }}
+        >
+          <span className="w-2 h-2 rounded-full bg-white animate-pulse shrink-0" />
+          ⚡ Shift offer waiting · {miniSecondsLeft}s — tap to view
+        </button>
+      )}
+
       {currentOffer && (
         <DispatchOfferModal
           offer={currentOffer}
-          onClose={() => setCurrentOffer(null)}
+          onClose={handleModalClose}
         />
       )}
     </>
@@ -313,6 +378,26 @@ export default function App() {
  */
 function AuthAwareShell() {
   const { user } = useAuth();
+
+  // Log app cold-start once after React mounts (Capacitor is fully ready by then)
+  useEffect(() => {
+    mlog('lifecycle', 'app_start');
+  }, []);
+
+  // Log foreground / background transitions via Capacitor App plugin
+  useEffect(() => {
+    let handle;
+    (async () => {
+      try {
+        const { App: CapApp } = await import('@capacitor/app');
+        handle = await CapApp.addListener('appStateChange', ({ isActive }) => {
+          mlog('lifecycle', isActive ? 'foreground' : 'background');
+        });
+      } catch { /* not running in Capacitor */ }
+    })();
+    return () => { handle?.remove?.(); };
+  }, []);
+
   return (
     <AvailabilityProvider user={user}>
       <AppLinkHandler />
@@ -340,7 +425,8 @@ function AuthAwareShell() {
         {/* Recruiter — only accessible to users with role=recruiter */}
         <Route path="/recruiter/onboarding" element={<ProtectedRoute allowedRole="recruiter"><RecruiterOnboarding /></ProtectedRoute>} />
         <Route path="/recruiter/dashboard" element={<ProtectedRoute allowedRole="recruiter"><RecruiterDashboard /></ProtectedRoute>} />
-        <Route path="/recruiter/post-job" element={<ProtectedRoute allowedRole="recruiter"><PostJob /></ProtectedRoute>} />
+        <Route path="/recruiter/post-job"   element={<ProtectedRoute allowedRole="recruiter"><PostJob /></ProtectedRoute>} />
+        <Route path="/recruiter/post-shift" element={<ProtectedRoute allowedRole="recruiter"><PostShift /></ProtectedRoute>} />
         <Route path="/recruiter/jobs/:jobId/applicants" element={<ProtectedRoute allowedRole="recruiter"><Applicants /></ProtectedRoute>} />
         <Route path="/recruiter/applications/:applicationId" element={<ProtectedRoute allowedRole="recruiter"><CandidateDetail /></ProtectedRoute>} />
 
