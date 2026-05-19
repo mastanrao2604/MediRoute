@@ -293,11 +293,12 @@ def get_job_by_id(db: Session, job_id: int) -> Optional[models.Job]:
 # ─── Recruiter CRUD ───────────────────────────────────────────────────────────
 
 def get_recruiter_jobs(db: Session, user_id: int) -> List[models.Job]:
+    archived_ids = db.query(models.JobRecruiterArchive.job_id)
     return (
         db.query(models.Job)
         .filter(
             models.Job.posted_by_user_id == user_id,
-            models.Job.recruiter_archived_at.is_(None),
+            ~models.Job.id.in_(archived_ids),
         )
         .order_by(models.Job.created_at.desc())
         .all()

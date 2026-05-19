@@ -173,7 +173,6 @@ class Job(Base):
     recruiter_id = Column(Integer, ForeignKey("recruiters.id"), nullable=True)
     posted_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
-    recruiter_archived_at = Column(DateTime, nullable=True)
 
     company = relationship("Company", back_populates="jobs")
     recruiter = relationship("Recruiter", back_populates="jobs")
@@ -186,6 +185,16 @@ class Job(Base):
         # get_recruiter_jobs() filters by posted_by_user_id ORDER BY created_at
         Index("idx_job_posted_by", "posted_by_user_id", "created_at"),
     )
+
+
+class JobRecruiterArchive(Base):
+    """Recruiter-hidden jobs (dashboard list only; job row kept for applicants)."""
+
+    __tablename__ = "job_recruiter_archives"
+
+    job_id = Column(Integer, ForeignKey("jobs.id", ondelete="CASCADE"), primary_key=True)
+    archived_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    archived_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
 
 class Application(Base):

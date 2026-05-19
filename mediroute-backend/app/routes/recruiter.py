@@ -80,9 +80,20 @@ def archive_job(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only remove your own job posts",
         )
-    if getattr(job, "recruiter_archived_at", None) is not None:
+    existing = (
+        db.query(models.JobRecruiterArchive)
+        .filter(models.JobRecruiterArchive.job_id == job_id)
+        .first()
+    )
+    if existing:
         return {"success": True, "job_id": job_id}
-    job.recruiter_archived_at = datetime.utcnow()
+    db.add(
+        models.JobRecruiterArchive(
+            job_id=job_id,
+            archived_by_user_id=current_user.id,
+            archived_at=datetime.utcnow(),
+        )
+    )
     db.commit()
     return {"success": True, "job_id": job_id}
 
