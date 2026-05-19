@@ -8,6 +8,7 @@ import { useAuth } from '../context/AuthContext';
 import { navigateAfterLogin } from '../utils/authNav';
 import { validateIndianPhone, stripCountryCode } from '../utils/phoneValidation';
 import { mlog, mlogError } from '../utils/mobileLogger';
+import { formatApiErrorDetail } from '../utils/apiErrorMessage';
 
 // True only inside the Android/iOS Capacitor shell — false in browser.
 const IS_NATIVE = Capacitor.isNativePlatform();
@@ -58,24 +59,35 @@ export default function Login() {
     mlog('otp', 'send_start');
     try {
       console.log('[OTP] sending to', validation.cleaned);
-      const res = await api.post('/auth/send-otp', { phone: validation.cleaned });
+      const res = await api.post('/auth/send-otp', { phone: validation.cleaned }, { timeout: 45000 });
       const devMode = !!res.data.dev_otp;
       console.log('[OTP] response status', res.status, 'dev_otp present:', devMode);
       mlog('otp', 'send_success', { dev_mode: devMode });
+      // Persist dev OTP briefly — Capacitor WebViews sometimes lose history state across bridge/hydration
+      try {
+        if (res.data?.dev_otp != null && String(res.data.dev_otp).trim() !== '') {
+          sessionStorage.setItem(
+            'mr_dev_otp_pending',
+            String(res.data.dev_otp).replace(/\D/g, '').slice(0, 6),
+          );
+        }
+      } catch (_) { /* ignore quota / privacy mode */ }
       navigate('/verify-otp', { state: { phone: validation.cleaned, devOtp: res.data.dev_otp } });
     } catch (err) {
       console.error('[OTP] send-otp error:', err?.message, err?.response?.status, err?.response?.data);
       if (err?.response?.status === 502) {
         console.warn(
-          '[OTP] Backend returned 502. For DEV OTP (dev_otp in JSON), the app must call a backend with ENV=development — not production Render/MSG91. Rebuild APK with scripts/build-android.ps1 -DevBackend or point VITE_API_URL at your PC.',
+          '[OTP] Backend returned 502 — origin/proxy unreachable or crashed. Check VITE_API_URL and backend health.',
         );
       }
       mlogError('otp', 'send_fail', err);
-      const raw = err?.response?.data?.detail;
+      const isTimeout =
+        err?.code === 'ECONNABORTED' || String(err?.message || '').includes('timeout');
+      const detail = formatApiErrorDetail(err?.response?.data?.detail);
       setError(
-        typeof raw === 'string' ? raw
-          : Array.isArray(raw) ? raw.map((e) => e.msg || String(e)).join('. ')
-          : 'Failed to send OTP. Try again.',
+        isTimeout
+          ? 'Request timed out — the server may be waking up. Try again in a few seconds.'
+          : detail || 'Failed to send OTP. Try again.',
       );
     } finally {
       setLoading(false);

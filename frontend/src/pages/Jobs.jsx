@@ -77,14 +77,20 @@ export default function Jobs() {
       await api.post('/applications', { job_id: jobId });
       showToast('Applied successfully!');
     } catch (err) {
-      showToast(err.response?.data?.detail || 'Could not apply.');
+      showToast(formatApiErrorDetail(err.response?.data?.detail) || err.message || 'Could not apply.');
     } finally {
       setApplying(null);
     }
   }
 
   function showToast(msg) {
-    setToast(msg);
+    const text =
+      typeof msg === 'string'
+        ? msg
+        : formatApiErrorDetail(msg)
+          || (msg != null && typeof msg.message === 'string' ? msg.message : '')
+          || 'Something went wrong';
+    setToast(text);
     setTimeout(() => setToast(''), 3000);
   }
 

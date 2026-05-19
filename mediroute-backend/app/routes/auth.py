@@ -98,11 +98,15 @@ def send_otp(data: schemas.OTPRequest, db: Session = Depends(get_db)):
       • OTP stored in DB and written to otp_dev.log when ENV≠production or OTP_FORCE_DEV is enabled.
       • `dev_otp` field returned in response for test convenience.
 
-    Production (ENV=production with MSG91 configured):
-      • OTP generated and managed entirely by MSG91 — never stored in our DB.
+    Pilot (ENV=production with SMS_PROVIDER=log, as in root render.yaml):
+      • Same as development: DB OTP + `dev_otp` in JSON — no MSG91 calls.
+
+    Production MSG91 (ENV=production and SMS_PROVIDER unset legacy or SMS_PROVIDER=msg91 with keys):
+      • OTP generated and managed by MSG91 — not stored in our DB.
       • Rate-limited to 3 requests per 5 minutes per phone.
 
-    Note: Copied `.env.example` with ENV=production but placeholder MSG91 keys routes SMS through MSG91 and fails — use ENV=development locally or valid MSG91 credentials.
+    Note: ENV=production with SMS_PROVIDER omitted still expects MSG91 keys (legacy Render setups).
+          Use SMS_PROVIDER=log until MSG91 is configured.
     """
     dev_otp = otp_service.send_otp(phone=data.phone, db=db)
 

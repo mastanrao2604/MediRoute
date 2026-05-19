@@ -2,10 +2,12 @@
 OTP Service — production-ready MSG91 integration.
 
 Modes (controlled by environment):
-  Production   ENV=production        → MSG91 OTP API (OTP_FORCE_DEV is ignored)
-  Development  ENV=development       → DB-stored OTP + dev_otp in API response
-  Legacy       ENV unset             → MSG91 if MSG91_AUTH_KEY is set, else DB OTP
-  Optional     OTP_FORCE_DEV=true    → DB OTP when ENV is not production (local overrides)
+  MSG91 path     ENV=production and (SMS_PROVIDER unset legacy, or SMS_PROVIDER=msg91) with MSG91 keys
+  Pilot / log    SMS_PROVIDER=log (or empty when set explicitly) — DB OTP + dev_otp even if ENV=production
+                 Aligns with root render.yaml default SMS_PROVIDER=log before MSG91 is configured.
+  Development    ENV=development — DB OTP + dev_otp
+  Legacy         ENV unset — MSG91 if MSG91_AUTH_KEY set (and log rules), else DB OTP
+  Optional       OTP_FORCE_DEV=true — DB OTP when ENV is not production (local overrides)
 
 Public API:
   send_otp(phone, db?)  → Optional[str]  (returns OTP in dev only)
@@ -361,15 +363,26 @@ def _dev_verify(phone: str, otp: str, db: Session) -> bool:
 
 def _is_production() -> bool:
     """
-    Return True when running in production / MSG91 mode.
+    Return True when OTP send/verify should use the MSG91 OTP API (not DB dev_otp).
 
-    Rules (first match wins):
-      ENV=production           → production (MSG91); cannot be overridden (deploy safety)
-      ENV=development          → dev (DB + log)
-      OTP_FORCE_DEV=1/true     → dev when ENV is not production (local convenience)
-      MSG91_AUTH_KEY is set    → production (MSG91) — backward compat when ENV unset
-      otherwise                → dev (DB + log)
+    Render pilot: dashboard sets SMS_PROVIDER=log — we must NOT call MSG91 even if ENV=production.
+
+    When SMS_PROVIDER is unset, legacy behaviour is preserved: ENV=production → MSG91 path.
+    When SMS_PROVIDER is set to anything other than msg91, we use DB OTP (Twilio etc. not wired here).
     """
+    sms_raw = os.getenv("SMS_PROVIDER")
+    if sms_raw is not None:
+        s = sms_raw.strip().lower()
+        if not s or s == "log":
+            return False
+        if s != "msg91":
+            logger.warning(
+                "[OTP] SMS_PROVIDER=%r is not msg91 — using DB-backed OTP (dev_otp). "
+                "Set SMS_PROVIDER=msg91 and MSG91_* for live SMS.",
+                sms_raw,
+            )
+            return False
+
     env = os.getenv("ENV", "").strip().lower()
     if env == "production":
         return True
@@ -389,14 +402,16 @@ def _is_production() -> bool:
 
 def validate_production_config() -> None:
     """
-    Call at startup to validate MSG91 configuration.
+    Call at startup to validate MSG91 configuration where required.
 
-    - Logs which OTP mode is active (production MSG91 / development)
+    - Logs which OTP mode is active (MSG91 / pilot DB + dev_otp / development)
     - Logs which env vars are set (names only, never values)
-    - RAISES RuntimeError if ENV=production but required MSG91 vars are missing
-      (fail fast at deploy time, not silently at the first user OTP request)
+    - RAISES RuntimeError only if ENV=production on the MSG91 path but MSG91_* are missing
+
+    Pilot: ENV=production + SMS_PROVIDER=log uses DB OTP; MSG91 keys are not required.
     """
     env = os.getenv("ENV", "").strip().lower()
+    sms_raw = os.getenv("SMS_PROVIDER")
     auth_key_set = bool(os.getenv("MSG91_AUTH_KEY"))
     template_id_set = bool(os.getenv("MSG91_TEMPLATE_ID"))
     sender_id_set = bool(os.getenv("MSG91_SENDER_ID"))
@@ -408,31 +423,51 @@ def validate_production_config() -> None:
     )
 
     logger.info(
-        "[OTP] Config | ENV=%r | OTP_FORCE_DEV=%s | MSG91_AUTH_KEY=%s | MSG91_TEMPLATE_ID=%s | MSG91_SENDER_ID=%s",
+        "[OTP] Config | ENV=%r | SMS_PROVIDER=%r | OTP_FORCE_DEV=%s | MSG91_AUTH_KEY=%s | MSG91_TEMPLATE_ID=%s | MSG91_SENDER_ID=%s",
         env,
-        "requested (ignored if ENV=production)" if force_dev_requested else "off",
+        sms_raw,
+        "requested (ignored on MSG91 path)" if force_dev_requested else "off",
         "SET" if auth_key_set else "MISSING",
         "SET" if template_id_set else "MISSING",
         "SET" if sender_id_set else "not set (optional)",
     )
 
-    if env == "production" and force_dev_requested:
-        logger.warning(
-            "[OTP] OTP_FORCE_DEV is set but ignored — ENV=production always uses MSG91."
-        )
-
     if env == "production":
+        using_msg91 = True
+        if sms_raw is not None:
+            s = sms_raw.strip().lower()
+            if not s or s == "log" or s != "msg91":
+                using_msg91 = False
+        else:
+            # Unset SMS_PROVIDER preserves legacy behaviour: MSG91 in production when keys exist / required
+            using_msg91 = True
+
+        if using_msg91 and force_dev_requested:
+            logger.warning(
+                "[OTP] OTP_FORCE_DEV is set but ignored — ENV=production SMS path is MSG91 "
+                "(SMS_PROVIDER unset or msg91)."
+            )
+
+        if not using_msg91:
+            logger.warning(
+                "[OTP] ENV=production with SMS_PROVIDER=%r — DB-backed OTP with dev_otp "
+                "(pilot/log mode). MSG91 vars not required.",
+                sms_raw,
+            )
+            logger.info("[OTP] Mode: PILOT (DB OTP) — no MSG91 API calls")
+            return
+
         missing = [v for v, ok in [
             ("MSG91_AUTH_KEY", auth_key_set),
             ("MSG91_TEMPLATE_ID", template_id_set),
         ] if not ok]
         if missing:
             raise RuntimeError(
-                f"[OTP] FATAL: ENV=production but required env vars are not set: "
+                f"[OTP] FATAL: ENV=production (SMS_PROVIDER unset or msg91) but MSG91 env vars missing: "
                 f"{', '.join(missing)}. "
-                "Add these in the Render environment variables panel and redeploy."
+                "Set them on Render or use SMS_PROVIDER=log for pilot DB OTP."
             )
-        logger.info("[OTP] Mode: PRODUCTION — real SMS will be sent via MSG91")
+        logger.info("[OTP] Mode: PRODUCTION MSG91 — OTP via MSG91 OTP API")
     else:
         mode = "PRODUCTION (key-based)" if _is_production() else "DEVELOPMENT (DB + log)"
         logger.warning(

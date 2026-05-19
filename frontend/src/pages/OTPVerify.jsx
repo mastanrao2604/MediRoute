@@ -4,26 +4,57 @@ import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
 import { navigateAfterLogin } from '../utils/authNav';
 import { mlog, mlogError } from '../utils/mobileLogger';
+import { formatApiErrorDetail } from '../utils/apiErrorMessage';
 
 const RESEND_COOLDOWN = 30; // seconds
+
+/** Normalize OTP for input (digits only, max 6). Backend always sends six-digit dev_otp strings. */
+function normalizeOtpInput(val) {
+  if (val == null || val === '') return '';
+  return String(val).replace(/\D/g, '').slice(0, 6);
+}
 
 export default function OTPVerify() {
   const { state } = useLocation();
   const phone = state?.phone || '';
-  const devOtp = state?.devOtp || '';
+  const devOtpHint = normalizeOtpInput(state?.devOtp);
   const navigate = useNavigate();
   const { login } = useAuth();
 
-  const [otp, setOtp] = useState(devOtp);
-
-  useEffect(() => {
-    // Never logs the actual OTP value — only whether dev autofill hints were present
-    mlog('otp', 'verify_screen_open', { autofilled: !!devOtp });
-  }, [devOtp]);
+  const [otp, setOtp] = useState('');
+  const [showDevAssist, setShowDevAssist] = useState(Boolean(devOtpHint));
   const [loading, setLoading] = useState(false);
   const [resending, setResending] = useState(false);
   const [error, setError] = useState('');
   const [resendTimer, setResendTimer] = useState(RESEND_COOLDOWN);
+
+  // Re-apply whenever navigation state/session provides pilot/dev OTP (native WebViews may omit history.state briefly)
+  useEffect(() => {
+    let loaded = '';
+    try {
+      const stored = normalizeOtpInput(sessionStorage.getItem('mr_dev_otp_pending'));
+      if (devOtpHint) loaded = devOtpHint;
+      else if (stored) loaded = stored;
+
+      if (loaded) {
+        setOtp(loaded);
+        setShowDevAssist(true);
+        try {
+          sessionStorage.removeItem('mr_dev_otp_pending');
+        } catch (_) { /* noop */ }
+      }
+    } catch (_) {
+      if (devOtpHint) {
+        setOtp(devOtpHint);
+        setShowDevAssist(true);
+      }
+    }
+
+    mlog('otp', 'verify_screen_open', {
+      autofilled: Boolean(loaded || devOtpHint),
+      from_storage_fallback: Boolean(loaded && !devOtpHint),
+    });
+  }, [phone, devOtpHint]);
 
   // Guard: if no phone in state, user navigated here directly — send them back
   useEffect(() => {
@@ -58,7 +89,9 @@ export default function OTPVerify() {
       navigateAfterLogin(userData, navigate);
     } catch (err) {
       mlogError('otp', 'verify_fail', err);
-      setError(err.response?.data?.detail || 'Invalid OTP. Please try again.');
+      setError(
+        formatApiErrorDetail(err.response?.data?.detail) || 'Invalid OTP. Please try again.',
+      );
     } finally {
       setLoading(false);
     }
@@ -69,11 +102,15 @@ export default function OTPVerify() {
     setResending(true);
     setError('');
     try {
-      const res = await api.post('/auth/send-otp', { phone });
-      if (res.data.dev_otp) setOtp(res.data.dev_otp);
+      const res = await api.post('/auth/send-otp', { phone }, { timeout: 45000 });
+      const next = normalizeOtpInput(res.data?.dev_otp);
+      if (next) {
+        setOtp(next);
+        setShowDevAssist(true);
+      }
       setResendTimer(RESEND_COOLDOWN);
     } catch (err) {
-      setError(err.response?.data?.detail || 'Could not resend OTP.');
+      setError(formatApiErrorDetail(err.response?.data?.detail) || 'Could not resend OTP.');
     } finally {
       setResending(false);
     }
@@ -94,9 +131,9 @@ export default function OTPVerify() {
             OTP sent to <span className="font-medium text-gray-700">{phone}</span>
           </p>
 
-          {devOtp && (
+          {showDevAssist && otp && (
             <p className="text-xs bg-yellow-50 border border-yellow-200 text-yellow-800 px-3 py-2 rounded-lg mb-4">
-              <strong>DEV MODE:</strong> OTP auto-filled — {devOtp}
+              <strong>DEV MODE:</strong> OTP auto-filled — {otp}
             </p>
           )}
 
@@ -105,6 +142,8 @@ export default function OTPVerify() {
               <label className="block text-sm font-medium text-gray-700 mb-1.5">OTP Code</label>
               <input
                 type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
                 value={otp}
                 onChange={(e) => setOtp(e.target.value)}
                 placeholder="Enter 6-digit OTP"
