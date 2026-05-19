@@ -65,6 +65,11 @@ export default function Login() {
       navigate('/verify-otp', { state: { phone: validation.cleaned, devOtp: res.data.dev_otp } });
     } catch (err) {
       console.error('[OTP] send-otp error:', err?.message, err?.response?.status, err?.response?.data);
+      if (err?.response?.status === 502) {
+        console.warn(
+          '[OTP] Backend returned 502. For DEV OTP (dev_otp in JSON), the app must call a backend with ENV=development — not production Render/MSG91. Rebuild APK with scripts/build-android.ps1 -DevBackend or point VITE_API_URL at your PC.',
+        );
+      }
       mlogError('otp', 'send_fail', err);
       const raw = err?.response?.data?.detail;
       setError(

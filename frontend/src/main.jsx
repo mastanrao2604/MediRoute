@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import * as Sentry from '@sentry/react'
 import { Capacitor } from '@capacitor/core'
+import './debugLogBootstrap.js'
 import './index.css'
 import App from './App.jsx'
 

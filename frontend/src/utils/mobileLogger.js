@@ -4,9 +4,11 @@
  * Storage: app internal data directory (always available, no permissions needed)
  *   Android path: /data/data/com.mediroute.app/files/mr-logs/app.log
  *
- * Pull logs (debug APK only — run-as works because the APK is debuggable):
+ * Pull on device (debug APK): scripts/android-pull-mr-logs.ps1 or:
  *   adb shell run-as com.mediroute.app cat files/mr-logs/app.log > app.log
  *   adb shell run-as com.mediroute.app cat files/mr-logs/app.log.1 > app.log.1
+ *
+ * Pilot helpers: scripts/android-debug-verify.ps1, android-debug-logcat-operational.ps1
  *
  * Format: NDJSON — one JSON object per line, newest entries at the bottom.
  * Rotation: when app.log exceeds ~200 KB it is archived as app.log.1 and
@@ -15,12 +17,39 @@
  * NEVER log: auth tokens, raw OTP values, passwords, phone numbers, patient data.
  * Safe to log: categories, event names, HTTP status codes, anonymised IDs.
  *
- * All public functions are synchronous and fire-and-forget — they never throw
- * to the caller and never block the UI thread.
+ * Enable adb logcat (debug) mirror for mlog: set VITE_DEBUG_LOG=true, use ?debugLog=1,
+ * or localStorage mediroute_debug_log=1 — see isDebugLogMirrorEnabled().
  */
 import { Capacitor } from '@capacitor/core';
 
 const IS_NATIVE = Capacitor.isNativePlatform();
+
+/**
+ * When true, every mlog line is also emitted as console.debug so it shows in
+ * adb logcat (Chromium WebView). Enable via:
+ *   • VITE_DEBUG_LOG=true at build time, or
+ *   • localStorage mediroute_debug_log=1 (see debugLogBootstrap.js / ?debugLog=1), or
+ *   • import.meta.env.DEV (vite dev server)
+ */
+export function isDebugLogMirrorEnabled() {
+  try {
+    if (import.meta.env.VITE_DEBUG_LOG === 'false') return false;
+    if (import.meta.env.VITE_DEBUG_LOG === 'true') return true;
+    if (import.meta.env.DEV) return true;
+    if (typeof window !== 'undefined' && window.localStorage?.getItem('mediroute_debug_log') === '1') {
+      return true;
+    }
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
+
+/** Ad-hoc debug lines (same guard as mlog mirror). */
+export function dlog(...args) {
+  if (!isDebugLogMirrorEnabled()) return;
+  console.debug('[MR]', ...args);
+}
 const LOG_DIR   = 'mr-logs';
 const LOG_FILE  = `${LOG_DIR}/app.log`;
 const LOG_ARCH  = `${LOG_DIR}/app.log.1`;
@@ -86,6 +115,7 @@ async function _doWrite(line) {
  * mlog(category, event, data?)
  *
  * category : 'auth' | 'otp' | 'websocket' | 'api' | 'dispatch' | 'lifecycle' | 'error'
+ *            | 'availability' | 'notification'
  * event    : short snake_case string  e.g. 'otp_send_start'
  * data     : optional flat object — NO tokens, NO OTP values, NO passwords
  *
@@ -94,6 +124,9 @@ async function _doWrite(line) {
  *   mlog('websocket', 'closed', { code: 1006, backoff_sec: 4 });
  */
 export function mlog(category, event, data = {}) {
+  if (isDebugLogMirrorEnabled()) {
+    console.debug('[MR mlog]', category, event, data);
+  }
   if (!IS_NATIVE) return;
 
   const entry = { ts: _now(), cat: category, ev: event, ...data };

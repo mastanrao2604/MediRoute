@@ -94,13 +94,15 @@ def send_otp(data: schemas.OTPRequest, db: Session = Depends(get_db)):
     """
     Send a 6-digit OTP to the given phone number.
 
-    Production (MSG91_AUTH_KEY set):
+    Development:
+      • OTP stored in DB and written to otp_dev.log when ENV≠production or OTP_FORCE_DEV is enabled.
+      • `dev_otp` field returned in response for test convenience.
+
+    Production (ENV=production with MSG91 configured):
       • OTP generated and managed entirely by MSG91 — never stored in our DB.
       • Rate-limited to 3 requests per 5 minutes per phone.
 
-    Development (no MSG91_AUTH_KEY):
-      • OTP stored in DB and written to otp_dev.log.
-      • `dev_otp` field returned in response for test convenience.
+    Note: Copied `.env.example` with ENV=production but placeholder MSG91 keys routes SMS through MSG91 and fails — use ENV=development locally or valid MSG91 credentials.
     """
     dev_otp = otp_service.send_otp(phone=data.phone, db=db)
 

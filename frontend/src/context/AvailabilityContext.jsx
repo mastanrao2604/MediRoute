@@ -22,7 +22,7 @@ import {
 } from 'react';
 import api from '../api/axios';
 import { geocodePincode, loadPincode } from '../utils/geocodePincode';
-import { mlog } from '../utils/mobileLogger';
+import { mlog, mlogError } from '../utils/mobileLogger';
 
 const HEARTBEAT_INTERVAL_MS = 90_000;
 
@@ -176,7 +176,12 @@ export function AvailabilityProvider({ children, user }) {
       });
       setIsAvailable(res.data.is_available);
       setPresenceState(res.data.presence_state);
+      mlog('availability', wantAvailable ? 'toggle_online_ok' : 'toggle_offline_ok', {
+        city_id: cityRef.current,
+        loc_source: wantAvailable ? locSource : 'none',
+      });
     } catch (err) {
+      mlogError('availability', 'toggle_failed', err);
       const detail = err.response?.data?.detail;
       setError(typeof detail === 'string' ? detail : 'Could not update availability. Please try again.');
     } finally {

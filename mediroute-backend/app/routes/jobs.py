@@ -16,13 +16,14 @@ _JOB_APPROVAL_REQUIRED = os.getenv("JOB_APPROVAL_REQUIRED", "false").lower() == 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 
 
+@router.get("", response_model=List[schemas.JobResponse])
 @router.get("/", response_model=List[schemas.JobResponse])
 def list_jobs(
     role: Optional[models.UserRole] = Query(None),
     location: Optional[str] = Query(None),
     job_type: Optional[models.JobType] = Query(None),
     skip: int = Query(0, ge=0),
-    limit: int = Query(20, ge=1, le=100),
+    limit: int = Query(100, ge=1, le=200),
     db: Session = Depends(get_db),
 ):
     """List jobs with optional filters for role, location, and job type."""

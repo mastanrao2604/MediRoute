@@ -13,7 +13,7 @@
  */
 import { useEffect, useRef, useCallback, useState } from 'react';
 import api from '../api/axios';
-import { mlog } from '../utils/mobileLogger';
+import { mlog, mlogError } from '../utils/mobileLogger';
 
 const BASE_URL =
   import.meta.env.VITE_API_URL ??
@@ -52,11 +52,14 @@ export function useWebSocket(user, token, onMessage, onAuthError) {
     try {
       const res = await api.get('/dispatch/offers/pending');
       const offers = res.data?.offers || [];
+      if (offers.length > 0) {
+        mlog('websocket', 'pending_offers_recovered', { count: offers.length });
+      }
       for (const offer of offers) {
         onMessage({ type: 'dispatch_offer', ...offer });
       }
-    } catch {
-      // Non-critical — ignore
+    } catch (err) {
+      mlogError('websocket', 'pending_offers_fetch_failed', err);
     }
   }, [onMessage]);
 
@@ -193,6 +196,7 @@ export function useWebSocket(user, token, onMessage, onAuthError) {
             || ws.readyState === WebSocket.CLOSED
             || ws.readyState === WebSocket.CLOSING;
           if (isDead && mountedRef.current) {
+            mlog('websocket', 'resume_reconnect');
             // Cancel any pending backoff timer and reconnect immediately
             clearTimeout(reconnectTimer.current);
             backoffRef.current = 1;

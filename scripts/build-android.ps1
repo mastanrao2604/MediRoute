@@ -8,17 +8,27 @@
     Skip Vite build + Capacitor sync. Gradle + adb only.
 .PARAMETER Launch
     Launch the app on device after install.
+.PARAMETER DevBackend
+    Bake VITE_API_URL=http://127.0.0.1:8000 into the bundle (overrides .env for this run).
+    Runs `adb reverse tcp:8000 tcp:8000` so the phone reaches uvicorn on the PC.
+    Required for DEV OTP: backend must use ENV=development (DB dev_otp), not Render/production MSG91.
+.PARAMETER ApiUrl
+    Override VITE_API_URL for this build only (e.g. http://10.0.2.2:8000 for emulator).
+    Does not run adb reverse — use -DevBackend for USB device + localhost.
 .USAGE
     powershell -ExecutionPolicy Bypass -File scripts\build-android.ps1
     powershell -ExecutionPolicy Bypass -File scripts\build-android.ps1 -Release
     powershell -ExecutionPolicy Bypass -File scripts\build-android.ps1 -SkipBuild
     powershell -ExecutionPolicy Bypass -File scripts\build-android.ps1 -Launch
+    powershell -ExecutionPolicy Bypass -File scripts\build-android.ps1 -Launch -DevBackend
 #>
 
 param(
     [switch]$Release,
     [switch]$SkipBuild,
-    [switch]$Launch
+    [switch]$Launch,
+    [switch]$DevBackend,
+    [string]$ApiUrl = ""
 )
 
 $root       = Split-Path $PSScriptRoot -Parent
@@ -29,11 +39,27 @@ function Step($msg) { Write-Host "`n>>> $msg" -ForegroundColor Cyan }
 function Ok($msg)   { Write-Host "  [OK]  $msg" -ForegroundColor Green }
 function Fail($msg) { Write-Host "`n  [ERR] $msg`n" -ForegroundColor Red; exit 1 }
 
+if ($DevBackend -and $ApiUrl -ne "") {
+    Fail "Use either -DevBackend or -ApiUrl, not both."
+}
+
+$viteApiOverride = $null
+if ($DevBackend) {
+    $viteApiOverride = "http://127.0.0.1:8000"
+}
+elseif ($ApiUrl -ne "") {
+    $viteApiOverride = $ApiUrl
+}
+
 $buildVariant = if ($Release) { "Release" } else { "Debug" }
+
 Write-Host "`n================================================" -ForegroundColor White
 Write-Host "  MediRoute Android Build - $buildVariant" -ForegroundColor White
 Write-Host "================================================" -ForegroundColor White
 
+if ($SkipBuild -and $null -ne $viteApiOverride) {
+    Write-Host "  [WARN] -SkipBuild: VITE_API_URL override is skipped - APK still has the URL from the last full frontend build." -ForegroundColor Yellow
+}
 # --- Resolve node (PATH first, then bundled fallback) ---
 $nodeExe = $null
 if (Get-Command node -ErrorAction SilentlyContinue) {
@@ -77,19 +103,34 @@ Ok "Device: $($devices | Select-Object -First 1)"
 
 # --- Vite build + Capacitor sync ---
 if (-not $SkipBuild) {
-    Step "Building frontend (Vite)"
-    if (-not (Test-Path (Join-Path $frontend "node_modules"))) {
-        Fail "node_modules not found. Run scripts\setup1.ps1 first."
+    if ($null -ne $viteApiOverride) {
+        $prevViteUrl = $env:VITE_API_URL
+        $env:VITE_API_URL = $viteApiOverride
+        Ok "VITE_API_URL for this build (session override): $viteApiOverride"
     }
-    Set-Location $frontend
-    & $nodeExe "node_modules\vite\bin\vite.js" build
-    if ($LASTEXITCODE -ne 0) { Fail "Vite build failed" }
-    Ok "Vite build succeeded"
+    try {
+        Step "Building frontend (Vite)"
+        if (-not (Test-Path (Join-Path $frontend "node_modules"))) {
+            Fail "node_modules not found. Run scripts\setup1.ps1 first."
+        }
+        Set-Location $frontend
+        & $nodeExe "node_modules\vite\bin\vite.js" build
+        if ($LASTEXITCODE -ne 0) { Fail "Vite build failed" }
+        Ok "Vite build succeeded"
 
-    Step "Syncing Capacitor"
-    & $nodeExe "node_modules\@capacitor\cli\bin\capacitor" sync android
-    if ($LASTEXITCODE -ne 0) { Fail "Capacitor sync failed" }
-    Ok "Capacitor synced"
+        Step "Syncing Capacitor"
+        & $nodeExe "node_modules\@capacitor\cli\bin\capacitor" sync android
+        if ($LASTEXITCODE -ne 0) { Fail "Capacitor sync failed" }
+        Ok "Capacitor synced"
+    } finally {
+        if ($null -ne $viteApiOverride) {
+            if ($null -eq $prevViteUrl -or $prevViteUrl -eq '') {
+                Remove-Item Env:\VITE_API_URL -ErrorAction SilentlyContinue
+            } else {
+                $env:VITE_API_URL = $prevViteUrl
+            }
+        }
+    }
 }
 
 # --- Gradle build ---
@@ -101,29 +142,37 @@ if ($Release) {
     if (-not (Test-Path $keystoreFile)) {
         Fail "Release build requires frontend/android/keystore.properties.`nCopy from keystore.properties.example and fill in your signing credentials."
     }
-    & .\gradlew.bat assembleRelease --no-daemon
+    & .\gradlew.bat assembleRelease --no-daemon --no-problems-report
 } else {
-    & .\gradlew.bat assembleDebug --no-daemon
+    & .\gradlew.bat assembleDebug --no-daemon --no-problems-report
 }
 
 if ($LASTEXITCODE -ne 0) { Fail "Gradle build failed" }
 Ok "APK build succeeded"
 
 # --- Find APK ---
+# app/build.gradle sets buildDir to File(rootDir.parentFile.parentFile, "build_app_debug"), which places
+# APKs under <repo>/build_app_debug/outputs (not frontend/android/app/build/outputs).
 Step "Locating APK"
-$outputsRoot = Join-Path $androidDir "app\build\outputs"
-$apkFile = $null
-if (Test-Path $outputsRoot) {
-    $apkFile = Get-ChildItem -LiteralPath $outputsRoot -Recurse -Filter "*.apk" -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+$apkKind = if ($Release) { "release" } else { "debug" }
+$outputsRoots = @(
+    (Join-Path $frontend "build_app_debug\outputs"),
+    (Join-Path $root "build_app_debug\outputs"),
+    (Join-Path $androidDir "app\build\outputs")
+)
+$candidates = @()
+foreach ($outputsRoot in $outputsRoots) {
+    if (-not (Test-Path $outputsRoot)) { continue }
+    $candidates += Get-ChildItem -LiteralPath $outputsRoot -Recurse -Filter "*.apk" -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -like "*\apk\$apkKind\*" }
 }
-if (-not $apkFile) {
-    $apkPattern = if ($Release) { "app\build\outputs\apk\release\*.apk" } else { "app\build\outputs\apk\debug\*.apk" }
-    $apkFile = Get-ChildItem (Join-Path $androidDir $apkPattern) -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $candidates -or $candidates.Count -eq 0) {
+    foreach ($outputsRoot in $outputsRoots) {
+        if (-not (Test-Path $outputsRoot)) { continue }
+        $candidates += Get-ChildItem -LiteralPath $outputsRoot -Recurse -Filter "*.apk" -ErrorAction SilentlyContinue
+    }
 }
-if (-not $apkFile) {
-    $apkFile = Get-ChildItem (Join-Path $androidDir "app\build\outputs\apk\*\MediRoute.apk") -ErrorAction SilentlyContinue | Select-Object -First 1
-}
+$apkFile = $candidates | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if (-not $apkFile) { Fail "APK not found after build." }
 Ok "APK: $($apkFile.FullName)"
 
@@ -132,6 +181,16 @@ Step "Installing APK to device"
 & $adbExe install -r $apkFile.FullName
 if ($LASTEXITCODE -ne 0) { Fail "adb install failed" }
 Ok "Installed successfully"
+
+if ($DevBackend) {
+    Step "USB reverse proxy (device http://127.0.0.1:8000 -> this PC port 8000)"
+    & $adbExe reverse tcp:8000 tcp:8000
+    if ($LASTEXITCODE -eq 0) {
+        Ok "adb reverse active - start backend: uvicorn app.main:app --host 127.0.0.1 --port 8000"
+    } else {
+        Write-Host "  [WARN] adb reverse failed - run: adb reverse tcp:8000 tcp:8000" -ForegroundColor Yellow
+    }
+}
 
 # --- Launch (optional) ---
 if ($Launch) {

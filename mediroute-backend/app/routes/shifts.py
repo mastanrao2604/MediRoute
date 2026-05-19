@@ -16,7 +16,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status, Query
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
@@ -281,6 +281,44 @@ def list_shifts(
         }
 
 
+@router.get("/browse")
+def browse_open_shifts(
+    city_id: Optional[str] = Query(None, description="Filter by dispatch city id (e.g. HYD)"),
+    role: Optional[models.UserRole] = Query(None, description="Filter by role required on the shift"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Open instant shifts for the Jobs listing (open + actively dispatching).
+
+    Authenticated users only. Used alongside GET /jobs so nurses see both shift work and postings.
+    """
+    q = (
+        db.query(models.ShiftRequest)
+        .filter(
+            models.ShiftRequest.status.in_(
+                (
+                    models.ShiftRequestStatus.open,
+                    models.ShiftRequestStatus.dispatching,
+                )
+            )
+        )
+    )
+    if city_id:
+        q = q.filter(models.ShiftRequest.city_id == city_id.strip())
+    if role:
+        q = q.filter(models.ShiftRequest.role_required == role)
+    shifts = (
+        q.order_by(models.ShiftRequest.shift_start.asc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+    return {"shifts": [_shift_to_dict(s) for s in shifts]}
+
+
 @router.get("/{shift_id}")
 def get_shift(
     shift_id: int,
@@ -303,9 +341,15 @@ def get_shift(
             models.LiveAssignment.shift_request_id == shift_id,
             models.LiveAssignment.nurse_user_id == current_user.id,
         ).first()
-        if not assignment:
-            raise HTTPException(status_code=403, detail="Access denied.")
-        return {"shift": _shift_to_dict(shift, assignment)}
+        if assignment:
+            return {"shift": _shift_to_dict(shift, assignment)}
+        # Browse/detail: nurses may view open shifts before receiving an offer
+        if shift.status in (
+            models.ShiftRequestStatus.open,
+            models.ShiftRequestStatus.dispatching,
+        ):
+            return {"shift": _shift_to_dict(shift, None)}
+        raise HTTPException(status_code=403, detail="Access denied.")
 
     assignment = db.query(models.LiveAssignment).filter(
         models.LiveAssignment.shift_request_id == shift_id

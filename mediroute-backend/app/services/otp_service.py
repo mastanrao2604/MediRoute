@@ -2,8 +2,10 @@
 OTP Service — production-ready MSG91 integration.
 
 Modes (controlled by environment):
-  Production  MSG91_AUTH_KEY is set  → MSG91 OTP API (no DB OTP storage)
-  Development  not set               → DB-stored OTP + dev log
+  Production   ENV=production        → MSG91 OTP API (OTP_FORCE_DEV is ignored)
+  Development  ENV=development       → DB-stored OTP + dev_otp in API response
+  Legacy       ENV unset             → MSG91 if MSG91_AUTH_KEY is set, else DB OTP
+  Optional     OTP_FORCE_DEV=true    → DB OTP when ENV is not production (local overrides)
 
 Public API:
   send_otp(phone, db?)  → Optional[str]  (returns OTP in dev only)
@@ -362,17 +364,26 @@ def _is_production() -> bool:
     Return True when running in production / MSG91 mode.
 
     Rules (first match wins):
-      ENV=production          → production (MSG91)
-      ENV=development         → dev (DB + log)
-      MSG91_AUTH_KEY is set   → production (MSG91) — backward compat
-      anything else           → dev (DB + log)
+      ENV=production           → production (MSG91); cannot be overridden (deploy safety)
+      ENV=development          → dev (DB + log)
+      OTP_FORCE_DEV=1/true     → dev when ENV is not production (local convenience)
+      MSG91_AUTH_KEY is set    → production (MSG91) — backward compat when ENV unset
+      otherwise                → dev (DB + log)
     """
-    env = os.getenv("ENV", "").lower()
+    env = os.getenv("ENV", "").strip().lower()
     if env == "production":
         return True
     if env == "development":
         return False
-    # Fallback: key-based auto-detection
+    force_dev = os.getenv("OTP_FORCE_DEV", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    if force_dev:
+        return False
+    # Fallback: key-based auto-detection (legacy deployments without ENV)
     return bool(os.getenv("MSG91_AUTH_KEY"))
 
 
@@ -385,18 +396,30 @@ def validate_production_config() -> None:
     - RAISES RuntimeError if ENV=production but required MSG91 vars are missing
       (fail fast at deploy time, not silently at the first user OTP request)
     """
-    env = os.getenv("ENV", "").lower()
+    env = os.getenv("ENV", "").strip().lower()
     auth_key_set = bool(os.getenv("MSG91_AUTH_KEY"))
     template_id_set = bool(os.getenv("MSG91_TEMPLATE_ID"))
     sender_id_set = bool(os.getenv("MSG91_SENDER_ID"))
+    force_dev_requested = os.getenv("OTP_FORCE_DEV", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
     logger.info(
-        "[OTP] Config | ENV=%r | MSG91_AUTH_KEY=%s | MSG91_TEMPLATE_ID=%s | MSG91_SENDER_ID=%s",
+        "[OTP] Config | ENV=%r | OTP_FORCE_DEV=%s | MSG91_AUTH_KEY=%s | MSG91_TEMPLATE_ID=%s | MSG91_SENDER_ID=%s",
         env,
+        "requested (ignored if ENV=production)" if force_dev_requested else "off",
         "SET" if auth_key_set else "MISSING",
         "SET" if template_id_set else "MISSING",
         "SET" if sender_id_set else "not set (optional)",
     )
+
+    if env == "production" and force_dev_requested:
+        logger.warning(
+            "[OTP] OTP_FORCE_DEV is set but ignored — ENV=production always uses MSG91."
+        )
 
     if env == "production":
         missing = [v for v, ok in [

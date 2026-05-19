@@ -1,0 +1,1 @@
+import{t as e}from"./jsx-runtime-BrvI1eZT.js";var t=e();function n({size:e=`md`,className:n=``}){return(0,t.jsx)(`div`,{className:`${{sm:`w-5 h-5 border-2`,md:`w-8 h-8 border-4`,lg:`w-12 h-12 border-4`}[e]??`w-8 h-8 border-4`} border-indigo-600 border-t-transparent rounded-full animate-spin ${n}`})}export{n as t};

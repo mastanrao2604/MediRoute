@@ -26,6 +26,9 @@ def delete_user(db: Session, user: models.User) -> None:
         aren't impacted, but the poster link is removed.
 
     OTPCode records are keyed by phone — cleared separately for privacy.
+
+    Dispatch tables (dispatch_offers, live_assignments, shift_requests) use FK
+    to users without DB-level CASCADE — we remove dependent rows explicitly.
     """
     user_id = user.id
     phone = user.phone
@@ -39,6 +42,40 @@ def delete_user(db: Session, user: models.User) -> None:
     if phone:
         db.query(models.OTPCode).filter(
             models.OTPCode.phone == phone
+        ).delete(synchronize_session=False)
+
+    # ── Dispatch graph (FK to users.id without ON DELETE CASCADE) ─────────────
+    # Nurse rows: assignments reference offers — delete assignments first.
+    db.query(models.LiveAssignment).filter(
+        models.LiveAssignment.nurse_user_id == user_id
+    ).delete(synchronize_session=False)
+
+    db.query(models.DispatchOffer).filter(
+        models.DispatchOffer.nurse_user_id == user_id
+    ).delete(synchronize_session=False)
+
+    # Hospital/recruiter-owned shift requests and all dependent dispatch rows
+    shift_ids = [
+        sid
+        for (sid,) in db.query(models.ShiftRequest.id).filter(
+            models.ShiftRequest.hospital_user_id == user_id
+        ).all()
+    ]
+    if shift_ids:
+        db.query(models.LiveAssignment).filter(
+            models.LiveAssignment.shift_request_id.in_(shift_ids)
+        ).delete(synchronize_session=False)
+        db.query(models.DispatchOffer).filter(
+            models.DispatchOffer.shift_request_id.in_(shift_ids)
+        ).delete(synchronize_session=False)
+        db.query(models.DispatchSession).filter(
+            models.DispatchSession.shift_request_id.in_(shift_ids)
+        ).delete(synchronize_session=False)
+        db.query(models.ShiftTimelineEvent).filter(
+            models.ShiftTimelineEvent.shift_request_id.in_(shift_ids)
+        ).delete(synchronize_session=False)
+        db.query(models.ShiftRequest).filter(
+            models.ShiftRequest.id.in_(shift_ids)
         ).delete(synchronize_session=False)
 
     # Delete the user — cascade handles Profile, Preferences, Applications,
@@ -237,7 +274,7 @@ def get_jobs(
     location: Optional[str] = None,
     job_type: Optional[models.JobType] = None,
     skip: int = 0,
-    limit: int = 20,
+    limit: int = 100,
 ) -> List[models.Job]:
     query = db.query(models.Job).filter(models.Job.status == models.JobStatus.open)
     if role:

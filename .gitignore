@@ -37,6 +37,7 @@ frontend/.env.production.local
 
 # Android build outputs
 frontend/android/app/build/
+frontend/android-root-build/
 frontend/android/.gradle/
 frontend/android/build/
 *.apk
@@ -54,6 +55,7 @@ Thumbs.db
 
 # Stray Android / CI build output at repo root
 build_app_debug/
+frontend/build_app_debug/
 
 # Stray build logs
 vite_output.txt

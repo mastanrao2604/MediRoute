@@ -17,6 +17,10 @@ buildscript {
 
 apply from: "variables.gradle"
 
+// Root Gradle outputs (problem reports, etc.) live outside frontend/android/build —
+// avoids Windows permission / IDE locks that break assembleDebug at end of build.
+rootProject.buildDir = file("${rootProject.projectDir.parentFile}/android-root-build")
+
 allprojects {
     repositories {
         google()

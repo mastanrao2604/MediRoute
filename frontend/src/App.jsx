@@ -27,22 +27,42 @@ class ErrorBoundary extends Component {
     return { hasError: true, error };
   }
   componentDidCatch(error, info) {
-    // Surface the error in the browser/logcat console for debugging.
-    console.error('[MediRoute ErrorBoundary]', error, info?.componentStack);
+    const msg = error?.message || String(error);
+    const stack = error?.stack || '';
+    const compStack = info?.componentStack || '';
+    // Verbose traces for adb logcat / Chrome remote debugging — filter tag "MediRoute" or "[MR EB]"
+    console.error('[MR EB] Uncaught React render error:', error?.name, msg);
+    console.error('[MR EB] error.stack:\n', stack);
+    console.error('[MR EB] componentStack:', compStack);
+    mlog('error', 'react_error_boundary', {
+      name: error?.name || 'Error',
+      msg: msg.slice(0, 500),
+      stack_tail: stack.slice(-1500),
+    });
     // Forward to Sentry (no-op if VITE_SENTRY_DSN is not set)
     Sentry.captureException(error, {
-      contexts: { react: { componentStack: info?.componentStack } },
+      contexts: { react: { componentStack: compStack } },
     });
   }
   render() {
     if (this.state.hasError) {
+      const err = this.state.error;
+      const showTech =
+        import.meta.env.DEV ||
+        (typeof window !== 'undefined' && window.localStorage?.getItem('mr_show_error_detail') === '1');
       return (
         <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center px-6 text-center">
           <div className="mb-4 text-4xl">⚠️</div>
           <h1 className="text-xl font-bold text-gray-800 mb-2">Something went wrong</h1>
           <p className="text-sm text-gray-500 mb-6">
-            {this.state.error?.message || 'An unexpected error occurred.'}
+            {err?.message || 'An unexpected error occurred.'}
           </p>
+          {showTech && (
+            <details className="text-left w-full max-w-xl mb-4 text-xs text-gray-600 bg-white border border-gray-200 rounded-xl p-3 overflow-auto max-h-48">
+              <summary className="cursor-pointer font-semibold text-gray-800">Technical details (dev / mr_show_error_detail)</summary>
+              <pre className="mt-2 whitespace-pre-wrap break-words">{err?.stack || String(err)}</pre>
+            </details>
+          )}
           <button
             onClick={() => { this.setState({ hasError: false, error: null }); window.location.href = '/'; }}
             className="bg-indigo-600 text-white text-sm font-semibold px-5 py-2.5 rounded-xl hover:bg-indigo-700 transition-colors"
@@ -243,8 +263,13 @@ function DispatchManager() {
   }, [minimizedOffer]);
 
   const handleMessage = useCallback((msg) => {
+    const tracePayload = () => ({
+      offer_id: msg.offer_id != null ? Number(msg.offer_id) : undefined,
+      shift_id: msg.shift_id != null ? Number(msg.shift_id) : undefined,
+    });
     switch (msg.type) {
       case 'dispatch_offer':
+        mlog('dispatch', 'ws_offer', tracePayload());
         // Deduplicate same offer_id (double WS delivery or WS+FCM)
         // Attach receivedAt so remaining time can be calculated on reopen
         setMinimizedOffer(null); // new offer supersedes any minimized one
@@ -257,6 +282,7 @@ function DispatchManager() {
         break;
 
       case 'offer_revoked': {
+        mlog('dispatch', 'ws_offer_revoked', { shift_id: Number(msg.shift_id) });
         const sid = Number(msg.shift_id);
         setCurrentOffer(prev =>
           (Number(prev?.shift_id) === sid ? null : prev),
@@ -268,6 +294,7 @@ function DispatchManager() {
       }
 
       case 'assignment_confirmed':
+        mlog('dispatch', 'ws_assignment_confirmed', tracePayload());
         setCurrentOffer(null);
         setMinimizedOffer(null);
         break;
@@ -278,6 +305,7 @@ function DispatchManager() {
       case 'shift_expired':
       case 'shift_cancelled':
       case 'dispatch_error':
+        mlog('dispatch', `ws_${msg.type}`, tracePayload());
         // Publish to DispatchContext — RecruiterDashboard reads from there
         publish(msg);
         break;

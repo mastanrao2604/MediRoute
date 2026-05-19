@@ -27,6 +27,7 @@
 import { useEffect, useRef } from 'react';
 import { Capacitor } from '@capacitor/core';
 import api from '../api/axios';
+import { mlog } from '../utils/mobileLogger';
 
 const IS_NATIVE = Capacitor.isNativePlatform();
 
@@ -65,6 +66,7 @@ export function usePushNotifications(user, token, onDispatchOffer) {
       }
       if (permResult.receive !== 'granted') {
         console.warn('[FCM] Notification permission denied — push delivery disabled');
+        mlog('notification', 'permission_denied', {});
         return;
       }
       if (cancelled) return;
@@ -108,6 +110,7 @@ export function usePushNotifications(user, token, onDispatchOffer) {
         try {
           await api.put('/device/token', { fcm_token: fcmToken, platform: 'android' });
           registeredTokenRef.current = fcmToken;
+          mlog('notification', 'fcm_registered', {});
           console.debug('[FCM] Token registered with backend (prefix:', fcmToken.slice(0, 12), ')');
         } catch (err) {
           // Non-critical — WS dispatch still works without a registered token
@@ -119,6 +122,7 @@ export function usePushNotifications(user, token, onDispatchOffer) {
       // Registration error (e.g. no google-services.json in debug build)
       const errListener = await PushNotifications.addListener('registrationError', (err) => {
         console.error('[FCM] Registration error:', err.error);
+        mlog('notification', 'fcm_registration_error', { msg: String(err?.error || '').slice(0, 120) });
       });
       cleanupFns.push(() => errListener.remove());
 
@@ -134,6 +138,10 @@ export function usePushNotifications(user, token, onDispatchOffer) {
           if (d.type !== 'dispatch_offer' || !d.offer_id) return;
           if (typeof onDispatchOffer !== 'function') return;
 
+          mlog('notification', 'push_offer_foreground', {
+            offer_id: Number(d.offer_id),
+            shift_id: d.shift_id != null ? Number(d.shift_id) : undefined,
+          });
           onDispatchOffer({
             type: 'dispatch_offer',
             offer_id: Number(d.offer_id),
@@ -165,6 +173,7 @@ export function usePushNotifications(user, token, onDispatchOffer) {
           const targetOfferId = d.offer_id ? Number(d.offer_id) : null;
 
           try {
+            mlog('notification', 'push_tap_recover_start', { target_offer_id: targetOfferId });
             const res = await api.get('/dispatch/offers/pending');
             const offers = res.data?.offers ?? [];
 
@@ -174,11 +183,17 @@ export function usePushNotifications(user, token, onDispatchOffer) {
               : offers[0];
 
             if (match) {
+              mlog('notification', 'push_tap_offer_restored', { offer_id: match.offer_id });
               onDispatchOffer({ type: 'dispatch_offer', ...match });
+            } else {
+              mlog('notification', 'push_tap_no_pending', { target_offer_id: targetOfferId });
             }
             // If no match: offer expired or was taken by another nurse — show nothing
           } catch (err) {
             console.warn('[FCM] Tap recovery failed:', err.message);
+            mlog('notification', 'push_tap_recover_failed', {
+              msg: (err?.message || '').slice(0, 120),
+            });
           }
         },
       );
@@ -188,6 +203,7 @@ export function usePushNotifications(user, token, onDispatchOffer) {
     setup().catch(err => {
       if (!err?.message?.includes('not implemented')) {
         console.error('[FCM] Setup failed:', err);
+        mlog('notification', 'setup_failed', { msg: String(err?.message || err).slice(0, 120) });
       }
     });
 

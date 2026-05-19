@@ -8,6 +8,17 @@ import { Capacitor } from '@capacitor/core';
 import { useNavigate } from 'react-router-dom';
 import { DISPATCH_ELIGIBLE_ROLES } from '../context/AvailabilityContext';
 import { reverseGeocodeCoords, normalizeIndianPincode, savePincode } from '../utils/geocodePincode';
+import { mlog, mlogError, isDebugLogMirrorEnabled } from '../utils/mobileLogger';
+
+/** Trace Profile navigation/fetch — debug console + native app.log via mlog when enabled. */
+function profileTrace(ev, data = {}) {
+  try {
+    if (isDebugLogMirrorEnabled()) {
+      console.debug('[MR Profile]', ev, data);
+    }
+    mlog('lifecycle', `prof_${ev}`, data);
+  } catch (_) { /* noop */ }
+}
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const JOB_TYPE_OPTIONS = [
@@ -61,7 +72,7 @@ export default function Profile() {
   const [isEditMode,    setIsEditMode]    = useState(false);
   const [form,          setForm]          = useState(EMPTY_PROFILE_FORM);
   const [prefsForm,     setPrefsForm]     = useState(EMPTY_PREFS_FORM);
-  const [fetching,      setFetching]      = useState(false);
+  const [fetching,      setFetching]      = useState(true);
   const [loading,       setLoading]       = useState(false);
   const [error,         setError]         = useState('');
   const [success,       setSuccess]       = useState('');
@@ -109,12 +120,51 @@ export default function Profile() {
         setPrefsForm(prefsToForm(prefsRes.value.data));
       }
       // 404 on preferences is fine — user just hasn't set them yet
+
+      const pHttp =
+        profileRes.status === 'fulfilled'
+          ? 'ok'
+          : profileRes.reason?.response?.status ?? profileRes.reason?.code ?? 'rejected';
+      const pfHttp =
+        prefsRes.status === 'fulfilled'
+          ? 'ok'
+          : prefsRes.reason?.response?.status ?? prefsRes.reason?.code ?? 'rejected';
+      profileTrace('fetch_done', { profile_http: pHttp, prefs_http: pfHttp });
+
+      if (profileRes.status === 'fulfilled' && profileRes.value?.data) {
+        const d = profileRes.value.data;
+        profileTrace('profile_shape', {
+          exp_t: typeof d.experience_years,
+          skills_t: typeof d.skills,
+          edu_t: typeof d.education,
+          pin_t: typeof d.service_pincode,
+        });
+      }
     } finally {
       setFetching(false);
     }
   }
 
   useEffect(() => { fetchAll(); }, []);
+
+  useEffect(() => {
+    profileTrace('mount', { role: user?.role, needs_service_area: needsServiceArea() });
+  }, [user?.role]);
+
+  useEffect(() => {
+    if (fetching) return;
+    profileTrace('post_fetch', {
+      view_mode: !!(profile && !isEditMode),
+      has_prefs: !!preferences,
+      types: profile
+        ? {
+            exp: typeof profile.experience_years,
+            skills: typeof profile.skills,
+            pin: typeof profile.service_pincode,
+          }
+        : null,
+    });
+  }, [fetching, profile, isEditMode, preferences]);
 
   // ── Resume helpers ────────────────────────────────────────────────────────
   async function fetchResumeStatus() {
@@ -244,21 +294,68 @@ export default function Profile() {
     }
   }
 
+  /** Reverse-geocode current GPS → pincode (same behaviour as Onboarding). */
+  function captureServiceAreaFromGPS() {
+    if (!navigator.geolocation) {
+      setError('Location is not supported on this device. Enter your pincode manually.');
+      return;
+    }
+    setServiceCapturing(true);
+    setError('');
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        try {
+          const rev = await reverseGeocodeCoords(pos.coords.latitude, pos.coords.longitude);
+          const pc = normalizeIndianPincode(rev.pincode);
+          if (!pc) {
+            setError('Could not read a postal code from your location. Enter your pincode manually.');
+            return;
+          }
+          setForm((f) => ({
+            ...f,
+            service_pincode: pc,
+            service_locality: rev.locality || '',
+            location_source: 'gps',
+          }));
+          savePincode(pc);
+        } catch {
+          setError('Area lookup failed. Try again or enter your pincode manually.');
+        } finally {
+          setServiceCapturing(false);
+        }
+      },
+      () => {
+        setError('Location access denied — enter your 6-digit service pincode manually.');
+        setServiceCapturing(false);
+      },
+      { timeout: 15000, maximumAge: 120000, enableHighAccuracy: false },
+    );
+  }
+
   // ── Account deletion ──────────────────────────────────────────────────────
   async function handleDeleteAccount() {
     setDeleteStep(2);
     setDeleteError('');
     try {
+      profileTrace('delete_account_start', {});
       await api.delete('/user/me');
-      // Clear session immediately — tokens are now invalid server-side
+      mlog('auth', 'delete_account_success');
+      // Clear session immediately — tokens revoked server-side; WS drops when auth clears
       await logout();
       navigate('/login', { replace: true });
     } catch (err) {
+      mlogError('auth', 'delete_account_failed', err);
+      console.warn('[Profile] delete account failed', err?.response?.status, err?.message);
       const raw = err.response?.data?.detail;
-      setDeleteError(
+      const detailMsg =
         typeof raw === 'string'
           ? raw
-          : 'Account deletion failed. Please try again or contact support@mediroute.in.',
+          : Array.isArray(raw)
+            ? raw.map((e) => e.msg || String(e)).join('. ')
+            : null;
+      setDeleteError(
+        detailMsg ||
+          'Account deletion failed. Please try again or contact support@mediroute.in.',
       );
       setDeleteStep(1); // stay on confirm step so user can retry
     }
@@ -783,10 +880,28 @@ export default function Profile() {
 }
 
 function ProfileField({ label, value }) {
+  let display;
+  if (value == null || value === '') {
+    display = '—';
+  } else if (
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  ) {
+    display = String(value);
+  } else {
+    console.warn('[MR Profile] ProfileField non-scalar', label, typeof value);
+    mlog('lifecycle', 'prof_field_non_scalar', { label, t: typeof value });
+    try {
+      display = JSON.stringify(value);
+    } catch {
+      display = '—';
+    }
+  }
   return (
     <div>
       <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-0.5">{label}</p>
-      <p className="text-sm text-gray-800">{value}</p>
+      <p className="text-sm text-gray-800">{display}</p>
     </div>
   );
 }
