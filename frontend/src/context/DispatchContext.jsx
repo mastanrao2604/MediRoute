@@ -43,13 +43,12 @@ export function DispatchProvider({ children }) {
 
     const now = Date.now();
 
-    // Record dispatch start time — only set once per shift (never overwritten)
     if (msg.type === 'dispatch_started') {
-      setStartTimes(prev => prev[shiftId] ? prev : { ...prev, [shiftId]: now });
+      setStartTimes((prev) => ({ ...prev, [shiftId]: now }));
     }
 
-    // Terminal: shift removed from active staffing — suppress stale elapsed indicators
-    if (msg.type === 'shift_cancelled') {
+    // Terminal states — stop elapsed timer
+    if (msg.type === 'shift_cancelled' || msg.type === 'shift_filled' || msg.type === 'shift_expired') {
       setStartTimes(prev => {
         const next = { ...prev };
         delete next[shiftId];
@@ -99,8 +98,26 @@ export function DispatchProvider({ children }) {
     return startTimes[shiftId] ?? null;
   }, [startTimes]);
 
+  /** Clear cached events after re-post so expired labels do not stick. */
+  const clearShift = useCallback((shiftId) => {
+    setEvents((prev) => {
+      if (!prev[shiftId]) return prev;
+      const next = { ...prev };
+      delete next[shiftId];
+      return next;
+    });
+    setStartTimes((prev) => {
+      if (!prev[shiftId]) return prev;
+      const next = { ...prev };
+      delete next[shiftId];
+      return next;
+    });
+  }, []);
+
   return (
-    <DispatchContext.Provider value={{ publish, getShiftStatus, getRecentEvents, getDispatchStartTime }}>
+    <DispatchContext.Provider value={{
+      publish, getShiftStatus, getRecentEvents, getDispatchStartTime, clearShift,
+    }}>
       {children}
     </DispatchContext.Provider>
   );

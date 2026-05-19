@@ -34,24 +34,26 @@ const STAFF_SHIFT_STATUS_PILL = {
 };
 
 function effectiveShiftStatus(shift, live) {
+  const db = shift?.status;
+
+  // Active API status wins over stale terminal WebSocket events (e.g. after Post again).
+  if (db === 'dispatching') return 'dispatching';
+  if (db === 'open') {
+    return isPastShiftStart(shift?.shift_start) ? 'expired' : 'open';
+  }
+
+  if (live?.type === 'dispatch_started' || live?.type === 'dispatch_wave_update') return 'dispatching';
   if (live?.type === 'shift_cancelled') return 'cancelled';
   if (live?.type === 'shift_filled') return 'filled';
   if (live?.type === 'shift_expired') return 'expired';
-  if (
-    isPastShiftStart(shift?.shift_start) &&
-    (shift.status === 'open' || shift.status === 'dispatching')
-  ) {
-    return 'expired';
-  }
-  if (live?.type === 'dispatch_started' || live?.type === 'dispatch_wave_update') return 'dispatching';
-  return shift.status;
+  return db;
 }
 
 export default function RecruiterDashboard() {
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuth();
-  const { getRecentEvents, getDispatchStartTime, getShiftStatus } = useDispatchEvents();
+  const { getRecentEvents, getDispatchStartTime, getShiftStatus, clearShift } = useDispatchEvents();
   const [jobs, setJobs] = useState([]);
   const [shifts, setShifts] = useState([]);
   const [fetching, setFetching] = useState(false);
@@ -123,6 +125,7 @@ export default function RecruiterDashboard() {
     setShiftBusyId(shiftId);
     try {
       await api.post(`/shifts/${shiftId}/re-dispatch`);
+      clearShift(shiftId);
       await loadShifts();
       setDetailShiftId(null);
     } catch (e) {
