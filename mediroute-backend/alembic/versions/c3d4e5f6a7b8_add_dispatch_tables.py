@@ -291,8 +291,16 @@ def upgrade() -> None:
 
     # ── Seed default Hyderabad zone for launch ───────────────────────────────
     op.execute("""
-        INSERT INTO dispatch_zones (city_id, zone_code, zone_name, center_latitude, center_longitude, radius_km)
-        VALUES ('HYD', 'HYD-BH', 'Banjara Hills / Jubilee Hills', 17.4126, 78.4471, 8.0)
+        INSERT INTO dispatch_zones (
+            city_id, zone_code, zone_name,
+            center_latitude, center_longitude, radius_km,
+            is_active, dispatch_paused
+        )
+        VALUES (
+            'HYD', 'HYD-BH', 'Banjara Hills / Jubilee Hills',
+            17.4126, 78.4471, 8.0,
+            TRUE, FALSE
+        )
         ON CONFLICT (zone_code) DO NOTHING
     """)
 
