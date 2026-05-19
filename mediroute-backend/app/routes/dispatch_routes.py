@@ -285,8 +285,10 @@ def get_pending_offers(
     Get pending (not yet expired) offers for the authenticated nurse.
     Call on WebSocket reconnect to recover any missed offers.
     """
+    from ..routes.shifts import _expire_shift_if_past_start_unfilled
+
     now = datetime.utcnow()
-    offers = (
+    rows = (
         db.query(models.DispatchOffer, models.ShiftRequest)
         .join(models.ShiftRequest, models.DispatchOffer.shift_request_id == models.ShiftRequest.id)
         .filter(
@@ -297,19 +299,28 @@ def get_pending_offers(
         .all()
     )
 
-    return {
-        "offers": [
-            {
-                "offer_id": offer.id,
-                "shift_id": shift.id,
-                "hospital_name": shift.hospital_name,
-                "role": shift.role_required.value,
-                "urgency": shift.urgency.value,
-                "shift_start": shift.shift_start.isoformat(),
-                "pay_rate": shift.pay_rate,
-                "expires_at": offer.expires_at.isoformat(),
-                "expires_in_sec": max(0, int((offer.expires_at - now).total_seconds())),
-            }
-            for offer, shift in offers
-        ]
-    }
+    payload = []
+    for offer, shift in rows:
+        if _expire_shift_if_past_start_unfilled(db, shift):
+            db.refresh(shift)
+            db.refresh(offer)
+        if shift.status not in (
+            models.ShiftRequestStatus.open,
+            models.ShiftRequestStatus.dispatching,
+        ):
+            continue
+        if offer.status != models.OfferStatus.pending or offer.expires_at <= now:
+            continue
+        payload.append({
+            "offer_id": offer.id,
+            "shift_id": shift.id,
+            "hospital_name": shift.hospital_name,
+            "role": shift.role_required.value,
+            "urgency": shift.urgency.value,
+            "shift_start": shift.shift_start.isoformat(),
+            "pay_rate": shift.pay_rate,
+            "expires_at": offer.expires_at.isoformat(),
+            "expires_in_sec": max(0, int((offer.expires_at - now).total_seconds())),
+        })
+
+    return {"offers": payload}

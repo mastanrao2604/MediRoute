@@ -9,6 +9,7 @@ import ShiftDispatchLive from '../components/recruiter/ShiftDispatchLive';
 import RecruiterShiftDetailSheet from '../components/recruiter/RecruiterShiftDetailSheet';
 import { mlog } from '../utils/mobileLogger';
 import { formatApiErrorDetail } from '../utils/apiErrorMessage';
+import { SHIFT_CARD_STATUS, SEARCH_PHASE_LABEL, isPastShiftStart } from '../utils/staffingStatusCopy';
 
 function formatShiftWhen(iso) {
   try {
@@ -33,11 +34,16 @@ const STAFF_SHIFT_STATUS_PILL = {
 };
 
 function effectiveShiftStatus(shift, live) {
-  if (!live) return shift.status;
-  if (live.type === 'shift_cancelled') return 'cancelled';
-  if (live.type === 'shift_filled') return 'filled';
-  if (live.type === 'shift_expired') return 'expired';
-  if (live.type === 'dispatch_started' || live.type === 'dispatch_wave_update') return 'dispatching';
+  if (live?.type === 'shift_cancelled') return 'cancelled';
+  if (live?.type === 'shift_filled') return 'filled';
+  if (live?.type === 'shift_expired') return 'expired';
+  if (
+    isPastShiftStart(shift?.shift_start) &&
+    (shift.status === 'open' || shift.status === 'dispatching')
+  ) {
+    return 'expired';
+  }
+  if (live?.type === 'dispatch_started' || live?.type === 'dispatch_wave_update') return 'dispatching';
   return shift.status;
 }
 
@@ -120,8 +126,9 @@ export default function RecruiterDashboard() {
       await loadShifts();
       setDetailShiftId(null);
     } catch (e) {
-      const d = e?.response?.data?.detail;
-      setShiftsError(typeof d === 'string' ? d : 'Could not restart dispatch.');
+      const msg = formatApiErrorDetail(e?.response?.data?.detail)
+        || 'Could not restart staff search.';
+      setShiftsError(msg);
     } finally {
       setShiftBusyId(null);
     }
@@ -176,6 +183,7 @@ export default function RecruiterDashboard() {
   // — removed: shell always renders; data loads inline below —
 
   return (
+    <>
     <MainLayout>
       <div className="max-w-3xl mx-auto px-4 py-4">
 
@@ -260,9 +268,8 @@ export default function RecruiterDashboard() {
                 const isLive = effective === 'dispatching' || effective === 'open';
                 const highlighted = highlightShiftId === s.id;
 
-                const statusShort =
-                  effective === 'dispatching' ? 'Searching' :
-                    effective.charAt(0).toUpperCase() + effective.slice(1);
+                const statusShort = SHIFT_CARD_STATUS[effective]
+                  || effective.charAt(0).toUpperCase() + effective.slice(1);
 
                 return (
                   <div
@@ -299,8 +306,14 @@ export default function RecruiterDashboard() {
                       />
                     )}
 
+                    {effective === 'expired' && (
+                      <p className="text-xs text-amber-800 font-medium">
+                        {live?.message || 'Shift expired — no nurse confirmed in time.'}
+                      </p>
+                    )}
+
                     {live?.type === 'shift_filled' && (
-                      <p className="text-xs text-green-700 font-medium">{live.message || 'Nurse assigned to this shift.'}</p>
+                      <p className="text-xs text-green-700 font-medium">{live.message || 'Nurse confirmed for this shift.'}</p>
                     )}
 
                     {(canCancel || canRedispatch || canArchive) && isVerified && (
@@ -322,7 +335,7 @@ export default function RecruiterDashboard() {
                             onClick={(e) => { e.stopPropagation(); redispatchStaffingShift(s.id); }}
                             className="text-xs font-semibold px-3 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
                           >
-                            Re-post
+                            Post again
                           </button>
                         )}
                         {canArchive && (
@@ -402,19 +415,20 @@ export default function RecruiterDashboard() {
           </div>
         )}
       </div>
+    </MainLayout>
 
       {detailShiftId && (
         <RecruiterShiftDetailSheet
           shiftId={detailShiftId}
           busy={!!shiftBusyId}
           onClose={() => setDetailShiftId(null)}
-          onUpdated={loadShifts}
+          onUpdated={async () => { await loadShifts(); }}
           onCancel={async (id) => { await cancelStaffingShift(id); setDetailShiftId(null); }}
           onArchive={archiveStaffingShift}
           onRedispatch={redispatchStaffingShift}
         />
       )}
-    </MainLayout>
+    </>
   );
 }
 
@@ -430,17 +444,17 @@ const EVENT_META = {
     active: true,
   },
   dispatch_wave_update: {
-    label: 'Searching…',   // overridden per-status below
+    label: 'Still searching for staff…',
     dot: 'bg-indigo-500', text: 'text-indigo-700', bg: 'bg-indigo-50',
     active: true,
   },
   shift_filled: {
-    label: 'Staff found ✓',
+    label: 'Staff confirmed',
     dot: 'bg-green-500', text: 'text-green-700', bg: 'bg-green-50',
     active: false,
   },
   shift_expired: {
-    label: 'No one accepted',
+    label: 'Shift expired',
     dot: 'bg-amber-400', text: 'text-amber-700', bg: 'bg-amber-50',
     active: false,
   },
@@ -450,20 +464,10 @@ const EVENT_META = {
     active: false,
   },
   dispatch_error: {
-    label: 'Dispatch error',
+    label: 'Search interrupted',
     dot: 'bg-red-500', text: 'text-red-700', bg: 'bg-red-50',
     active: false,
   },
-};
-
-// Per-status override for wave_update labels
-const WAVE_STATUS_LABEL = {
-  dispatching:   'Notifying available staff…',
-  no_candidates: 'Expanding search area…',
-  waiting:       'Waiting for responses…',
-  timed_out:     'Wave timed out — expanding search…',
-  watching:      'Watching for available staff…',
-  watching_online: 'Staff coming online — notifying…',
 };
 
 function timeAgo(ts) {
@@ -500,11 +504,11 @@ function DispatchActivityPanel({ getRecentEvents, getDispatchStartTime }) {
         <div className="flex items-center gap-2 mb-2">
           <div className="w-2 h-2 rounded-full bg-gray-300" />
           <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
-            Live Dispatch Activity
+            Live staff search
           </h3>
         </div>
         <p className="text-xs text-gray-400">
-          No active shifts yet. Use <strong>⚡ Post Shift</strong> to dispatch a real-time staffing request.
+          No active searches yet. Use <strong>⚡ Post Shift</strong> to find nurses for an urgent shift.
         </p>
       </div>
     );
@@ -520,11 +524,11 @@ function DispatchActivityPanel({ getRecentEvents, getDispatchStartTime }) {
       <div className="flex items-center gap-2 mb-3">
         <div className={`w-2 h-2 rounded-full ${hasActiveEvent ? 'bg-blue-500 animate-pulse' : 'bg-gray-400'}`} />
         <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-          Live Dispatch Activity
+          Live staff search
         </h3>
         {hasActiveEvent && (
           <span className="ml-auto text-xs text-blue-600 font-medium animate-pulse">
-            searching…
+            Finding staff…
           </span>
         )}
       </div>
@@ -535,34 +539,32 @@ function DispatchActivityPanel({ getRecentEvents, getDispatchStartTime }) {
           // Pick the most informative label
           let label = meta.label;
           if (ev.type === 'dispatch_wave_update' && ev.status) {
-            label = WAVE_STATUS_LABEL[ev.status] || label;
+            label = SEARCH_PHASE_LABEL[ev.status] || label;
           }
 
-          // Friendly fallback message for terminal states missing a backend message
           let displayMsg = ev.message;
           if (!displayMsg && ev.type === 'shift_expired') {
-            displayMsg = 'Shift window closed — no nurses accepted. Re-post to try again.';
+            displayMsg = 'No nurse accepted before the shift start time. Use Post again to retry.';
           }
           if (!displayMsg && ev.type === 'shift_filled') {
-            displayMsg = 'A nurse has been assigned to your shift.';
+            displayMsg = 'A nurse confirmed for this shift.';
           }
           if (!displayMsg && ev.type === 'shift_cancelled') {
-            displayMsg = 'Shift was cancelled — nurses will not receive further offers.';
+            displayMsg = 'This shift was cancelled — nurses will not receive further alerts.';
           }
           if (!displayMsg && ev.type === 'dispatch_started') {
-            displayMsg = 'Searching for nurses in your area…';
+            displayMsg = 'Looking for available nurses near your hospital…';
           }
           if (!displayMsg && ev.type === 'dispatch_error') {
-            displayMsg = 'Dispatch was interrupted — check shift status below.';
+            displayMsg = 'Staff search was interrupted — check the shift card below.';
           }
 
-          // Elapsed time since dispatch started (only for active states)
           const startTime = getDispatchStartTime(ev.shift_id);
           const elapsed = meta.active ? elapsedSince(startTime) : null;
 
-          // Show wave progress if available
-          const waveInfo = ev.wave ? `Wave ${ev.wave}` : null;
-          const nurseCount = ev.nurses_notified != null ? `${ev.nurses_notified} notified` : null;
+          const nurseCount = ev.nurses_notified != null
+            ? `${ev.nurses_notified} nurse${ev.nurses_notified === 1 ? '' : 's'} contacted`
+            : null;
 
           return (
             <div
@@ -604,19 +606,8 @@ function DispatchActivityPanel({ getRecentEvents, getDispatchStartTime }) {
                   )}
 
                   {/* Wave + nurse count pill row */}
-                  {(waveInfo || nurseCount) && (
-                    <div className="flex gap-1.5 mt-1.5 flex-wrap">
-                      {waveInfo && (
-                        <span className={`text-xs px-1.5 py-0.5 rounded font-medium bg-white/60 ${meta.text}`}>
-                          {waveInfo}
-                        </span>
-                      )}
-                      {nurseCount && (
-                        <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-white/60 text-gray-600">
-                          {nurseCount}
-                        </span>
-                      )}
-                    </div>
+                  {nurseCount && (
+                    <p className="text-xs text-gray-500 mt-1">{nurseCount}</p>
                   )}
                 </div>
               </div>

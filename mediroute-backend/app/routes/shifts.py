@@ -25,7 +25,7 @@ from ..dependencies import get_current_user
 from .. import models
 from ..dispatch.engine import start_dispatch, cancel_dispatch_session
 from ..dispatch.events import (
-    SHIFT_CREATED, SHIFT_CANCELLED, ASSIGNMENT_CHECKIN, ASSIGNMENT_CHECKOUT,
+    SHIFT_CREATED, SHIFT_CANCELLED, SHIFT_EXPIRED, ASSIGNMENT_CHECKIN, ASSIGNMENT_CHECKOUT,
     ASSIGNMENT_COMPLETED, ASSIGNMENT_NO_SHOW, MANUAL_RETRY_TRIGGERED,
     RECRUITER_ARCHIVED,
 )
@@ -152,6 +152,137 @@ class CheckInRequest(BaseModel):
         if not (-180 <= v <= 180):
             raise ValueError("longitude must be between -180 and 180")
         return v
+
+
+def _shift_start_utc_naive(shift_start: datetime) -> datetime:
+    if shift_start.tzinfo:
+        return shift_start.astimezone(timezone.utc).replace(tzinfo=None)
+    return shift_start
+
+
+def _expire_shift_if_past_start_unfilled(db: Session, shift: models.ShiftRequest) -> bool:
+    """
+    If shift start passed with no confirmed nurse, mark expired and stop offers.
+    Safe to call on list/detail reads (idempotent for terminal shifts).
+    """
+    if shift.status not in (
+        models.ShiftRequestStatus.open,
+        models.ShiftRequestStatus.dispatching,
+    ):
+        return False
+    if _shift_start_utc_naive(shift.shift_start) > datetime.utcnow():
+        return False
+    assigned = (
+        db.query(models.LiveAssignment.id)
+        .filter(models.LiveAssignment.shift_request_id == shift.id)
+        .first()
+    )
+    if assigned:
+        return False
+
+    now = datetime.utcnow()
+    pending_rows = (
+        db.query(models.DispatchOffer)
+        .filter(
+            models.DispatchOffer.shift_request_id == shift.id,
+            models.DispatchOffer.status == models.OfferStatus.pending,
+        )
+        .all()
+    )
+    nurse_user_ids = {row.nurse_user_id for row in pending_rows}
+    for row in pending_rows:
+        row.status = models.OfferStatus.timed_out
+        row.responded_at = now
+
+    active_session = (
+        db.query(models.DispatchSession)
+        .filter(
+            models.DispatchSession.shift_request_id == shift.id,
+            models.DispatchSession.status == models.DispatchSessionStatus.active,
+        )
+        .first()
+    )
+    session_id = active_session.id if active_session else None
+    if active_session:
+        active_session.status = models.DispatchSessionStatus.failed
+        active_session.completed_at = now
+
+    shift.status = models.ShiftRequestStatus.expired
+    db.add(
+        models.ShiftTimelineEvent(
+            shift_request_id=shift.id,
+            event_type=SHIFT_EXPIRED,
+            actor_user_id=None,
+            city_id=shift.city_id,
+            payload={"reason": "past_shift_start_no_accept"},
+        )
+    )
+    db.commit()
+    if session_id is not None:
+        cancel_dispatch_session(session_id)
+    _schedule_shift_expired_notifications(shift, nurse_user_ids)
+    return True
+
+
+def _stop_all_dispatch_for_shift(db: Session, shift: models.ShiftRequest) -> None:
+    """Stop in-flight search (DB + engine) so re-post can start cleanly."""
+    now = datetime.utcnow()
+    sessions = (
+        db.query(models.DispatchSession)
+        .filter(models.DispatchSession.shift_request_id == shift.id)
+        .all()
+    )
+    for session in sessions:
+        cancel_dispatch_session(session.id)
+        if session.status == models.DispatchSessionStatus.active:
+            session.status = models.DispatchSessionStatus.failed
+            session.completed_at = now
+
+    pending_rows = (
+        db.query(models.DispatchOffer)
+        .filter(
+            models.DispatchOffer.shift_request_id == shift.id,
+            models.DispatchOffer.status == models.OfferStatus.pending,
+        )
+        .all()
+    )
+    for row in pending_rows:
+        row.status = models.OfferStatus.timed_out
+        row.responded_at = now
+
+    if shift.status == models.ShiftRequestStatus.dispatching:
+        shift.status = models.ShiftRequestStatus.open
+
+
+def _schedule_shift_expired_notifications(
+    shift: models.ShiftRequest,
+    nurse_user_ids: set,
+) -> None:
+    """Best-effort WS sync when expiry is detected on a read path."""
+
+    async def _send_all() -> None:
+        hospital_msg = {
+            "type": "shift_expired",
+            "shift_id": shift.id,
+            "message": "No nurse accepted before the shift start time.",
+        }
+        await ws_manager.send(shift.hospital_user_id, hospital_msg)
+        if nurse_user_ids:
+            revoked = {
+                "type": "offer_revoked",
+                "shift_id": shift.id,
+                "message": "This shift expired and is no longer available.",
+            }
+            await asyncio.gather(
+                *[ws_manager.send(uid, revoked) for uid in nurse_user_ids],
+                return_exceptions=True,
+            )
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_send_all())
+    except RuntimeError:
+        pass
 
 
 def _recruiter_archived_shift_ids(db: Session, recruiter_user_id: int) -> set:
@@ -315,6 +446,9 @@ def list_shifts(
             .all()
         )
         visible = [s for s in shifts if s.id not in archived]
+        for s in visible:
+            if _expire_shift_if_past_start_unfilled(db, s):
+                db.refresh(s)
         return {"shifts": [_shift_to_dict(s) for s in visible]}
     else:
         # Nurse: return assignments with shift details
@@ -382,6 +516,9 @@ def get_shift(
     if not shift:
         raise HTTPException(status_code=404, detail="Shift not found.")
 
+    if _expire_shift_if_past_start_unfilled(db, shift):
+        db.refresh(shift)
+
     # Access control: hospital can see own shifts; nurse can see assigned shifts
     if current_user.role == models.UserRole.recruiter:
         if shift.hospital_user_id != current_user.id:
@@ -441,11 +578,30 @@ def update_shift(
     if shift.status not in (
         models.ShiftRequestStatus.open,
         models.ShiftRequestStatus.dispatching,
+        models.ShiftRequestStatus.expired,
     ):
         raise HTTPException(
             status_code=409,
             detail=f"Cannot edit a shift with status '{shift.status.value}'.",
         )
+
+    if req.shift_start is not None:
+        incoming = req.shift_start
+        if incoming.tzinfo:
+            incoming = incoming.astimezone(timezone.utc).replace(tzinfo=None)
+        current = _shift_start_utc_naive(shift.shift_start)
+        start_changed = abs((incoming - current).total_seconds()) > 60
+        if incoming < datetime.utcnow() and (
+            shift.status in (
+                models.ShiftRequestStatus.open,
+                models.ShiftRequestStatus.dispatching,
+            )
+            or (shift.status == models.ShiftRequestStatus.expired and start_changed)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Choose a shift start time in the future.",
+            )
 
     if req.urgency is not None:
         shift.urgency = models.ShiftUrgency(req.urgency)
@@ -461,6 +617,12 @@ def update_shift(
         shift.specialty = req.specialty.strip() or None
     if req.dispatch_radius_km is not None:
         shift.dispatch_radius_km = req.dispatch_radius_km
+
+    if (
+        shift.status == models.ShiftRequestStatus.expired
+        and _shift_start_utc_naive(shift.shift_start) > datetime.utcnow()
+    ):
+        shift.status = models.ShiftRequestStatus.open
 
     db.commit()
     db.refresh(shift)
@@ -617,10 +779,9 @@ async def recruiter_redispatch_shift(
     db: Session = Depends(get_db),
 ):
     """
-    Recruiter restarts automated dispatch after expiry/cancel/manual stop.
+    Recruiter restarts staff search after expiry/cancel/manual stop.
 
-    Same cleanup rules as ops re-dispatch: delete old session and offers first,
-    set shift open, enqueue a new dispatch run. Refuses while already dispatching.
+    Clears any stale session/engine state, then starts a fresh search run.
     """
     if current_user.role != models.UserRole.recruiter:
         raise HTTPException(
@@ -641,11 +802,12 @@ async def recruiter_redispatch_shift(
         raise HTTPException(status_code=404, detail="Shift not found.")
     if shift.status == models.ShiftRequestStatus.filled:
         raise HTTPException(status_code=409, detail="Shift is already filled.")
-    if shift.status == models.ShiftRequestStatus.dispatching:
-        raise HTTPException(
-            status_code=409,
-            detail="Dispatch is already active. Cancel the shift first to stop it.",
-        )
+
+    _expire_shift_if_past_start_unfilled(db, shift)
+    db.refresh(shift)
+    _stop_all_dispatch_for_shift(db, shift)
+    db.commit()
+    db.refresh(shift)
 
     old_session = (
         db.query(models.DispatchSession)
@@ -658,6 +820,12 @@ async def recruiter_redispatch_shift(
         ).delete(synchronize_session=False)
         db.delete(old_session)
         db.flush()
+
+    if _shift_start_utc_naive(shift.shift_start) <= datetime.utcnow():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Shift start time has passed. Open shift details, set a future start time, save, then tap Post again.",
+        )
 
     shift.status = models.ShiftRequestStatus.open
 
