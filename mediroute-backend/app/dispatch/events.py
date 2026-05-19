@@ -50,3 +50,6 @@ MANUAL_DISPATCH_CANCELLED = "dispatch.manual_cancelled"
 MANUAL_RETRY_TRIGGERED    = "dispatch.manual_retry"
 MANUAL_ASSIGNMENT_CREATED = "dispatch.manual_assigned"
 MANUAL_SESSION_CLOSED     = "dispatch.session_closed"
+
+# Recruiter UI — hide cancelled/expired shifts from dashboard list (audit row kept)
+RECRUITER_ARCHIVED        = "recruiter.archived"

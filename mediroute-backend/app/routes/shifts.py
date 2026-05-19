@@ -27,6 +27,7 @@ from ..dispatch.engine import start_dispatch, cancel_dispatch_session
 from ..dispatch.events import (
     SHIFT_CREATED, SHIFT_CANCELLED, ASSIGNMENT_CHECKIN, ASSIGNMENT_CHECKOUT,
     ASSIGNMENT_COMPLETED, ASSIGNMENT_NO_SHOW, MANUAL_RETRY_TRIGGERED,
+    RECRUITER_ARCHIVED,
 )
 from ..ws_manager import ws_manager
 
@@ -103,6 +104,37 @@ class ShiftCreateRequest(BaseModel):
         return v
 
 
+class ShiftUpdateRequest(BaseModel):
+    """Recruiter edits while shift is still open or dispatching (not after fill)."""
+    urgency: Optional[str] = None
+    shift_start: Optional[datetime] = None
+    shift_end: Optional[datetime] = None
+    notes: Optional[str] = None
+    pay_rate: Optional[str] = None
+    specialty: Optional[str] = None
+    dispatch_radius_km: Optional[float] = None
+
+    @field_validator("urgency")
+    @classmethod
+    def validate_urgency(cls, v):
+        if v is None:
+            return v
+        try:
+            models.ShiftUrgency(v)
+        except ValueError:
+            raise ValueError(f"Invalid urgency: {v}")
+        return v
+
+    @field_validator("dispatch_radius_km")
+    @classmethod
+    def validate_radius(cls, v):
+        if v is None:
+            return v
+        if not (0.5 <= v <= 50):
+            raise ValueError("dispatch_radius_km must be between 0.5 and 50")
+        return v
+
+
 class CheckInRequest(BaseModel):
     latitude: float
     longitude: float
@@ -120,6 +152,22 @@ class CheckInRequest(BaseModel):
         if not (-180 <= v <= 180):
             raise ValueError("longitude must be between -180 and 180")
         return v
+
+
+def _recruiter_archived_shift_ids(db: Session, recruiter_user_id: int) -> set:
+    rows = (
+        db.query(models.ShiftTimelineEvent.shift_request_id)
+        .join(
+            models.ShiftRequest,
+            models.ShiftTimelineEvent.shift_request_id == models.ShiftRequest.id,
+        )
+        .filter(
+            models.ShiftRequest.hospital_user_id == recruiter_user_id,
+            models.ShiftTimelineEvent.event_type == RECRUITER_ARCHIVED,
+        )
+        .all()
+    )
+    return {r[0] for r in rows}
 
 
 def _shift_to_dict(shift: models.ShiftRequest, assignment: Optional[models.LiveAssignment] = None) -> dict:
@@ -258,6 +306,7 @@ def list_shifts(
     Nurses/healthcare workers see their assigned shifts.
     """
     if current_user.role == models.UserRole.recruiter:
+        archived = _recruiter_archived_shift_ids(db, current_user.id)
         shifts = (
             db.query(models.ShiftRequest)
             .filter(models.ShiftRequest.hospital_user_id == current_user.id)
@@ -265,7 +314,8 @@ def list_shifts(
             .limit(50)
             .all()
         )
-        return {"shifts": [_shift_to_dict(s) for s in shifts]}
+        visible = [s for s in shifts if s.id not in archived]
+        return {"shifts": [_shift_to_dict(s) for s in visible]}
     else:
         # Nurse: return assignments with shift details
         assignments = (
@@ -369,6 +419,111 @@ def get_shift(
             "waves_exhausted": session.waves_exhausted,
         }
     return {"shift": result}
+
+
+@router.patch("/{shift_id}")
+def update_shift(
+    shift_id: int,
+    req: ShiftUpdateRequest,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Recruiter updates an open/dispatching shift (blocked after fill/cancel/expired)."""
+    if current_user.role != models.UserRole.recruiter:
+        raise HTTPException(status_code=403, detail="Only recruiters can update shifts.")
+
+    shift = db.query(models.ShiftRequest).filter(
+        models.ShiftRequest.id == shift_id,
+        models.ShiftRequest.hospital_user_id == current_user.id,
+    ).first()
+    if not shift:
+        raise HTTPException(status_code=404, detail="Shift not found.")
+    if shift.status not in (
+        models.ShiftRequestStatus.open,
+        models.ShiftRequestStatus.dispatching,
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot edit a shift with status '{shift.status.value}'.",
+        )
+
+    if req.urgency is not None:
+        shift.urgency = models.ShiftUrgency(req.urgency)
+    if req.shift_start is not None:
+        shift.shift_start = req.shift_start
+    if req.shift_end is not None:
+        shift.shift_end = req.shift_end
+    if req.notes is not None:
+        shift.notes = req.notes.strip() or None
+    if req.pay_rate is not None:
+        shift.pay_rate = req.pay_rate.strip() or None
+    if req.specialty is not None:
+        shift.specialty = req.specialty.strip() or None
+    if req.dispatch_radius_km is not None:
+        shift.dispatch_radius_km = req.dispatch_radius_km
+
+    db.commit()
+    db.refresh(shift)
+    logger.info("[shifts] shift %d updated by recruiter %d", shift_id, current_user.id)
+    return {"shift": _shift_to_dict(shift)}
+
+
+@router.post("/{shift_id}/archive")
+def archive_shift(
+    shift_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Hide a cancelled/expired shift from the recruiter dashboard (timeline audit kept)."""
+    if current_user.role != models.UserRole.recruiter:
+        raise HTTPException(status_code=403, detail="Only recruiters can archive shifts.")
+
+    shift = db.query(models.ShiftRequest).filter(
+        models.ShiftRequest.id == shift_id,
+        models.ShiftRequest.hospital_user_id == current_user.id,
+    ).first()
+    if not shift:
+        raise HTTPException(status_code=404, detail="Shift not found.")
+    now = datetime.now(timezone.utc)
+    shift_start = shift.shift_start
+    if shift_start.tzinfo:
+        shift_start = shift_start.astimezone(timezone.utc).replace(tzinfo=None)
+    past_start = shift_start < datetime.utcnow()
+
+    if shift.status in (models.ShiftRequestStatus.open, models.ShiftRequestStatus.dispatching):
+        if past_start:
+            shift.status = models.ShiftRequestStatus.expired
+            db.commit()
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot remove an active shift. Cancel it first or wait until it expires.",
+            )
+    elif shift.status not in (
+        models.ShiftRequestStatus.cancelled,
+        models.ShiftRequestStatus.expired,
+        models.ShiftRequestStatus.filled,
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot remove a shift with status '{shift.status.value}'.",
+        )
+
+    existing = db.query(models.ShiftTimelineEvent).filter(
+        models.ShiftTimelineEvent.shift_request_id == shift_id,
+        models.ShiftTimelineEvent.event_type == RECRUITER_ARCHIVED,
+    ).first()
+    if not existing:
+        db.add(models.ShiftTimelineEvent(
+            shift_request_id=shift_id,
+            event_type=RECRUITER_ARCHIVED,
+            actor_user_id=current_user.id,
+            city_id=shift.city_id,
+            payload={"archived_by": "recruiter"},
+        ))
+        db.commit()
+
+    return {"success": True, "shift_id": shift_id}
 
 
 @router.post("/{shift_id}/cancel")

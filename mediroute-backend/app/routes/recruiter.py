@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
@@ -61,6 +63,28 @@ def get_my_jobs(
 ):
     """List all jobs posted by the current recruiter."""
     return crud.get_recruiter_jobs(db, current_user.id)
+
+
+@router.post("/jobs/{job_id}/archive")
+def archive_job(
+    job_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_recruiter),
+):
+    """Hide a job from the recruiter dashboard (row kept for applicants/audit)."""
+    job = crud.get_job_by_id(db, job_id)
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    if job.posted_by_user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only remove your own job posts",
+        )
+    if getattr(job, "recruiter_archived_at", None) is not None:
+        return {"success": True, "job_id": job_id}
+    job.recruiter_archived_at = datetime.utcnow()
+    db.commit()
+    return {"success": True, "job_id": job_id}
 
 
 # ─── Applicants ───────────────────────────────────────────────────────────────

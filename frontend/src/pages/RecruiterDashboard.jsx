@@ -1,10 +1,14 @@
-import { useState, useEffect, useCallback } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useNavigate, Link, useLocation } from 'react-router-dom';
 import api from '../api/axios';
 import MainLayout from '../layouts/MainLayout';
 import Spinner from '../components/Spinner';
 import { useAuth } from '../context/AuthContext';
 import { useDispatchEvents } from '../context/DispatchContext';
+import ShiftDispatchLive from '../components/recruiter/ShiftDispatchLive';
+import RecruiterShiftDetailSheet from '../components/recruiter/RecruiterShiftDetailSheet';
+import { mlog } from '../utils/mobileLogger';
+import { formatApiErrorDetail } from '../utils/apiErrorMessage';
 
 function formatShiftWhen(iso) {
   try {
@@ -28,16 +32,29 @@ const STAFF_SHIFT_STATUS_PILL = {
   cancelled: 'bg-gray-100 text-gray-600 border border-gray-200',
 };
 
+function effectiveShiftStatus(shift, live) {
+  if (!live) return shift.status;
+  if (live.type === 'shift_cancelled') return 'cancelled';
+  if (live.type === 'shift_filled') return 'filled';
+  if (live.type === 'shift_expired') return 'expired';
+  if (live.type === 'dispatch_started' || live.type === 'dispatch_wave_update') return 'dispatching';
+  return shift.status;
+}
+
 export default function RecruiterDashboard() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { user } = useAuth();
   const { getRecentEvents, getDispatchStartTime, getShiftStatus } = useDispatchEvents();
   const [jobs, setJobs] = useState([]);
   const [shifts, setShifts] = useState([]);
-  const [fetching, setFetching] = useState(false);  // start false — shell renders immediately
+  const [fetching, setFetching] = useState(false);
   const [error, setError] = useState('');
   const [shiftsError, setShiftsError] = useState('');
   const [shiftBusyId, setShiftBusyId] = useState(null);
+  const [jobBusyId, setJobBusyId] = useState(null);
+  const [detailShiftId, setDetailShiftId] = useState(null);
+  const [highlightShiftId, setHighlightShiftId] = useState(null);
 
   const loadShifts = useCallback(() => (
     api.get('/shifts/')
@@ -58,6 +75,30 @@ export default function RecruiterDashboard() {
     loadShifts();
   }, [loadShifts]);
 
+  useEffect(() => {
+    const createdId = location.state?.shiftId;
+    if (location.state?.shiftCreated && createdId) {
+      setHighlightShiftId(createdId);
+      mlog('dispatch', 'recruiter_shift_created_nav', { shift_id: createdId });
+      navigate(location.pathname, { replace: true, state: {} });
+    }
+  }, [location.state, location.pathname, navigate]);
+
+  const hasDispatching = useMemo(
+    () => shifts.some((s) => {
+      const live = getShiftStatus(s.id);
+      const st = effectiveShiftStatus(s, live);
+      return st === 'dispatching' || st === 'open';
+    }),
+    [shifts, getShiftStatus],
+  );
+
+  useEffect(() => {
+    if (!hasDispatching) return undefined;
+    const id = setInterval(() => loadShifts(), 12_000);
+    return () => clearInterval(id);
+  }, [hasDispatching, loadShifts]);
+
   async function cancelStaffingShift(shiftId) {
     if (!window.confirm('Cancel this shift? Nurses will stop receiving offers immediately.')) return;
     setShiftBusyId(shiftId);
@@ -77,11 +118,50 @@ export default function RecruiterDashboard() {
     try {
       await api.post(`/shifts/${shiftId}/re-dispatch`);
       await loadShifts();
+      setDetailShiftId(null);
     } catch (e) {
       const d = e?.response?.data?.detail;
       setShiftsError(typeof d === 'string' ? d : 'Could not restart dispatch.');
     } finally {
       setShiftBusyId(null);
+    }
+  }
+
+  async function archiveStaffingShift(shiftId) {
+    if (!window.confirm('Remove this shift from your list? You can still find it in audit logs if needed.')) return;
+    setShiftBusyId(shiftId);
+    setShiftsError('');
+    try {
+      await api.post(`/shifts/${shiftId}/archive`);
+      setShifts((prev) => prev.filter((s) => s.id !== shiftId));
+      setDetailShiftId(null);
+      await loadShifts();
+    } catch (e) {
+      const msg = formatApiErrorDetail(e?.response?.data?.detail)
+        || (e?.response?.status === 405
+          ? 'Delete is not available on the server yet. Deploy the latest backend to Render.'
+          : 'Could not remove shift.');
+      setShiftsError(msg);
+    } finally {
+      setShiftBusyId(null);
+    }
+  }
+
+  async function archiveJob(jobId) {
+    if (!window.confirm('Remove this job from your list? Applicants and records are kept on the server.')) return;
+    setJobBusyId(jobId);
+    setError('');
+    try {
+      await api.post(`/recruiter/jobs/${jobId}/archive`);
+      setJobs((prev) => prev.filter((j) => j.id !== jobId));
+    } catch (e) {
+      const msg = formatApiErrorDetail(e?.response?.data?.detail)
+        || (e?.response?.status === 405
+          ? 'Delete is not available on the server yet. Deploy the latest backend to Render.'
+          : 'Could not remove job.');
+      setError(msg);
+    } finally {
+      setJobBusyId(null);
     }
   }
 
@@ -158,6 +238,10 @@ export default function RecruiterDashboard() {
           <p className="text-sm text-red-600 bg-red-50 px-3 py-2 rounded-lg mb-4">{shiftsError}</p>
         )}
 
+        {hasDispatching && (
+          <DispatchActivityPanel getRecentEvents={getRecentEvents} getDispatchStartTime={getDispatchStartTime} />
+        )}
+
         {shifts.length > 0 && (
           <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 mb-4">
             <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
@@ -166,10 +250,15 @@ export default function RecruiterDashboard() {
             <div className="flex flex-col gap-3">
               {shifts.map((s) => {
                 const live = getShiftStatus(s.id);
-                const effective = live?.type === 'shift_cancelled' ? 'cancelled' : s.status;
-                const canCancel = effective !== 'cancelled' && effective !== 'filled';
+                const effective = effectiveShiftStatus(s, live);
+                const canCancel = effective !== 'cancelled' && effective !== 'filled' && effective !== 'expired';
                 const canRedispatch = effective === 'expired' || effective === 'cancelled';
+                const canArchive =
+                  s.status === 'expired' || s.status === 'cancelled' || s.status === 'filled'
+                  || effective === 'expired' || effective === 'cancelled';
                 const pill = STAFF_SHIFT_STATUS_PILL[effective] || STAFF_SHIFT_STATUS_PILL.open;
+                const isLive = effective === 'dispatching' || effective === 'open';
+                const highlighted = highlightShiftId === s.id;
 
                 const statusShort =
                   effective === 'dispatching' ? 'Searching' :
@@ -178,43 +267,72 @@ export default function RecruiterDashboard() {
                 return (
                   <div
                     key={s.id}
-                    className="rounded-xl border border-gray-100 bg-gray-50/50 px-3 py-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
+                    className={`rounded-xl border px-3 py-3 flex flex-col gap-2 transition-shadow ${
+                      highlighted ? 'border-indigo-300 ring-2 ring-indigo-200 bg-indigo-50/30' :
+                      isLive ? 'border-indigo-200 bg-indigo-50/20' :
+                      'border-gray-100 bg-gray-50/50'
+                    }`}
                   >
-                    <div className="min-w-0">
+                    <button
+                      type="button"
+                      className="text-left w-full min-w-0"
+                      onClick={() => setDetailShiftId(s.id)}
+                    >
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className={`text-xs font-semibold px-2 py-0.5 rounded-lg ${pill}`}>
                           {statusShort}
                         </span>
                         <span className="text-xs text-gray-400">#{s.id}</span>
+                        <span className="text-xs text-indigo-600 ml-auto font-medium">View details →</span>
                       </div>
                       <p className="text-sm font-medium text-gray-900 mt-1 truncate">{s.hospital_name}</p>
                       <p className="text-xs text-gray-500">
                         {s.role_required} · {formatShiftWhen(s.shift_start)}
                       </p>
-                      {live?.message && effective === 'dispatching' && (
-                        <p className="text-xs text-indigo-700 mt-1 leading-snug">{live.message}</p>
-                      )}
-                    </div>
-                    {(canCancel || canRedispatch) && isVerified && (
-                      <div className="flex gap-2 shrink-0 flex-wrap justify-end">
+                    </button>
+
+                    {isLive && (
+                      <ShiftDispatchLive
+                        shift={s}
+                        live={live}
+                        dispatchStartTime={getDispatchStartTime(s.id)}
+                      />
+                    )}
+
+                    {live?.type === 'shift_filled' && (
+                      <p className="text-xs text-green-700 font-medium">{live.message || 'Nurse assigned to this shift.'}</p>
+                    )}
+
+                    {(canCancel || canRedispatch || canArchive) && isVerified && (
+                      <div className="flex gap-2 shrink-0 flex-wrap justify-end pt-1 border-t border-gray-100/80">
                         {canCancel && (
                           <button
                             type="button"
                             disabled={shiftBusyId === s.id}
-                            onClick={() => cancelStaffingShift(s.id)}
+                            onClick={(e) => { e.stopPropagation(); cancelStaffingShift(s.id); }}
                             className="text-xs font-semibold px-3 py-2 rounded-xl bg-red-50 text-red-700 border border-red-100 hover:bg-red-100 disabled:opacity-50"
                           >
-                            Cancel shift
+                            Cancel
                           </button>
                         )}
                         {canRedispatch && (
                           <button
                             type="button"
                             disabled={shiftBusyId === s.id}
-                            onClick={() => redispatchStaffingShift(s.id)}
+                            onClick={(e) => { e.stopPropagation(); redispatchStaffingShift(s.id); }}
                             className="text-xs font-semibold px-3 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
                           >
-                            Re-post dispatch
+                            Re-post
+                          </button>
+                        )}
+                        {canArchive && (
+                          <button
+                            type="button"
+                            disabled={shiftBusyId === s.id}
+                            onClick={(e) => { e.stopPropagation(); archiveStaffingShift(s.id); }}
+                            className="text-xs font-semibold px-3 py-2 rounded-xl bg-gray-100 text-gray-700 hover:bg-gray-200 disabled:opacity-50"
+                          >
+                            Delete
                           </button>
                         )}
                       </div>
@@ -225,9 +343,6 @@ export default function RecruiterDashboard() {
             </div>
           </div>
         )}
-
-        {/* Live Dispatch Activity — shows real-time events from the dispatch engine */}
-        <DispatchActivityPanel getRecentEvents={getRecentEvents} getDispatchStartTime={getDispatchStartTime} />
 
         {jobs.length === 0 ? (
           <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-10 text-center">
@@ -244,11 +359,14 @@ export default function RecruiterDashboard() {
         ) : (
           <div className="flex flex-col gap-3">
             {jobs.map((job) => (
-              <Link
+              <div
                 key={job.id}
-                to={`/recruiter/jobs/${job.id}/applicants`}
-                className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 hover:border-indigo-200 transition-colors block"
+                className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden"
               >
+                <Link
+                  to={`/recruiter/jobs/${job.id}/applicants`}
+                  className="block p-5 hover:bg-gray-50/80 transition-colors"
+                >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <h3 className="font-semibold text-gray-900 truncate">{job.title}</h3>
@@ -256,16 +374,46 @@ export default function RecruiterDashboard() {
                       {job.hospital_name || '—'} · {job.location || '—'}
                     </p>
                     {job.salary && <p className="text-sm text-green-600 mt-0.5">{job.salary}</p>}
+                      {job.status && job.status !== 'open' && (
+                        <span className="inline-block mt-1 text-xs font-medium px-2 py-0.5 rounded-lg bg-slate-100 text-slate-600 capitalize">
+                          {job.status}
+                        </span>
+                      )}
                   </div>
                   <span className="shrink-0 text-xs bg-indigo-50 text-indigo-700 px-2 py-1 rounded-lg font-medium whitespace-nowrap">
                     View →
                   </span>
                 </div>
               </Link>
+                {isVerified && (
+                  <div className="px-4 pb-3 pt-0 flex justify-end border-t border-gray-50">
+                    <button
+                      type="button"
+                      disabled={jobBusyId === job.id}
+                      onClick={() => archiveJob(job.id)}
+                      className="text-xs font-semibold px-3 py-2 rounded-xl bg-gray-100 text-gray-700 hover:bg-gray-200 disabled:opacity-50"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                )}
+              </div>
             ))}
           </div>
         )}
       </div>
+
+      {detailShiftId && (
+        <RecruiterShiftDetailSheet
+          shiftId={detailShiftId}
+          busy={!!shiftBusyId}
+          onClose={() => setDetailShiftId(null)}
+          onUpdated={loadShifts}
+          onCancel={async (id) => { await cancelStaffingShift(id); setDetailShiftId(null); }}
+          onArchive={archiveStaffingShift}
+          onRedispatch={redispatchStaffingShift}
+        />
+      )}
     </MainLayout>
   );
 }
@@ -340,7 +488,7 @@ function DispatchActivityPanel({ getRecentEvents, getDispatchStartTime }) {
   // Re-render every 5s to keep "X ago" timestamps and elapsed counter fresh
   const [, setTick] = useState(0);
   useEffect(() => {
-    const t = setInterval(() => setTick(n => n + 1), 5_000);
+    const t = setInterval(() => setTick(n => n + 1), 1_000);
     return () => clearInterval(t);
   }, []);
 

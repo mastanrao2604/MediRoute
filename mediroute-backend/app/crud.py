@@ -295,7 +295,10 @@ def get_job_by_id(db: Session, job_id: int) -> Optional[models.Job]:
 def get_recruiter_jobs(db: Session, user_id: int) -> List[models.Job]:
     return (
         db.query(models.Job)
-        .filter(models.Job.posted_by_user_id == user_id)
+        .filter(
+            models.Job.posted_by_user_id == user_id,
+            models.Job.recruiter_archived_at.is_(None),
+        )
         .order_by(models.Job.created_at.desc())
         .all()
     )

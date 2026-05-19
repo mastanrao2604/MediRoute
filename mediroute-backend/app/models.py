@@ -173,6 +173,7 @@ class Job(Base):
     recruiter_id = Column(Integer, ForeignKey("recruiters.id"), nullable=True)
     posted_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    recruiter_archived_at = Column(DateTime, nullable=True)
 
     company = relationship("Company", back_populates="jobs")
     recruiter = relationship("Recruiter", back_populates="jobs")
