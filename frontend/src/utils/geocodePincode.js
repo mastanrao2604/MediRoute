@@ -6,6 +6,58 @@
  */
 
 const _cache = {};
+const LOCALITY_MAP_KEY = 'mr_pin_locality_map';
+const LAST_AREA_KEY = 'mr_last_known_area';
+
+function readLocalityMap() {
+  try {
+    return JSON.parse(localStorage.getItem(LOCALITY_MAP_KEY) || '{}');
+  } catch {
+    return {};
+  }
+}
+
+export function getPersistedLocality(pincode) {
+  const pc = String(pincode || '').replace(/\D/g, '');
+  if (pc.length !== 6) return '';
+  const map = readLocalityMap();
+  return map[pc] || '';
+}
+
+export function persistPincodeLocality(pincode, locality) {
+  const pc = String(pincode || '').replace(/\D/g, '');
+  const label = (locality || '').trim();
+  if (pc.length !== 6 || !label) return;
+  const map = readLocalityMap();
+  map[pc] = label;
+  try {
+    localStorage.setItem(LOCALITY_MAP_KEY, JSON.stringify(map));
+  } catch { /* quota */ }
+}
+
+export function saveLastKnownArea({ locality, pincode, lat, lng, at }) {
+  try {
+    localStorage.setItem(
+      LAST_AREA_KEY,
+      JSON.stringify({
+        locality: (locality || '').trim(),
+        pincode: normalizeIndianPincode(pincode),
+        lat,
+        lng,
+        at: at || Date.now(),
+      }),
+    );
+  } catch { /* ignore */ }
+}
+
+export function loadLastKnownArea() {
+  try {
+    const raw = localStorage.getItem(LAST_AREA_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
 
 export async function geocodePincode(pincode) {
   const clean = String(pincode).replace(/\D/g, '');
@@ -23,12 +75,7 @@ export async function geocodePincode(pincode) {
 
   const place = data[0];
   const a = place.address || {};
-  const parts = [
-    a.suburb || a.neighbourhood || a.village || a.town,
-    a.city || a.county || a.state_district,
-  ].filter(Boolean);
-  const displayName =
-    parts.length ? parts.join(', ') : (place.display_name?.split(',')[0] || 'Area found');
+  const displayName = formatLocalityFromAddress(a, place.display_name);
 
   const result = {
     lat: parseFloat(place.lat),
@@ -36,6 +83,7 @@ export async function geocodePincode(pincode) {
     displayName,
   };
   _cache[clean] = result;
+  persistPincodeLocality(clean, result.displayName);
   return result;
 }
 
@@ -65,13 +113,7 @@ export async function reverseGeocodeCoords(lat, lng) {
   let pincode = rawPostcode.length >= 6 ? rawPostcode.slice(0, 6) : null;
   if (pincode && pincode.length !== 6) pincode = null;
 
-  const localityParts = [
-    a.suburb || a.neighbourhood || a.village,
-    a.city || a.town || a.state_district,
-  ].filter(Boolean);
-  const locality = localityParts.length
-    ? localityParts.join(', ')
-    : (place.display_name || '').split(',').slice(0, 2).join(',').trim() || '';
+  const locality = formatLocalityFromAddress(a, place.display_name);
 
   const out = {
     pincode,
@@ -79,7 +121,31 @@ export async function reverseGeocodeCoords(lat, lng) {
     displayName: place.display_name,
   };
   _revCache[key] = out;
+  if (out.locality || out.pincode) {
+    saveLastKnownArea({
+      locality: out.locality,
+      pincode: out.pincode,
+      lat: la,
+      lng: ln,
+      at: Date.now(),
+    });
+    if (out.pincode && out.locality) persistPincodeLocality(out.pincode, out.locality);
+  }
   return out;
+}
+
+/** Prefer suburb/neighbourhood over city codes for display. */
+export function formatLocalityFromAddress(a = {}, displayNameFallback = '') {
+  const suburb = a.suburb || a.neighbourhood || a.quarter || a.residential;
+  const town = a.city || a.town || a.village || a.municipality;
+  if (suburb && town && suburb !== town) {
+    return `${suburb}, ${town}`;
+  }
+  if (suburb) return suburb;
+  if (town) return town;
+  const parts = (displayNameFallback || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (parts.length >= 2) return parts.slice(0, 2).join(', ');
+  return parts[0] || '';
 }
 
 /** Canonical 6-digit Indian pincode or null */

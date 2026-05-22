@@ -30,6 +30,7 @@ import sentry_sdk
 
 from ..database import SessionLocal
 from .. import models
+from ..utils.datetime_util import utc_iso
 
 
 # Route engine logs through uvicorn.error so they appear in the captured log file.
@@ -539,8 +540,10 @@ def _create_offers_sync(
 
 
 def _expire_wave_offers_sync(db, session_id: int, wave_num: int) -> int:
-    """Mark all pending offers in the wave as timed_out. Returns count updated."""
-    now = datetime.utcnow()
+    """
+    Wave wait ended with no accept. Offers stay pending until shift start so nurses
+    can respond from Jobs/Dashboard later; engine continues to next wave.
+    """
     offers = (
         db.query(models.DispatchOffer)
         .filter(
@@ -550,11 +553,6 @@ def _expire_wave_offers_sync(db, session_id: int, wave_num: int) -> int:
         )
         .all()
     )
-    for o in offers:
-        o.status = models.OfferStatus.timed_out
-        o.responded_at = now
-    db.commit()
-    _metrics["offers_timed_out"] += len(offers)
     return len(offers)
 
 
@@ -707,6 +705,8 @@ async def _notify_wave(
     fcm_fail = 0
     invalid_tokens: list[str] = []  # collected for cleanup after the loop
 
+    from .offer_policy import seconds_until_shift_start
+    respond_by_sec = seconds_until_shift_start(shift)
     for offer in offers:
         payload = {
             "type": "dispatch_offer",
@@ -716,15 +716,16 @@ async def _notify_wave(
             "role": shift.role_required.value,
             "specialty": shift.specialty,
             "urgency": shift.urgency.value,
-            "shift_start": shift.shift_start.isoformat(),
-            "shift_end": shift.shift_end.isoformat() if shift.shift_end else None,
+            "shift_start": utc_iso(shift.shift_start),
+            "shift_end": utc_iso(shift.shift_end),
             "pay_rate": shift.pay_rate,
             "notes": shift.notes,
             "hospital_lat": shift.hospital_latitude,
             "hospital_lng": shift.hospital_longitude,
             "city_id": shift.city_id,
-            "expires_at": offer.expires_at.isoformat(),
-            "expires_in_sec": wave_timeout_sec,
+            "expires_at": utc_iso(offer.expires_at),
+            "respond_by_sec": respond_by_sec,
+            "expires_in_sec": respond_by_sec,
             "wave": offer.wave_number,
         }
 
@@ -986,7 +987,7 @@ async def _do_fill(
         "assignment_id": assignment.id,
         "shift_id": shift_id,
         "hospital_name": shift.hospital_name,
-        "shift_start": shift.shift_start.isoformat(),
+        "shift_start": utc_iso(shift.shift_start),
         "message": "Assignment confirmed! Get ready.",
     })
 
@@ -1135,8 +1136,9 @@ async def _run_dispatch_inner(db, shift_id: int) -> None:
             nurse_ids = [u.id for u, _, _ in wave_candidates]
             already_offered.extend(nurse_ids)
 
-            # 5. Create offers
-            expires_at = datetime.utcnow() + timedelta(seconds=wave_timeout)
+            # 5. Create offers (valid for nurse until shift start — wave_timeout is engine-only)
+            from .offer_policy import offer_expires_at
+            expires_at = offer_expires_at(shift)
             offers = await asyncio.get_running_loop().run_in_executor(
                 _executor, functools.partial(
                     _create_offers_sync, db, session.id, shift_id,
@@ -1208,14 +1210,6 @@ async def _run_dispatch_inner(db, shift_id: int) -> None:
                 expired_count = await asyncio.get_running_loop().run_in_executor(
                     _executor, functools.partial(_expire_wave_offers_sync, db, session.id, wave_num)
                 )
-
-                # Update reliability for timed-out nurses
-                for nurse_id in nurse_ids:
-                    await asyncio.get_running_loop().run_in_executor(
-                        _executor, functools.partial(
-                            _update_reliability_on_event_sync, db, nurse_id, "timed_out"
-                        )
-                    )
 
                 await asyncio.get_running_loop().run_in_executor(
                     _executor, functools.partial(
@@ -1316,7 +1310,8 @@ async def _run_dispatch_inner(db, shift_id: int) -> None:
                 for nid in nurse_ids:
                     _record_offer_sent(nid)
 
-                expires_at = datetime.utcnow() + timedelta(seconds=wave_timeout)
+                from .offer_policy import offer_expires_at as _offer_expires_at
+                expires_at = _offer_expires_at(shift)
                 offers = await asyncio.get_running_loop().run_in_executor(
                     _executor, functools.partial(
                         _create_offers_sync, db, session.id, shift_id,
@@ -1361,12 +1356,6 @@ async def _run_dispatch_inner(db, shift_id: int) -> None:
                             _expire_wave_offers_sync, db, session.id, watchlist_wave
                         )
                     )
-                    for nid in nurse_ids:
-                        await asyncio.get_running_loop().run_in_executor(
-                            _executor, functools.partial(
-                                _update_reliability_on_event_sync, db, nid, "timed_out"
-                            )
-                        )
                     await _notify_hospital(shift.hospital_user_id, shift_id, "dispatch_wave_update", {
                         "status": "watching",
                         "wave": watchlist_wave,

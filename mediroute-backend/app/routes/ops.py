@@ -22,6 +22,8 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
+
+from ..utils.datetime_util import utc_iso
 from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -281,7 +283,7 @@ async def manual_assign(
         "assignment_id": assignment.id,
         "shift_id": req.shift_id,
         "hospital_name": shift.hospital_name,
-        "shift_start": shift.shift_start.isoformat(),
+        "shift_start": utc_iso(shift.shift_start),
         "message": "Assignment confirmed by operations team.",
     })
 

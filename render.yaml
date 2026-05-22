@@ -25,7 +25,9 @@ services:
       - key: ALLOWED_ORIGINS
         value: "https://localhost,capacitor://localhost"   # UPDATE after deploy — add your Render URL
       - key: SMS_PROVIDER
-        value: log           # Change to msg91 when MSG91 keys are ready
+        value: log           # Pilot: DB OTP + dev_otp in API (internal testing). Use msg91 when live SMS is ready.
+      - key: OTP_FORCE_DEV
+        value: "true"         # Harmless on pilot path; documents intent for internal testers
       # - key: MSG91_AUTH_KEY
       #   sync: false
       # - key: MSG91_TEMPLATE_ID

@@ -1,23 +1,18 @@
 import { useState, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import api from '../api/axios';
+import { authGet, otpPost } from '../api/otpNativePost';
 import { useAuth } from '../context/AuthContext';
 import { navigateAfterLogin } from '../utils/authNav';
 import { mlog, mlogError } from '../utils/mobileLogger';
 import { formatApiErrorDetail } from '../utils/apiErrorMessage';
+import { consumeStashedDevOtp, normalizeDevOtp, stashDevOtp } from '../utils/devOtpStorage';
 
 const RESEND_COOLDOWN = 30; // seconds
-
-/** Normalize OTP for input (digits only, max 6). Backend always sends six-digit dev_otp strings. */
-function normalizeOtpInput(val) {
-  if (val == null || val === '') return '';
-  return String(val).replace(/\D/g, '').slice(0, 6);
-}
 
 export default function OTPVerify() {
   const { state } = useLocation();
   const phone = state?.phone || '';
-  const devOtpHint = normalizeOtpInput(state?.devOtp);
+  const devOtpHint = normalizeDevOtp(state?.devOtp);
   const navigate = useNavigate();
   const { login } = useAuth();
 
@@ -30,24 +25,11 @@ export default function OTPVerify() {
 
   // Re-apply whenever navigation state/session provides pilot/dev OTP (native WebViews may omit history.state briefly)
   useEffect(() => {
-    let loaded = '';
-    try {
-      const stored = normalizeOtpInput(sessionStorage.getItem('mr_dev_otp_pending'));
-      if (devOtpHint) loaded = devOtpHint;
-      else if (stored) loaded = stored;
-
-      if (loaded) {
-        setOtp(loaded);
-        setShowDevAssist(true);
-        try {
-          sessionStorage.removeItem('mr_dev_otp_pending');
-        } catch (_) { /* noop */ }
-      }
-    } catch (_) {
-      if (devOtpHint) {
-        setOtp(devOtpHint);
-        setShowDevAssist(true);
-      }
+    const stored = consumeStashedDevOtp();
+    const loaded = devOtpHint || stored;
+    if (loaded) {
+      setOtp(loaded);
+      setShowDevAssist(true);
     }
 
     mlog('otp', 'verify_screen_open', {
@@ -78,10 +60,10 @@ export default function OTPVerify() {
     setLoading(true);
     mlog('otp', 'verify_start');
     try {
-      const res = await api.post('/auth/verify-otp', { phone, otp: otp.trim() });
+      const res = await otpPost('/auth/verify-otp', { phone, otp: otp.trim() });
       const { access_token: accessToken, refresh_token: refreshToken } = res.data;
-      const meRes = await api.get('/auth/me', {
-        headers: { Authorization: `Bearer ${accessToken}` },
+      const meRes = await authGet('/auth/me', {
+        Authorization: `Bearer ${accessToken}`,
       });
       const userData = meRes.data;
       mlog('auth', 'login_success', { role: userData.role });
@@ -102,8 +84,8 @@ export default function OTPVerify() {
     setResending(true);
     setError('');
     try {
-      const res = await api.post('/auth/send-otp', { phone }, { timeout: 45000 });
-      const next = normalizeOtpInput(res.data?.dev_otp);
+      const res = await otpPost('/auth/send-otp', { phone });
+      const next = stashDevOtp(res.data?.dev_otp);
       if (next) {
         setOtp(next);
         setShowDevAssist(true);

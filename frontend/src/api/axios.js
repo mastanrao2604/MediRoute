@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { Capacitor } from '@capacitor/core';
 import { mlog } from '../utils/mobileLogger';
 
 // For Capacitor APK builds: VITE_API_URL is set in the local .env file to the
@@ -8,9 +9,11 @@ import { mlog } from '../utils/mobileLogger';
 // fall back to window.location.origin — which IS the backend host when the
 // frontend is served from the same domain. This means API calls are same-origin
 // (no CORS overhead) and no additional env var config is needed on Render.
-const BASE_URL =
+export const API_BASE_URL =
   import.meta.env.VITE_API_URL ??
   (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8000');
+
+const BASE_URL = API_BASE_URL;
 
 const api = axios.create({
   baseURL: BASE_URL,
@@ -20,8 +23,18 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
+let _loggedApiBase = false;
+
 // ── Request interceptor: attach access token ──────────────────────────────────
 api.interceptors.request.use((config) => {
+  if (!_loggedApiBase && Capacitor.isNativePlatform()) {
+    _loggedApiBase = true;
+    try {
+      mlog('api', 'base_url', { host: new URL(BASE_URL).host });
+    } catch {
+      mlog('api', 'base_url', { host: 'invalid' });
+    }
+  }
   const token = localStorage.getItem('mediroute_token');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;

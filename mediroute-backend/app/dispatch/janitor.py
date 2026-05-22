@@ -69,14 +69,26 @@ async def _janitor_tick() -> None:
         if pruned:
             logger.info("[janitor] pruned %d stale WebSocket connections", pruned)
 
-        # 1. Find pending offers past their expiry
+        # 1. Close pending invitations only after shift start has passed
         expired_offers = await loop.run_in_executor(
             _executor,
             partial(
-                lambda d, t: d.query(models.DispatchOffer).filter(
-                    models.DispatchOffer.status == models.OfferStatus.pending,
-                    models.DispatchOffer.expires_at < t,
-                ).all(),
+                lambda d, t: d.query(models.DispatchOffer)
+                .join(
+                    models.ShiftRequest,
+                    models.DispatchOffer.shift_request_id == models.ShiftRequest.id,
+                )
+                .filter(
+                    models.DispatchOffer.status.in_(
+                        (
+                            models.OfferStatus.pending,
+                            models.OfferStatus.declined,
+                            models.OfferStatus.timed_out,
+                        )
+                    ),
+                    models.ShiftRequest.shift_start <= t,
+                )
+                .all(),
                 db, now
             )
         )
@@ -84,8 +96,9 @@ async def _janitor_tick() -> None:
         if expired_offers:
             logger.info("[janitor] expiring %d stale offers", len(expired_offers))
             for offer in expired_offers:
-                offer.status = models.OfferStatus.timed_out
-                offer.responded_at = now
+                if offer.status == models.OfferStatus.pending:
+                    offer.status = models.OfferStatus.timed_out
+                    offer.responded_at = now
 
             await loop.run_in_executor(_executor, partial(lambda d: d.commit(), db))
 

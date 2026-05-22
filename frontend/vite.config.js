@@ -8,6 +8,8 @@ export default defineConfig({
     react(),
     tailwindcss(),
     VitePWA({
+      // APK/Capacitor: service worker intercepts cross-origin API fetches → ERR_NETWORK in WebView
+      disable: process.env.VITE_NATIVE_BUILD === 'true',
       registerType: 'autoUpdate',
       includeAssets: ['favicon.ico', 'icons/*.png'],
       // Manifest is in public/manifest.json — plugin reads it automatically.

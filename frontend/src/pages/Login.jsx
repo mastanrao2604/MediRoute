@@ -4,11 +4,13 @@ import { GoogleLogin } from '@react-oauth/google';
 import { Capacitor } from '@capacitor/core';
 import { GoogleAuth } from '@codetrix-studio/capacitor-google-auth';
 import api from '../api/axios';
+import { otpPost } from '../api/otpNativePost';
 import { useAuth } from '../context/AuthContext';
 import { navigateAfterLogin } from '../utils/authNav';
 import { validateIndianPhone, stripCountryCode } from '../utils/phoneValidation';
 import { mlog, mlogError } from '../utils/mobileLogger';
 import { formatApiErrorDetail } from '../utils/apiErrorMessage';
+import { normalizeDevOtp, stashDevOtp } from '../utils/devOtpStorage';
 
 // True only inside the Android/iOS Capacitor shell — false in browser.
 const IS_NATIVE = Capacitor.isNativePlatform();
@@ -59,20 +61,19 @@ export default function Login() {
     mlog('otp', 'send_start');
     try {
       console.log('[OTP] sending to', validation.cleaned);
-      const res = await api.post('/auth/send-otp', { phone: validation.cleaned }, { timeout: 45000 });
-      const devMode = !!res.data.dev_otp;
+      const res = await otpPost('/auth/send-otp', { phone: validation.cleaned });
+      const devOtp = stashDevOtp(res.data?.dev_otp);
+      const devMode = !!devOtp;
       console.log('[OTP] response status', res.status, 'dev_otp present:', devMode);
       mlog('otp', 'send_success', { dev_mode: devMode });
-      // Persist dev OTP briefly — Capacitor WebViews sometimes lose history state across bridge/hydration
-      try {
-        if (res.data?.dev_otp != null && String(res.data.dev_otp).trim() !== '') {
-          sessionStorage.setItem(
-            'mr_dev_otp_pending',
-            String(res.data.dev_otp).replace(/\D/g, '').slice(0, 6),
-          );
-        }
-      } catch (_) { /* ignore quota / privacy mode */ }
-      navigate('/verify-otp', { state: { phone: validation.cleaned, devOtp: res.data.dev_otp } });
+      if (!devMode) {
+        console.warn(
+          '[OTP] No dev_otp in response — backend must use SMS_PROVIDER=log or omit MSG91 keys for internal testing.',
+        );
+      }
+      navigate('/verify-otp', {
+        state: { phone: validation.cleaned, devOtp: devOtp || normalizeDevOtp(res.data?.dev_otp) },
+      });
     } catch (err) {
       console.error('[OTP] send-otp error:', err?.message, err?.response?.status, err?.response?.data);
       if (err?.response?.status === 502) {
@@ -83,11 +84,15 @@ export default function Login() {
       mlogError('otp', 'send_fail', err);
       const isTimeout =
         err?.code === 'ECONNABORTED' || String(err?.message || '').includes('timeout');
+      const isNetwork =
+        err?.code === 'ERR_NETWORK' || String(err?.message || '') === 'Network Error';
       const detail = formatApiErrorDetail(err?.response?.data?.detail);
       setError(
         isTimeout
           ? 'Request timed out — the server may be waking up. Try again in a few seconds.'
-          : detail || 'Failed to send OTP. Try again.',
+          : isNetwork
+            ? 'Cannot reach the server. Check Wi‑Fi or mobile data and try again.'
+            : detail || 'Failed to send OTP. Try again.',
       );
     } finally {
       setLoading(false);

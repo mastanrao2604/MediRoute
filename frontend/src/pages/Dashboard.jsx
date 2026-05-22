@@ -4,19 +4,17 @@ import api from '../api/axios';
 import MainLayout from '../layouts/MainLayout';
 import Spinner from '../components/Spinner';
 import AvailabilityToggle from '../components/AvailabilityToggle';
+import EmployeeShiftDetailSheet from '../components/EmployeeShiftDetailSheet';
 import { useAuth } from '../context/AuthContext';
+import { formatShiftTime } from '../utils/shiftDateTime';
+import { pickActiveNurseShift } from '../utils/nurseActiveShift';
+import { URGENCY_LABEL, formatRoleLabel, humanizeStaffingError } from '../utils/staffingStatusCopy';
+import { filterJobSeekerOffers } from '../utils/shiftVisibility';
 
 const DISPATCH_ELIGIBLE_ROLES = new Set([
   'nurse', 'staff_nurse', 'icu_nurse', 'ot_nurse', 'emergency_nurse',
   'home_care_nurse', 'doctor', 'lab_tech', 'pharmacist', 'driver', 'front_office',
 ]);
-
-const URGENCY_LABEL = {
-  emergency: { label: 'Right Now',         color: 'bg-red-100 text-red-700' },
-  urgent:    { label: 'Within Few Hours',  color: 'bg-orange-100 text-orange-700' },
-  standard:  { label: "Today's Shift",     color: 'bg-blue-100 text-blue-700' },
-  planned:   { label: 'Plan Ahead',        color: 'bg-gray-100 text-gray-700' },
-};
 
 export default function Dashboard() {
   const { user } = useAuth();
@@ -30,14 +28,26 @@ export default function Dashboard() {
   const [pendingOffers, setPendingOffers]   = useState([]);
   const [acceptingId,   setAcceptingId]     = useState(null);
   const [offerError,    setOfferError]      = useState('');
+  const [activeShift, setActiveShift]       = useState(null);
+  const [assignedDetailId, setAssignedDetailId] = useState(null);
 
   const isDispatchEligible = DISPATCH_ELIGIBLE_ROLES.has(user?.role);
+
+  const fetchActiveShift = useCallback(async () => {
+    if (!isDispatchEligible) return;
+    try {
+      const res = await api.get('/shifts/');
+      setActiveShift(pickActiveNurseShift(res.data?.shifts));
+    } catch {
+      /* non-critical */
+    }
+  }, [isDispatchEligible]);
 
   const fetchPendingOffers = useCallback(async () => {
     if (!isDispatchEligible) return;
     try {
       const res = await api.get('/dispatch/offers/pending');
-      setPendingOffers(res.data?.offers || []);
+      setPendingOffers(filterJobSeekerOffers(res.data?.offers || []));
     } catch { /* non-critical */ }
   }, [isDispatchEligible]);
 
@@ -56,7 +66,27 @@ export default function Dashboard() {
 
     // Load pending dispatch offers (missed WebSocket deliveries)
     fetchPendingOffers();
-  }, [fetchPendingOffers]);
+    fetchActiveShift();
+  }, [fetchPendingOffers, fetchActiveShift]);
+
+  useEffect(() => {
+    if (!isDispatchEligible) return undefined;
+    const refresh = () => {
+      fetchActiveShift();
+      fetchPendingOffers();
+    };
+    window.addEventListener('mr-nurse-active-shift-refresh', refresh);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refresh();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    const interval = setInterval(fetchActiveShift, 60000);
+    return () => {
+      window.removeEventListener('mr-nurse-active-shift-refresh', refresh);
+      document.removeEventListener('visibilitychange', onVisible);
+      clearInterval(interval);
+    };
+  }, [isDispatchEligible, fetchActiveShift, fetchPendingOffers]);
 
   async function handleAcceptOffer(offerId) {
     setAcceptingId(offerId);
@@ -64,8 +94,15 @@ export default function Dashboard() {
     try {
       await api.post(`/dispatch/offers/${offerId}/accept`);
       setPendingOffers(prev => prev.filter(o => o.offer_id !== offerId));
+      await fetchActiveShift();
     } catch (err) {
-      setOfferError(err.response?.data?.detail || 'Could not accept offer. Try again.');
+      setOfferError(
+        humanizeStaffingError(
+          typeof err.response?.data?.detail === 'string'
+            ? err.response.data.detail
+            : 'Could not accept this shift. Try again.',
+        ),
+      );
     } finally {
       setAcceptingId(null);
     }
@@ -117,8 +154,22 @@ export default function Dashboard() {
         {/* Availability toggle — only for dispatch-eligible healthcare workers */}
         {DISPATCH_ELIGIBLE_ROLES.has(user?.role) && (
           <div className="mb-4">
-            <AvailabilityToggle />
+            <AvailabilityToggle
+              activeShift={activeShift}
+              onOpenActiveShift={(shift) => setAssignedDetailId(shift.id)}
+            />
           </div>
+        )}
+
+        {assignedDetailId && (
+          <EmployeeShiftDetailSheet
+            shiftId={assignedDetailId}
+            mode="assigned"
+            onClose={() => {
+              setAssignedDetailId(null);
+              fetchActiveShift();
+            }}
+          />
         )}
 
         {/* Pending Dispatch Offers — missed WebSocket deliveries recovered from API */}
@@ -127,7 +178,7 @@ export default function Dashboard() {
             <div className="flex items-center gap-2 mb-2">
               <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
               <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide">
-                Active Shift Offers
+                Urgent shift requests
               </h2>
               <span className="text-xs bg-red-100 text-red-700 px-1.5 py-0.5 rounded-full font-semibold">
                 {pendingOffers.length}
@@ -139,7 +190,6 @@ export default function Dashboard() {
             <div className="flex flex-col gap-3">
               {pendingOffers.map((offer) => {
                 const urgMeta = URGENCY_LABEL[offer.urgency] || URGENCY_LABEL.standard;
-                const expiresMin = Math.max(0, Math.round((offer.expires_in_sec || 0) / 60));
                 return (
                   <div
                     key={offer.offer_id}
@@ -149,7 +199,7 @@ export default function Dashboard() {
                       <div className="min-w-0">
                         <p className="text-sm font-bold text-gray-900 truncate">{offer.hospital_name}</p>
                         <p className="text-xs text-gray-500 mt-0.5">
-                          {offer.role?.replace(/_/g, ' ')} · starts {new Date(offer.shift_start).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          {formatRoleLabel(offer.role)} · starts {formatShiftTime(offer.shift_start)}
                         </p>
                         {offer.pay_rate && (
                           <p className="text-xs text-green-600 mt-0.5 font-medium">{offer.pay_rate}</p>
@@ -159,9 +209,7 @@ export default function Dashboard() {
                         <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${urgMeta.color}`}>
                           {urgMeta.label}
                         </span>
-                        {expiresMin > 0 && (
-                          <span className="text-xs text-amber-600">Expires in {expiresMin}m</span>
-                        )}
+                        <span className="text-xs text-amber-600">Open until shift starts</span>
                       </div>
                     </div>
                     <div className="flex gap-2">

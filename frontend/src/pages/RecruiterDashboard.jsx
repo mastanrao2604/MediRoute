@@ -10,20 +10,7 @@ import RecruiterShiftDetailSheet from '../components/recruiter/RecruiterShiftDet
 import { mlog } from '../utils/mobileLogger';
 import { formatApiErrorDetail } from '../utils/apiErrorMessage';
 import { SHIFT_CARD_STATUS, SEARCH_PHASE_LABEL, isPastShiftStart } from '../utils/staffingStatusCopy';
-
-function formatShiftWhen(iso) {
-  try {
-    return new Date(iso).toLocaleString(undefined, {
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  } catch {
-    return iso ?? '—';
-  }
-}
+import { formatShiftDateTime } from '../utils/shiftDateTime';
 
 const STAFF_SHIFT_STATUS_PILL = {
   dispatching: 'bg-blue-50 text-blue-800 border border-blue-100',
@@ -62,6 +49,7 @@ export default function RecruiterDashboard() {
   const [shiftBusyId, setShiftBusyId] = useState(null);
   const [jobBusyId, setJobBusyId] = useState(null);
   const [detailShiftId, setDetailShiftId] = useState(null);
+  const [repostShiftId, setRepostShiftId] = useState(null);
   const [highlightShiftId, setHighlightShiftId] = useState(null);
 
   const loadShifts = useCallback(() => (
@@ -128,10 +116,12 @@ export default function RecruiterDashboard() {
       clearShift(shiftId);
       await loadShifts();
       setDetailShiftId(null);
+      setRepostShiftId(null);
     } catch (e) {
       const msg = formatApiErrorDetail(e?.response?.data?.detail)
-        || 'Could not restart staff search.';
+        || 'Could not start searching again.';
       setShiftsError(msg);
+      throw e;
     } finally {
       setShiftBusyId(null);
     }
@@ -297,7 +287,7 @@ export default function RecruiterDashboard() {
                       </div>
                       <p className="text-sm font-medium text-gray-900 mt-1 truncate">{s.hospital_name}</p>
                       <p className="text-xs text-gray-500">
-                        {s.role_required} · {formatShiftWhen(s.shift_start)}
+                        {s.role_required} · {formatShiftDateTime(s.shift_start)}
                       </p>
                     </button>
 
@@ -335,7 +325,11 @@ export default function RecruiterDashboard() {
                           <button
                             type="button"
                             disabled={shiftBusyId === s.id}
-                            onClick={(e) => { e.stopPropagation(); redispatchStaffingShift(s.id); }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setRepostShiftId(s.id);
+                              setDetailShiftId(s.id);
+                            }}
                             className="text-xs font-semibold px-3 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
                           >
                             Post again
@@ -381,6 +375,11 @@ export default function RecruiterDashboard() {
               >
                 <Link
                   to={`/recruiter/jobs/${job.id}/applicants`}
+                  state={{
+                    returnTo: '/recruiter/dashboard',
+                    jobTitle: job.title,
+                    jobHospital: job.hospital_name,
+                  }}
                   className="block p-5 hover:bg-gray-50/80 transition-colors"
                 >
                 <div className="flex items-start justify-between gap-3">
@@ -423,10 +422,14 @@ export default function RecruiterDashboard() {
       {detailShiftId && (
         <RecruiterShiftDetailSheet
           shiftId={detailShiftId}
+          repostIntent={repostShiftId === detailShiftId}
           busy={!!shiftBusyId}
-          onClose={() => setDetailShiftId(null)}
+          onClose={() => {
+            setDetailShiftId(null);
+            setRepostShiftId(null);
+          }}
           onUpdated={async () => { await loadShifts(); }}
-          onCancel={async (id) => { await cancelStaffingShift(id); setDetailShiftId(null); }}
+          onCancel={async (id) => { await cancelStaffingShift(id); setDetailShiftId(null); setRepostShiftId(null); }}
           onArchive={archiveStaffingShift}
           onRedispatch={redispatchStaffingShift}
         />

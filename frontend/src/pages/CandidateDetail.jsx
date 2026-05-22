@@ -1,12 +1,15 @@
 import { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import api from '../api/axios';
 import MainLayout from '../layouts/MainLayout';
 import Spinner from '../components/Spinner';
+import RecruiterSubpageHeader from '../components/recruiter/RecruiterSubpageHeader';
+import { recruiterGoBack } from '../utils/recruiterNav';
 
 export default function CandidateDetail() {
   const { applicationId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const [candidate, setCandidate] = useState(null);
   const [fetching, setFetching] = useState(true);
   const [error, setError] = useState('');
@@ -61,7 +64,13 @@ export default function CandidateDetail() {
       <MainLayout>
         <div className="max-w-lg mx-auto px-4 py-16 text-center">
           <p className="text-gray-500">{error || 'Candidate not found.'}</p>
-          <button onClick={() => navigate(-1)} className="mt-4 text-indigo-600 text-sm hover:underline">← Go Back</button>
+          <button
+            type="button"
+            onClick={() => recruiterGoBack(navigate, location, '/recruiter/dashboard')}
+            className="mt-4 min-h-11 px-4 text-indigo-600 text-sm font-medium rounded-xl hover:bg-indigo-50"
+          >
+            Go back
+          </button>
         </div>
       </MainLayout>
     );
@@ -69,12 +78,17 @@ export default function CandidateDetail() {
 
   return (
     <MainLayout>
-      <div className="max-w-lg mx-auto px-4 py-6">
-        <div className="flex items-center gap-3 mb-6">
-          <button onClick={() => navigate(-1)} className="text-sm text-indigo-600 hover:underline">← Back</button>
-          <span className="text-gray-300">|</span>
-          <h1 className="text-2xl font-bold text-gray-900">Candidate Details</h1>
-        </div>
+      <div className="max-w-lg mx-auto px-4 sm:px-6 lg:px-4">
+        <RecruiterSubpageHeader
+          title={candidate.candidate_name || candidate.phone || 'Candidate'}
+          subtitle={[
+            location.state?.jobTitle,
+            candidate.status ? `Status: ${candidate.status}` : null,
+          ].filter(Boolean).join(' · ') || 'Application details'}
+          onBack={() => recruiterGoBack(navigate, location, '/recruiter/dashboard')}
+        />
+
+        <div className="pt-4 pb-6">
 
         {/* Contact Card */}
         <div className="bg-indigo-600 rounded-2xl p-5 mb-4 text-white">
@@ -151,6 +165,7 @@ export default function CandidateDetail() {
             </button>
           </div>
         )}
+        </div>
       </div>
     </MainLayout>
   );

@@ -108,12 +108,15 @@ if (-not $SkipBuild) {
         $env:VITE_API_URL = $viteApiOverride
         Ok "VITE_API_URL for this build (session override): $viteApiOverride"
     }
+    $prevNativeBuild = $env:VITE_NATIVE_BUILD
+    $env:VITE_NATIVE_BUILD = 'true'
     try {
         Step "Building frontend (Vite)"
         if (-not (Test-Path (Join-Path $frontend "node_modules"))) {
             Fail "node_modules not found. Run scripts\setup1.ps1 first."
         }
         Set-Location $frontend
+        Ok "VITE_NATIVE_BUILD=true (no service worker in APK)"
         & $nodeExe "node_modules\vite\bin\vite.js" build
         if ($LASTEXITCODE -ne 0) { Fail "Vite build failed" }
         Ok "Vite build succeeded"
@@ -123,6 +126,11 @@ if (-not $SkipBuild) {
         if ($LASTEXITCODE -ne 0) { Fail "Capacitor sync failed" }
         Ok "Capacitor synced"
     } finally {
+        if ($null -eq $prevNativeBuild -or $prevNativeBuild -eq '') {
+            Remove-Item Env:\VITE_NATIVE_BUILD -ErrorAction SilentlyContinue
+        } else {
+            $env:VITE_NATIVE_BUILD = $prevNativeBuild
+        }
         if ($null -ne $viteApiOverride) {
             if ($null -eq $prevViteUrl -or $prevViteUrl -eq '') {
                 Remove-Item Env:\VITE_API_URL -ErrorAction SilentlyContinue

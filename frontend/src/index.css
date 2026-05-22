@@ -1,5 +1,12 @@
 @import 'tailwindcss';
 
+/* Shared mobile chrome (MainLayout nav + bottom sheets) */
+:root {
+  --mobile-nav-height: 4rem;
+  --mobile-bottom-safe: max(env(safe-area-inset-bottom, 0px), var(--sab-extra, 12px));
+  --mobile-nav-total: calc(var(--mobile-nav-height) + var(--mobile-bottom-safe) + 0.5rem);
+}
+
 /* Hide scrollbar on the Navbar link row on small screens */
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }

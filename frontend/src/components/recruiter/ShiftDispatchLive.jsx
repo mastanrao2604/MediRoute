@@ -5,6 +5,7 @@ import {
   formatSearchDistanceKm,
   isPastShiftStart,
 } from '../../utils/staffingStatusCopy';
+import { parseShiftDateTime } from '../../utils/shiftDateTime';
 
 function elapsedSince(ts) {
   if (!ts) return null;
@@ -16,8 +17,9 @@ function elapsedSince(ts) {
 }
 
 function countdownToShiftStart(iso) {
-  if (!iso) return null;
-  const ms = new Date(iso).getTime() - Date.now();
+  const start = parseShiftDateTime(iso);
+  if (!start) return null;
+  const ms = start.getTime() - Date.now();
   if (ms <= 0) return 'Shift start time passed';
   const sec = Math.floor(ms / 1000);
   if (sec < 3600) return `Starts in ${Math.floor(sec / 60)} min`;

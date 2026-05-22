@@ -3,6 +3,15 @@ import { createRoot } from 'react-dom/client'
 import * as Sentry from '@sentry/react'
 import { Capacitor } from '@capacitor/core'
 import './debugLogBootstrap.js'
+
+// PWA service workers break Capacitor WebView XHR to Render (ERR_NETWORK). Unregister on native.
+if (Capacitor.isNativePlatform() && typeof navigator !== 'undefined' && navigator.serviceWorker) {
+  navigator.serviceWorker.getRegistrations().then((regs) => {
+    if (regs.length) {
+      Promise.all(regs.map((r) => r.unregister())).catch(() => {});
+    }
+  });
+}
 import './index.css'
 import App from './App.jsx'
 

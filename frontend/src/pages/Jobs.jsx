@@ -1,10 +1,13 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import api from '../api/axios';
 import MainLayout from '../layouts/MainLayout';
 import JobCard from '../components/JobCard';
 import ShiftListingCard from '../components/ShiftListingCard';
 import { useAuth } from '../context/AuthContext';
 import { formatApiErrorDetail } from '../utils/apiErrorMessage';
+import { humanizeStaffingError } from '../utils/staffingStatusCopy';
+import { filterJobSeekerShifts, filterJobSeekerOffers } from '../utils/shiftVisibility';
+import EmployeeShiftDetailSheet from '../components/EmployeeShiftDetailSheet';
 
 const ROLES = ['', 'nurse', 'staff_nurse', 'icu_nurse', 'ot_nurse', 'emergency_nurse', 'home_care_nurse', 'doctor', 'lab_tech', 'pharmacist', 'driver', 'front_office'];
 const JOB_TYPES = ['', 'india', 'abroad', 'both'];
@@ -19,6 +22,14 @@ export default function Jobs() {
   const [applying, setApplying] = useState(null);
   const [toast, setToast] = useState('');
   const [filters, setFilters] = useState({ role: '', location: '', job_type: '' });
+  const [selectedShiftId, setSelectedShiftId] = useState(null);
+  const [selectedShiftPreview, setSelectedShiftPreview] = useState(null);
+  const [invitedShiftIds, setInvitedShiftIds] = useState(new Set());
+
+  const shiftHasRespondableOffer = useCallback((shift) => {
+    if (shift?.my_offer?.respondable) return true;
+    return false;
+  }, []);
 
   async function fetchJobs() {
     setLoading(true);
@@ -30,6 +41,7 @@ export default function Jobs() {
 
     const shiftParams = {};
     if (filters.role) shiftParams.role = filters.role;
+    else if (user?.role && user.role !== 'recruiter') shiftParams.role = user.role;
 
     // Fetch jobs independently of shifts — an older backend or shifts-only failure must not wipe job listings.
     try {
@@ -41,16 +53,26 @@ export default function Jobs() {
         formatApiErrorDetail(err.response?.data?.detail) ||
         err.message ||
         'Network error';
-      setError(`Failed to load jobs — ${msg}. Tap Search to retry.`);
+      setError(`${humanizeStaffingError(`Failed to load jobs — ${msg}`)} Tap Search to retry.`);
       console.error('fetchJobs (/jobs/) error:', err.response?.status, err.response?.data);
       setJobs([]);
     }
 
     try {
       if (user?.role !== 'recruiter') {
-        const shiftRes = await api.get('/shifts/browse', { params: shiftParams });
+        const [shiftRes, offersRes] = await Promise.all([
+          api.get('/shifts/browse', { params: shiftParams }),
+          api.get('/dispatch/offers/pending').catch(() => ({ data: { offers: [] } })),
+        ]);
         const rawShifts = shiftRes.data?.shifts;
-        setShifts(Array.isArray(rawShifts) ? rawShifts : []);
+        const list = filterJobSeekerShifts(Array.isArray(rawShifts) ? rawShifts : []);
+        setShifts(list);
+        const pending = filterJobSeekerOffers(offersRes.data?.offers || []);
+        const inviteIds = new Set(pending.map((o) => o.shift_id));
+        for (const s of list) {
+          if (shiftHasRespondableOffer(s)) inviteIds.add(s.id);
+        }
+        setInvitedShiftIds(inviteIds);
       } else {
         setShifts([]);
       }
@@ -70,6 +92,38 @@ export default function Jobs() {
     fetchJobs();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- filters applied when user taps Search; rerun when role is known for browse endpoint
   }, [user?.role]);
+
+  const removeShiftFromList = useCallback((shiftId) => {
+    const sid = Number(shiftId);
+    if (!sid) return;
+    setShifts((prev) => prev.filter((s) => s.id !== sid));
+    setInvitedShiftIds((prev) => {
+      const next = new Set(prev);
+      next.delete(sid);
+      return next;
+    });
+    setSelectedShiftId((cur) => (cur === sid ? null : cur));
+    setSelectedShiftPreview((cur) => (cur?.id === sid ? null : cur));
+  }, []);
+
+  useEffect(() => {
+    if (user?.role === 'recruiter') return undefined;
+    const refresh = () => fetchJobs();
+    const onRemoved = (e) => removeShiftFromList(e.detail?.shiftId);
+    window.addEventListener('mr-nurse-active-shift-refresh', refresh);
+    window.addEventListener('mr-jobs-shifts-refresh', refresh);
+    window.addEventListener('mr-jobs-shift-removed', onRemoved);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refresh();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.removeEventListener('mr-nurse-active-shift-refresh', refresh);
+      window.removeEventListener('mr-jobs-shifts-refresh', refresh);
+      window.removeEventListener('mr-jobs-shift-removed', onRemoved);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [user?.role, removeShiftFromList]);
 
   async function handleApply(jobId) {
     setApplying(jobId);
@@ -114,7 +168,11 @@ export default function Jobs() {
       <div className="max-w-5xl mx-auto px-4 py-6">
         <div className="mb-6">
           <h1 className="text-2xl font-bold text-gray-900">Jobs & shifts</h1>
-          <p className="text-sm text-gray-500 mt-1">Instant shifts and permanent job postings</p>
+          <p className="text-sm text-gray-500 mt-1">
+            {user?.service_locality
+              ? `Nearby shifts in ${user.service_locality}`
+              : 'Urgent shift work and permanent job postings'}
+          </p>
         </div>
 
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 mb-6 grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -171,18 +229,34 @@ export default function Jobs() {
         )}
 
         {!loading && !error && empty && (
-          <div className="text-center py-16">
-            <p className="text-gray-400 text-base">No open shifts or jobs match your filters.</p>
-            <p className="text-gray-400 text-sm mt-2">Try clearing filters or check back soon.</p>
+          <div className="text-center py-16 px-4">
+            <p className="text-gray-700 text-base font-medium">No shifts near you right now</p>
+            <p className="text-gray-500 text-sm mt-2 leading-relaxed">
+              Turn on <strong>Available for Shifts</strong> on your dashboard and keep your service pincode updated.
+              Hospitals will show active shifts here when they match your area.
+            </p>
           </div>
         )}
 
         {!loading && !error && hasShifts && isCandidate && (
           <>
-            <h2 className="text-lg font-semibold text-gray-900 mb-3">Instant shifts</h2>
+            <h2 className="text-lg font-semibold text-gray-900 mb-1">Available shifts near you</h2>
+            <p className="text-sm text-gray-500 mb-3">
+              Hospitals in your area are looking for staff. Tap a shift for details — accept when you see
+              &quot;Ready to accept&quot;.
+            </p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8">
               {shifts.map((s) => (
-                <ShiftListingCard key={`shift-${s.id}`} shift={s} />
+                <ShiftListingCard
+                  key={`shift-${s.id}`}
+                  shift={s}
+                  onSelect={(shift) => {
+                    setSelectedShiftId(shift.id);
+                    setSelectedShiftPreview(shift);
+                  }}
+                  hasInvite={invitedShiftIds.has(s.id) || shiftHasRespondableOffer(s)}
+                  nearbyMatch={s.nearby_match !== false}
+                />
               ))}
             </div>
           </>
@@ -205,6 +279,27 @@ export default function Jobs() {
           </>
         )}
       </div>
+
+      {selectedShiftId && (
+        <EmployeeShiftDetailSheet
+          shiftId={selectedShiftId}
+          initialShift={selectedShiftPreview}
+          onClose={() => {
+            setSelectedShiftId(null);
+            setSelectedShiftPreview(null);
+          }}
+          onUnavailable={() => {
+            removeShiftFromList(selectedShiftId);
+            setSelectedShiftId(null);
+            setSelectedShiftPreview(null);
+          }}
+          onResponded={() => {
+            setSelectedShiftId(null);
+            setSelectedShiftPreview(null);
+            fetchJobs();
+          }}
+        />
+      )}
     </MainLayout>
   );
 }

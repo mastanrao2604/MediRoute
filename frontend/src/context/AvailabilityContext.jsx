@@ -21,7 +21,16 @@ import {
   useCallback,
 } from 'react';
 import api from '../api/axios';
-import { geocodePincode, loadPincode } from '../utils/geocodePincode';
+import {
+  geocodePincode,
+  loadPincode,
+  reverseGeocodeCoords,
+  normalizeIndianPincode,
+  savePincode,
+  saveLastKnownArea,
+  loadLastKnownArea,
+} from '../utils/geocodePincode';
+import { humanizeCityId } from '../utils/areaLabel';
 import { mlog, mlogError } from '../utils/mobileLogger';
 
 const HEARTBEAT_INTERVAL_MS = 90_000;
@@ -34,18 +43,41 @@ export const DISPATCH_ELIGIBLE_ROLES = new Set([
 
 const AvailabilityContext = createContext(null);
 
-function getGeoPosition() {
+function getGeoPosition({ highAccuracy = true, maxAge = 45_000 } = {}) {
   return new Promise((resolve, reject) => {
     if (!navigator.geolocation) {
       reject(new Error('no-geolocation'));
       return;
     }
     navigator.geolocation.getCurrentPosition(resolve, reject, {
-      timeout: 8000,
-      maximumAge: 60_000,
-      enableHighAccuracy: false, // saves battery; good enough for city-level dispatch
+      timeout: 12_000,
+      maximumAge: maxAge,
+      enableHighAccuracy: highAccuracy,
     });
   });
+}
+
+async function syncGpsToProfile(lat, lng) {
+  try {
+    const rev = await reverseGeocodeCoords(lat, lng);
+    const pc = normalizeIndianPincode(rev.pincode);
+    if (rev.locality || pc) {
+      saveLastKnownArea({ locality: rev.locality, pincode: pc, lat, lng });
+    }
+    if (pc) savePincode(pc);
+    if (pc || rev.locality) {
+      await api.put('/profile/me', {
+        ...(pc ? { service_pincode: pc } : {}),
+        ...(rev.locality ? { service_locality: rev.locality } : {}),
+        location_source: 'gps',
+      });
+      mlog('location', 'profile_gps_sync_ok', { has_pin: Boolean(pc) });
+    }
+    return rev;
+  } catch (e) {
+    mlog('location', 'profile_gps_sync_fail', { err: e?.message });
+    return null;
+  }
 }
 
 export function AvailabilityProvider({ children, user }) {
@@ -60,12 +92,14 @@ export function AvailabilityProvider({ children, user }) {
   const [error, setError]                 = useState('');
   // 'gps' | 'pincode' | 'none' — which location source was used when going online
   const [locationSource, setLocationSource] = useState('none');
+  const [sessionAreaLabel, setSessionAreaLabel] = useState('');
 
   // Persist last known coordinates for heartbeat
   const latRef  = useRef(null);
   const lngRef  = useRef(null);
   const cityRef = useRef('HYD');
   const heartbeatRef = useRef(null);
+  const heartbeatCountRef = useRef(0);
 
   // ── Load initial state on mount (once per login) ──────────────────────────
   useEffect(() => {
@@ -87,7 +121,11 @@ export function AvailabilityProvider({ children, user }) {
       })
       .catch(() => {}) // non-critical — default to offline state
       .finally(() => setLoading(false));
-  }, [user?.id, isEligible]);
+
+    const last = loadLastKnownArea();
+    if (last?.locality) setSessionAreaLabel(last.locality);
+    else if (user?.service_locality) setSessionAreaLabel(user.service_locality);
+  }, [user?.id, isEligible, user?.service_locality]);
 
   // ── Heartbeat: keep last_seen fresh while nurse is available ──────────────
   // Backend marks nurses with last_seen > 5 min as stale for dispatch.
@@ -96,13 +134,35 @@ export function AvailabilityProvider({ children, user }) {
     clearInterval(heartbeatRef.current);
     if (!isAvailable || !isEligible) return;
 
-    const sendHeartbeat = () => {
-      if (latRef.current == null) return; // no coords yet — skip
+    const sendHeartbeat = async () => {
+      heartbeatCountRef.current += 1;
+      // Refresh GPS every 3rd heartbeat (~4.5 min) while online — stable, not flickering
+      if (heartbeatCountRef.current % 3 === 0) {
+        try {
+          const pos = await getGeoPosition({ highAccuracy: false, maxAge: 120_000 });
+          const newLat = pos.coords.latitude;
+          const newLng = pos.coords.longitude;
+          const moved =
+            latRef.current == null ||
+            Math.abs(newLat - latRef.current) > 0.004 ||
+            Math.abs(newLng - lngRef.current) > 0.004;
+          if (moved) {
+            latRef.current = newLat;
+            lngRef.current = newLng;
+            const rev = await syncGpsToProfile(newLat, newLng);
+            if (rev?.locality) setSessionAreaLabel(rev.locality);
+            mlog('location', 'heartbeat_gps_refresh', {});
+          }
+        } catch {
+          /* keep last known coords */
+        }
+      }
+      if (latRef.current == null) return;
       api.put('/availability/location', {
         latitude:  latRef.current,
         longitude: lngRef.current,
         city_id:   cityRef.current,
-      }).catch(() => {}); // heartbeat failure is non-critical
+      }).catch(() => {});
     };
 
     heartbeatRef.current = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
@@ -134,13 +194,15 @@ export function AvailabilityProvider({ children, user }) {
     if (wantAvailable) {
       // Step 1: Try GPS (preferred — most accurate)
       try {
-        const pos = await getGeoPosition();
+        const pos = await getGeoPosition({ highAccuracy: true, maxAge: 0 });
         lat = pos.coords.latitude;
         lng = pos.coords.longitude;
         latRef.current = lat;
         lngRef.current = lng;
         locSource = 'gps';
         mlog('availability', 'location_gps', {});
+        const rev = await syncGpsToProfile(lat, lng);
+        if (rev?.locality) setSessionAreaLabel(rev.locality);
       } catch (gpsErr) {
         // Step 2: GPS denied / unavailable — try stored pincode as fallback.
         // Without coordinates the dispatch engine excludes this nurse entirely,
@@ -154,6 +216,7 @@ export function AvailabilityProvider({ children, user }) {
             latRef.current = lat;
             lngRef.current = lng;
             locSource = 'pincode';
+            if (result.displayName) setSessionAreaLabel(result.displayName);
             mlog('availability', 'location_pincode_fallback', {});
           } catch {
             // Geocode failed — proceed without coords (nurse still goes online
@@ -199,6 +262,12 @@ export function AvailabilityProvider({ children, user }) {
     toggle,
     isEligible,
     locationSource,
+    sessionAreaLabel,
+    areaDisplayLabel:
+      sessionAreaLabel ||
+      user?.service_locality ||
+      humanizeCityId(cityId) ||
+      '',
   };
 
   return (

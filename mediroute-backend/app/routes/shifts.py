@@ -30,6 +30,11 @@ from ..dispatch.events import (
     RECRUITER_ARCHIVED,
 )
 from ..ws_manager import ws_manager
+from ..utils.datetime_util import to_utc_naive, utc_iso
+from ..dispatch.eligibility import nurse_nearby_shift, normalize_pincode
+from ..dispatch.offer_policy import offer_respondable
+from ..routes.availability import DISPATCH_ELIGIBLE_ROLES
+from .. import crud
 
 logger = logging.getLogger(__name__)
 logger.parent = logging.getLogger("uvicorn.error")
@@ -45,6 +50,7 @@ class ShiftCreateRequest(BaseModel):
     hospital_latitude: float
     hospital_longitude: float
     hospital_pincode: Optional[str] = None
+    hospital_locality: Optional[str] = None
     shift_start: datetime
     shift_end: Optional[datetime] = None
     urgency: str = "standard"
@@ -310,16 +316,17 @@ def _shift_to_dict(shift: models.ShiftRequest, assignment: Optional[models.LiveA
         "specialty": shift.specialty,
         "urgency": shift.urgency.value,
         "status": shift.status.value,
-        "shift_start": shift.shift_start.isoformat(),
-        "shift_end": shift.shift_end.isoformat() if shift.shift_end else None,
+        "shift_start": utc_iso(shift.shift_start),
+        "shift_end": utc_iso(shift.shift_end),
         "pay_rate": shift.pay_rate,
         "notes": shift.notes,
         "hospital_latitude": shift.hospital_latitude,
         "hospital_longitude": shift.hospital_longitude,
         "hospital_pincode": getattr(shift, "hospital_pincode", None),
+        "hospital_locality": getattr(shift, "hospital_locality", None),
         "dispatch_radius_km": shift.dispatch_radius_km,
-        "filled_at": shift.filled_at.isoformat() if shift.filled_at else None,
-        "created_at": shift.created_at.isoformat() if shift.created_at else None,
+        "filled_at": utc_iso(shift.filled_at),
+        "created_at": utc_iso(shift.created_at),
     }
     if assignment:
         d["assignment"] = {
@@ -330,6 +337,48 @@ def _shift_to_dict(shift: models.ShiftRequest, assignment: Optional[models.LiveA
             "check_out_at": assignment.check_out_at.isoformat() if assignment.check_out_at else None,
         }
     return d
+
+
+def _attach_nurse_shift_context(
+    d: dict,
+    shift: models.ShiftRequest,
+    nurse_user_id: int,
+    nurse_role: models.UserRole,
+    nurse_city_id: str,
+    nurse_pincode: Optional[str],
+    db: Session,
+) -> dict:
+    """Add nearby_match + my_offer for employee browse/detail."""
+    nearby = nurse_nearby_shift(shift, nurse_role, nurse_city_id, nurse_pincode)
+    d["nearby_match"] = nearby
+    offer = (
+        db.query(models.DispatchOffer)
+        .filter(
+            models.DispatchOffer.shift_request_id == shift.id,
+            models.DispatchOffer.nurse_user_id == nurse_user_id,
+        )
+        .order_by(models.DispatchOffer.id.desc())
+        .first()
+    )
+    if offer:
+        d["my_offer"] = {
+            "offer_id": offer.id,
+            "status": offer.status.value,
+            "respondable": offer_respondable(offer, shift),
+        }
+    return d
+
+
+def _nurse_browse_context(db: Session, user: models.User):
+    avail = (
+        db.query(models.NurseAvailability)
+        .filter(models.NurseAvailability.user_id == user.id)
+        .first()
+    )
+    city_id = (avail.city_id if avail else None) or "HYD"
+    prof = crud.get_profile(db, user.id)
+    nurse_pc = normalize_pincode(getattr(prof, "service_pincode", None) if prof else None)
+    return city_id, nurse_pc
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -392,7 +441,8 @@ async def create_shift(
         hospital_latitude=req.hospital_latitude,
         hospital_longitude=req.hospital_longitude,
         hospital_pincode=req.hospital_pincode,
-        shift_start=req.shift_start,
+        hospital_locality=(req.hospital_locality or "").strip() or None,
+        shift_start=_to_utc_naive(req.shift_start),
         shift_end=req.shift_end,
         urgency=models.ShiftUrgency(req.urgency),
         pay_rate=req.pay_rate,
@@ -475,10 +525,12 @@ def browse_open_shifts(
     db: Session = Depends(get_db),
 ):
     """
-    Open instant shifts for the Jobs listing (open + actively dispatching).
+    Open instant shifts for the Jobs listing (open + actively finding staff).
 
-    Authenticated users only. Used alongside GET /jobs so nurses see both shift work and postings.
+    Nurses: only shifts matching their role, city, and nearby pincode/area.
+    Includes my_offer when the hospital has already notified them.
     """
+    now = datetime.utcnow()
     q = (
         db.query(models.ShiftRequest)
         .filter(
@@ -487,9 +539,49 @@ def browse_open_shifts(
                     models.ShiftRequestStatus.open,
                     models.ShiftRequestStatus.dispatching,
                 )
-            )
+            ),
+            models.ShiftRequest.shift_start > now,
         )
     )
+
+    if current_user.role in DISPATCH_ELIGIBLE_ROLES:
+        nurse_city, nurse_pc = _nurse_browse_context(db, current_user)
+        effective_role = role or current_user.role
+        effective_city = (city_id.strip() if city_id else nurse_city)
+        q = q.filter(
+            models.ShiftRequest.city_id == effective_city,
+            models.ShiftRequest.role_required == effective_role,
+        )
+        shifts = q.order_by(models.ShiftRequest.shift_start.asc()).offset(skip).limit(limit * 3).all()
+        eligible = [s for s in shifts if nurse_nearby_shift(s, current_user.role, effective_city, nurse_pc)]
+        eligible = eligible[skip : skip + limit]
+        payload = []
+        for s in eligible:
+            if _expire_shift_if_past_start_unfilled(db, s):
+                db.refresh(s)
+            if s.status not in (
+                models.ShiftRequestStatus.open,
+                models.ShiftRequestStatus.dispatching,
+            ):
+                continue
+            if _shift_start_utc_naive(s.shift_start) <= now:
+                continue
+            d = _shift_to_dict(s)
+            _attach_nurse_shift_context(
+                d, s, current_user.id, current_user.role, effective_city, nurse_pc, db
+            )
+            payload.append(d)
+        logger.info(
+            "[browse] nurse %d role=%s city=%s pin=%s → %d/%d eligible shifts",
+            current_user.id,
+            effective_role.value,
+            effective_city,
+            nurse_pc or "—",
+            len(payload),
+            len(shifts),
+        )
+        return {"shifts": payload}
+
     if city_id:
         q = q.filter(models.ShiftRequest.city_id == city_id.strip())
     if role:
@@ -534,9 +626,18 @@ def get_shift(
         if shift.status in (
             models.ShiftRequestStatus.open,
             models.ShiftRequestStatus.dispatching,
-        ):
-            return {"shift": _shift_to_dict(shift, None)}
-        raise HTTPException(status_code=403, detail="Access denied.")
+        ) and _shift_start_utc_naive(shift.shift_start) > datetime.utcnow():
+            d = _shift_to_dict(shift, None)
+            if current_user.role in DISPATCH_ELIGIBLE_ROLES:
+                nurse_city, nurse_pc = _nurse_browse_context(db, current_user)
+                _attach_nurse_shift_context(
+                    d, shift, current_user.id, current_user.role, nurse_city, nurse_pc, db
+                )
+            return {"shift": d}
+        raise HTTPException(
+            status_code=404,
+            detail="This shift is no longer available.",
+        )
 
     assignment = db.query(models.LiveAssignment).filter(
         models.LiveAssignment.shift_request_id == shift_id
@@ -600,15 +701,15 @@ def update_shift(
         ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Choose a shift start time in the future.",
+                detail="Please choose a new future shift time to repost this requirement.",
             )
 
     if req.urgency is not None:
         shift.urgency = models.ShiftUrgency(req.urgency)
     if req.shift_start is not None:
-        shift.shift_start = req.shift_start
+        shift.shift_start = to_utc_naive(req.shift_start)
     if req.shift_end is not None:
-        shift.shift_end = req.shift_end
+        shift.shift_end = to_utc_naive(req.shift_end)
     if req.notes is not None:
         shift.notes = req.notes.strip() or None
     if req.pay_rate is not None:
@@ -824,7 +925,7 @@ async def recruiter_redispatch_shift(
     if _shift_start_utc_naive(shift.shift_start) <= datetime.utcnow():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Shift start time has passed. Open shift details, set a future start time, save, then tap Post again.",
+            detail="Please choose a new future shift time to repost this requirement.",
         )
 
     shift.status = models.ShiftRequestStatus.open

@@ -7,7 +7,12 @@ import { downloadPDF, viewPDF } from '../utils/downloadPdf';
 import { Capacitor } from '@capacitor/core';
 import { useNavigate } from 'react-router-dom';
 import { DISPATCH_ELIGIBLE_ROLES } from '../context/AvailabilityContext';
-import { reverseGeocodeCoords, normalizeIndianPincode, savePincode } from '../utils/geocodePincode';
+import {
+  reverseGeocodeCoords,
+  normalizeIndianPincode,
+  savePincode,
+  geocodePincode,
+} from '../utils/geocodePincode';
 import { mlog, mlogError, isDebugLogMirrorEnabled } from '../utils/mobileLogger';
 
 /** Trace Profile navigation/fetch — debug console + native app.log via mlog when enabled. */
@@ -722,6 +727,16 @@ export default function Profile() {
                           location_source:
                             normalizeIndianPincode(v) ? 'manual' : (f.location_source || ''),
                         }));
+                      }}
+                      onBlur={async () => {
+                        const pc = normalizeIndianPincode(form.service_pincode);
+                        if (!pc || form.service_locality) return;
+                        try {
+                          const g = await geocodePincode(pc);
+                          if (g.displayName) {
+                            setForm((f) => ({ ...f, service_locality: g.displayName }));
+                          }
+                        } catch { /* manual entry still ok */ }
                       }}
                       placeholder="500032"
                       className="w-full border border-gray-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 transition"

@@ -21,8 +21,30 @@ from .. import models
 from ..ws_manager import ws_manager
 from ..dispatch.engine import dispatch_events, _metrics
 from ..dispatch.events import OFFER_ACCEPTED, OFFER_DECLINED, OFFER_TIMED_OUT
+from ..utils.datetime_util import utc_iso
+from ..dispatch.offer_policy import (
+    RESPONDABLE_OFFER_STATUSES,
+    offer_respondable,
+    seconds_until_shift_start,
+    shift_accepting_staff,
+    shift_start_utc_naive,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _offer_payload(offer: models.DispatchOffer, shift: models.ShiftRequest, now: datetime) -> dict:
+    return {
+        "offer_id": offer.id,
+        "shift_id": shift.id,
+        "hospital_name": shift.hospital_name,
+        "role": shift.role_required.value,
+        "urgency": shift.urgency.value,
+        "shift_start": utc_iso(shift.shift_start),
+        "pay_rate": shift.pay_rate,
+        "offer_status": offer.status.value,
+        "respond_by_sec": seconds_until_shift_start(shift, now),
+    }
 
 router = APIRouter(tags=["Dispatch"])
 offer_router = APIRouter(prefix="/dispatch", tags=["Dispatch"])
@@ -104,47 +126,41 @@ def accept_offer(
     even with concurrent accepts from the same wave.
     Fires the asyncio.Event for the dispatch engine to stop waiting.
     """
-    # Lock the offer row — SKIP LOCKED means only one transaction gets it
     offer = (
         db.query(models.DispatchOffer)
         .filter(
             models.DispatchOffer.id == offer_id,
             models.DispatchOffer.nurse_user_id == current_user.id,
-            models.DispatchOffer.status == models.OfferStatus.pending,
+            models.DispatchOffer.status.in_(RESPONDABLE_OFFER_STATUSES),
         )
         .with_for_update(skip_locked=True)
         .first()
     )
 
     if not offer:
-        # Either already accepted by someone else, expired, or doesn't belong to this user
         existing = db.query(models.DispatchOffer).filter(
-            models.DispatchOffer.id == offer_id
+            models.DispatchOffer.id == offer_id,
+            models.DispatchOffer.nurse_user_id == current_user.id,
         ).first()
         if existing and existing.status == models.OfferStatus.accepted:
             raise HTTPException(status_code=409, detail="This shift has already been filled.")
-        if existing and existing.status in (models.OfferStatus.timed_out, models.OfferStatus.cancelled):
-            raise HTTPException(status_code=410, detail="This offer has expired.")
         raise HTTPException(status_code=404, detail="Offer not found or no longer available.")
 
-    # Task 9: Validate shift is still accepting assignments (inside same transaction)
     active_shift = db.query(models.ShiftRequest).filter(
         models.ShiftRequest.id == offer.shift_request_id,
-        models.ShiftRequest.status.in_([
-            models.ShiftRequestStatus.dispatching,
-            models.ShiftRequestStatus.open,
-        ]),
     ).first()
-    if not active_shift:
+    if not active_shift or not shift_accepting_staff(active_shift):
         db.rollback()
-        raise HTTPException(status_code=409, detail="This shift is no longer accepting assignments.")
+        raise HTTPException(
+            status_code=410,
+            detail="This shift has already started or is no longer available.",
+        )
 
-    # Check offer hasn't expired
-    if offer.expires_at < datetime.utcnow():
-        offer.status = models.OfferStatus.timed_out
-        offer.responded_at = datetime.utcnow()
-        db.commit()
-        raise HTTPException(status_code=410, detail="This offer has expired.")
+    if shift_start_utc_naive(active_shift.shift_start) <= datetime.utcnow():
+        raise HTTPException(
+            status_code=410,
+            detail="This shift has already started.",
+        )
 
     # FUTURE: AssignmentConflictValidator (§24.5) — check for overlapping shifts
     # For now: basic check — nurse doesn't have another active assignment
@@ -161,10 +177,10 @@ def accept_offer(
             detail="You already have an active assignment. Complete it before accepting new offers.",
         )
 
-    # Accept the offer
     now = datetime.utcnow()
     offer.status = models.OfferStatus.accepted
     offer.responded_at = now
+    offer.expires_at = shift_start_utc_naive(active_shift.shift_start)
 
     # Timeline event
     shift = db.query(models.ShiftRequest).filter(
@@ -224,23 +240,33 @@ def decline_offer(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Nurse declines a dispatch offer. Updates reliability score."""
+    """Nurse declines — may accept again until shift start."""
     offer = db.query(models.DispatchOffer).filter(
         models.DispatchOffer.id == offer_id,
         models.DispatchOffer.nurse_user_id == current_user.id,
-        models.DispatchOffer.status == models.OfferStatus.pending,
     ).first()
 
     if not offer:
-        raise HTTPException(status_code=404, detail="Offer not found or no longer pending.")
-
-    now = datetime.utcnow()
-    offer.status = models.OfferStatus.declined
-    offer.responded_at = now
+        raise HTTPException(status_code=404, detail="Offer not found.")
 
     shift = db.query(models.ShiftRequest).filter(
         models.ShiftRequest.id == offer.shift_request_id
     ).first()
+    if not shift or not shift_accepting_staff(shift):
+        raise HTTPException(status_code=410, detail="This shift is no longer available.")
+
+    if offer.status == models.OfferStatus.declined:
+        return {"declined": True, "offer_id": offer_id}
+
+    if offer.status not in (
+        models.OfferStatus.pending,
+        models.OfferStatus.timed_out,
+    ):
+        raise HTTPException(status_code=409, detail="This invitation can no longer be declined.")
+
+    now = datetime.utcnow()
+    offer.status = models.OfferStatus.declined
+    offer.responded_at = now
 
     event = models.ShiftTimelineEvent(
         shift_request_id=offer.shift_request_id,
@@ -293,34 +319,22 @@ def get_pending_offers(
         .join(models.ShiftRequest, models.DispatchOffer.shift_request_id == models.ShiftRequest.id)
         .filter(
             models.DispatchOffer.nurse_user_id == current_user.id,
-            models.DispatchOffer.status == models.OfferStatus.pending,
-            models.DispatchOffer.expires_at > now,
+            models.DispatchOffer.status.in_(RESPONDABLE_OFFER_STATUSES),
         )
         .all()
     )
 
     payload = []
+    seen_shift_ids = set()
     for offer, shift in rows:
         if _expire_shift_if_past_start_unfilled(db, shift):
             db.refresh(shift)
             db.refresh(offer)
-        if shift.status not in (
-            models.ShiftRequestStatus.open,
-            models.ShiftRequestStatus.dispatching,
-        ):
+        if not offer_respondable(offer, shift):
             continue
-        if offer.status != models.OfferStatus.pending or offer.expires_at <= now:
+        if shift.id in seen_shift_ids:
             continue
-        payload.append({
-            "offer_id": offer.id,
-            "shift_id": shift.id,
-            "hospital_name": shift.hospital_name,
-            "role": shift.role_required.value,
-            "urgency": shift.urgency.value,
-            "shift_start": shift.shift_start.isoformat(),
-            "pay_rate": shift.pay_rate,
-            "expires_at": offer.expires_at.isoformat(),
-            "expires_in_sec": max(0, int((offer.expires_at - now).total_seconds())),
-        })
+        seen_shift_ids.add(shift.id)
+        payload.append(_offer_payload(offer, shift, now))
 
     return {"offers": payload}

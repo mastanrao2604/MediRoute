@@ -12,8 +12,11 @@ import UpdatePrompt from './components/UpdatePrompt';
 import { getPostLoginRoute } from './utils/authNav';
 import { useWebSocket } from './hooks/useWebSocket';
 import { mlog } from './utils/mobileLogger';
+import { Capacitor } from '@capacitor/core';
 import { usePushNotifications } from './hooks/usePushNotifications';
 import DispatchOfferModal from './components/DispatchOfferModal';
+import LocationEducationModal from './components/LocationEducationModal';
+import { isBeforeShiftStartUtc } from './utils/shiftDateTime';
 
 // ── Global Error Boundary ─────────────────────────────────────────────────────
 // Catches any render-time exception in the entire component tree.
@@ -279,6 +282,9 @@ function DispatchManager() {
             ? { ...msg, _receivedAt: Date.now() }
             : prev;
         });
+        if (DISPATCH_ELIGIBLE_ROLES.has(user?.role)) {
+          window.dispatchEvent(new CustomEvent('mr-jobs-shifts-refresh'));
+        }
         break;
 
       case 'offer_revoked': {
@@ -290,6 +296,9 @@ function DispatchManager() {
         setMinimizedOffer(prev =>
           (Number(prev?.shift_id) === sid ? null : prev),
         );
+        if (DISPATCH_ELIGIBLE_ROLES.has(user?.role)) {
+          window.dispatchEvent(new CustomEvent('mr-jobs-shifts-refresh'));
+        }
         break;
       }
 
@@ -297,6 +306,9 @@ function DispatchManager() {
         mlog('dispatch', 'ws_assignment_confirmed', tracePayload());
         setCurrentOffer(null);
         setMinimizedOffer(null);
+        if (DISPATCH_ELIGIBLE_ROLES.has(user?.role)) {
+          window.dispatchEvent(new CustomEvent('mr-nurse-active-shift-refresh'));
+        }
         break;
 
       case 'dispatch_started':
@@ -308,6 +320,22 @@ function DispatchManager() {
         mlog('dispatch', `ws_${msg.type}`, tracePayload());
         // Publish to DispatchContext — RecruiterDashboard reads from there
         publish(msg);
+        if (DISPATCH_ELIGIBLE_ROLES.has(user?.role)) {
+          if (msg.type === 'shift_cancelled' || msg.type === 'shift_expired' || msg.type === 'shift_filled') {
+            window.dispatchEvent(new CustomEvent('mr-nurse-active-shift-refresh'));
+            window.dispatchEvent(new CustomEvent('mr-jobs-shifts-refresh'));
+            if (msg.shift_id != null) {
+              window.dispatchEvent(
+                new CustomEvent('mr-jobs-shift-removed', { detail: { shiftId: Number(msg.shift_id) } }),
+              );
+            }
+          }
+        }
+        if (msg.type === 'shift_expired' || msg.type === 'shift_cancelled') {
+          const sid = Number(msg.shift_id);
+          setCurrentOffer((prev) => (Number(prev?.shift_id) === sid ? null : prev));
+          setMinimizedOffer((prev) => (Number(prev?.shift_id) === sid ? null : prev));
+        }
         break;
 
       default:
@@ -329,24 +357,14 @@ function DispatchManager() {
     return () => clearTimeout(t);
   }, [isConnected, shouldConnect]);
 
-  // Re-render minimized banner every second so the countdown stays accurate
-  const [, setMiniBannerTick] = useState(0);
-  useEffect(() => {
-    if (!minimizedOffer) return undefined;
-    const id = setInterval(() => setMiniBannerTick((n) => n + 1), 1000);
-    return () => clearInterval(id);
-  }, [minimizedOffer]);
+  const miniOfferActive = minimizedOffer?.shift_start
+    ? isBeforeShiftStartUtc(minimizedOffer.shift_start)
+    : Boolean(minimizedOffer);
 
-  // Compute remaining offer seconds for the mini-banner countdown label
-  const miniSecondsLeft = minimizedOffer
-    ? Math.max(0, (minimizedOffer.expires_in_sec || 30) - Math.floor((Date.now() - (minimizedOffer._receivedAt || Date.now())) / 1000))
-    : 0;
-
-  // Clear stale minimized state once the offer window has passed
   useEffect(() => {
-    if (!minimizedOffer || miniSecondsLeft > 0) return;
+    if (!minimizedOffer || miniOfferActive) return;
     setMinimizedOffer(null);
-  }, [minimizedOffer, miniSecondsLeft]);
+  }, [minimizedOffer, miniOfferActive]);
 
   return (
     <>
@@ -357,19 +375,19 @@ function DispatchManager() {
           style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 0.375rem)' }}
         >
           <span className="w-2.5 h-2.5 border-2 border-white border-t-transparent rounded-full animate-spin shrink-0" />
-          Reconnecting to dispatch…
+          Reconnecting for live shift alerts…
         </div>
       )}
 
       {/* Minimized offer mini-banner — tapping reopens the dispatch sheet */}
-      {!currentOffer && minimizedOffer && miniSecondsLeft > 0 && (
+      {!currentOffer && minimizedOffer && miniOfferActive && (
         <button
           onClick={handleBannerTap}
           className="fixed top-0 inset-x-0 z-40 flex items-center justify-center gap-2 bg-orange-500 text-white text-xs font-semibold py-1.5 px-4 w-full text-left"
           style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 0.375rem)' }}
         >
           <span className="w-2 h-2 rounded-full bg-white animate-pulse shrink-0" />
-          ⚡ Shift offer waiting · {miniSecondsLeft}s — tap to view
+          Shift invitation waiting — tap to view
         </button>
       )}
 
@@ -428,8 +446,9 @@ function AuthAwareShell() {
 
   return (
     <AvailabilityProvider user={user}>
+      <LocationEducationModal />
       <AppLinkHandler />
-      <UpdatePrompt />
+      {!Capacitor.isNativePlatform() && <UpdatePrompt />}
       <InstallPrompt />
       <DispatchManager />
       <Suspense fallback={

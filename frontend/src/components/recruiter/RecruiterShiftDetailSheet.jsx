@@ -5,6 +5,12 @@ import Spinner from '../Spinner';
 import { formatApiErrorDetail } from '../../utils/apiErrorMessage';
 import { useLockBodyScroll } from '../../hooks/useLockBodyScroll';
 import { isPastShiftStart } from '../../utils/staffingStatusCopy';
+import {
+  formatShiftDateTime,
+  toDatetimeLocalValue,
+  datetimeLocalToUtcIso,
+  nowDatetimeLocalPlusMinutes,
+} from '../../utils/shiftDateTime';
 
 const URGENCY_OPTIONS = [
   { value: 'emergency', label: 'Right Now' },
@@ -13,25 +19,15 @@ const URGENCY_OPTIONS = [
   { value: 'planned', label: 'Plan Ahead' },
 ];
 
-function toLocalDatetimeValue(iso) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-function formatWhen(iso) {
-  try {
-    return new Date(iso).toLocaleString(undefined, {
-      weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
-    });
-  } catch {
-    return iso ?? '—';
-  }
-}
-
 export default function RecruiterShiftDetailSheet({
-  shiftId, onClose, onUpdated, onCancel, onArchive, onRedispatch, busy,
+  shiftId,
+  repostIntent = false,
+  onClose,
+  onUpdated,
+  onCancel,
+  onArchive,
+  onRedispatch,
+  busy,
 }) {
   const [shift, setShift] = useState(null);
   const [form, setForm] = useState(null);
@@ -49,10 +45,15 @@ export default function RecruiterShiftDetailSheet({
       .then((res) => {
         const s = res.data?.shift;
         setShift(s);
+        const past = isPastShiftStart(s.shift_start);
+        let shiftStartLocal = toDatetimeLocalValue(s.shift_start);
+        if (repostIntent && past) {
+          shiftStartLocal = nowDatetimeLocalPlusMinutes(60);
+        }
         setForm({
           urgency: s.urgency || 'standard',
-          shift_start: toLocalDatetimeValue(s.shift_start),
-          shift_end: toLocalDatetimeValue(s.shift_end),
+          shift_start: shiftStartLocal,
+          shift_end: toDatetimeLocalValue(s.shift_end),
           notes: s.notes || '',
           pay_rate: s.pay_rate || '',
           specialty: s.specialty || '',
@@ -61,7 +62,7 @@ export default function RecruiterShiftDetailSheet({
       })
       .catch((e) => setError(formatApiErrorDetail(e.response?.data?.detail) || 'Could not load shift.'))
       .finally(() => setLoading(false));
-  }, [shiftId]);
+  }, [shiftId, repostIntent]);
 
   const pastStart = isPastShiftStart(shift?.shift_start);
   const editable = shift && (
@@ -73,24 +74,36 @@ export default function RecruiterShiftDetailSheet({
   const canCancel = shift && shift.status !== 'cancelled' && shift.status !== 'filled';
   const canRedispatch = shift && (shift.status === 'expired' || shift.status === 'cancelled');
 
-  async function handleSave(e) {
+  function buildPayload() {
+    return {
+      urgency: form.urgency,
+      shift_start: datetimeLocalToUtcIso(form.shift_start),
+      notes: form.notes,
+      pay_rate: form.pay_rate,
+      specialty: form.specialty,
+      dispatch_radius_km: parseFloat(form.dispatch_radius_km) || 10,
+      ...(form.shift_end ? { shift_end: datetimeLocalToUtcIso(form.shift_end) } : {}),
+    };
+  }
+
+  async function handleSave(e, { thenRepost = false } = {}) {
     e.preventDefault();
     if (!editable || !form) return;
     setSaving(true);
     setError('');
     try {
-      const payload = {
-        urgency: form.urgency,
-        shift_start: new Date(form.shift_start).toISOString(),
-        notes: form.notes,
-        pay_rate: form.pay_rate,
-        specialty: form.specialty,
-        dispatch_radius_km: parseFloat(form.dispatch_radius_km) || 10,
-      };
-      if (form.shift_end) payload.shift_end = new Date(form.shift_end).toISOString();
-      const res = await api.patch(`/shifts/${shiftId}`, payload);
+      const startIso = datetimeLocalToUtcIso(form.shift_start);
+      if (thenRepost && new Date(startIso).getTime() <= Date.now()) {
+        setError('Please choose a new future shift time to repost this requirement.');
+        return;
+      }
+      const res = await api.patch(`/shifts/${shiftId}`, buildPayload());
       setShift(res.data?.shift);
       await onUpdated?.();
+      if (thenRepost) {
+        await onRedispatch?.(shiftId);
+        return;
+      }
       onClose?.();
     } catch (err) {
       setError(formatApiErrorDetail(err.response?.data?.detail) || 'Could not save changes.');
@@ -120,7 +133,9 @@ export default function RecruiterShiftDetailSheet({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="shrink-0 flex items-center justify-between border-b border-gray-100 px-4 py-3 bg-white rounded-t-2xl">
-          <h2 className="text-lg font-bold text-gray-900">Shift details</h2>
+          <h2 className="text-lg font-bold text-gray-900">
+            {repostIntent ? 'Repost requirement' : 'Shift details'}
+          </h2>
           <button
             type="button"
             onClick={onClose}
@@ -139,15 +154,23 @@ export default function RecruiterShiftDetailSheet({
               <div className="mb-4">
                 <span className="text-xs font-semibold px-2 py-0.5 rounded-lg bg-slate-100 text-slate-700 capitalize">{shift.status}</span>
                 <p className="text-base font-semibold text-gray-900 mt-2">{shift.hospital_name}</p>
-                <p className="text-sm text-gray-500">{shift.role_required} · {formatWhen(shift.shift_start)}</p>
+                <p className="text-sm text-gray-500">{shift.role_required} · {formatShiftDateTime(shift.shift_start)}</p>
                 {shift.dispatch && shift.status === 'dispatching' && !pastStart && (
                   <p className="text-xs text-indigo-700 mt-1">
                     Still searching for available nurses
                   </p>
                 )}
-                {(shift.status === 'expired' || (shift.status === 'dispatching' && pastStart)) && (
+                {repostIntent && (
+                  <div className="mt-2 rounded-xl bg-amber-50 border border-amber-200 px-3 py-2.5 text-sm text-amber-900">
+                    <p className="font-semibold">Previous timing has passed</p>
+                    <p className="text-xs mt-1 text-amber-800 leading-relaxed">
+                      Choose a new future shift time below, update any details, then start searching again.
+                    </p>
+                  </div>
+                )}
+                {!repostIntent && (shift.status === 'expired' || (shift.status === 'dispatching' && pastStart)) && (
                   <p className="text-xs text-amber-800 mt-1">
-                    No nurse confirmed in time. Set a future start time below, save, then tap Post shift again.
+                    No nurse confirmed in time. Update the start time below, then repost when ready.
                   </p>
                 )}
               </div>
@@ -158,8 +181,19 @@ export default function RecruiterShiftDetailSheet({
                       {URGENCY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                     </select>
                   </label>
-                  <label className="block"><span className="text-xs font-medium text-gray-600">Shift start</span>
-                    <input type="datetime-local" value={form.shift_start} onChange={(e) => setForm((f) => ({ ...f, shift_start: e.target.value }))} className="mt-1 w-full border border-gray-200 rounded-xl px-3 py-2 text-sm" required />
+                  <label className="block">
+                    <span className={`text-xs font-medium ${repostIntent ? 'text-amber-900' : 'text-gray-600'}`}>
+                      {repostIntent ? 'New shift time (required)' : 'Shift start'}
+                    </span>
+                    <input
+                      type="datetime-local"
+                      value={form.shift_start}
+                      onChange={(e) => setForm((f) => ({ ...f, shift_start: e.target.value }))}
+                      className={`mt-1 w-full border rounded-xl px-3 py-2 text-sm ${
+                        repostIntent ? 'border-amber-300 ring-1 ring-amber-200 bg-amber-50/40' : 'border-gray-200'
+                      }`}
+                      required
+                    />
                   </label>
                   <label className="block"><span className="text-xs font-medium text-gray-600">Shift end (optional)</span>
                     <input type="datetime-local" value={form.shift_end} onChange={(e) => setForm((f) => ({ ...f, shift_end: e.target.value }))} className="mt-1 w-full border border-gray-200 rounded-xl px-3 py-2 text-sm" />
@@ -175,16 +209,36 @@ export default function RecruiterShiftDetailSheet({
                     <input type="range" min="2" max="30" step="1" value={form.dispatch_radius_km} onChange={(e) => setForm((f) => ({ ...f, dispatch_radius_km: e.target.value }))} className="mt-1 w-full" />
                   </label>
                   <div className="flex flex-col gap-2">
-                    <button type="submit" disabled={saving || busy} className="w-full bg-indigo-600 text-white font-semibold py-3 rounded-xl disabled:opacity-50">
-                      {saving ? 'Saving…' : 'Save & close'}
-                    </button>
+                    {repostIntent ? (
+                      <>
+                        <button
+                          type="button"
+                          disabled={saving || busy}
+                          onClick={(e) => handleSave(e, { thenRepost: true })}
+                          className="w-full bg-indigo-600 text-white font-semibold py-3 rounded-xl disabled:opacity-50"
+                        >
+                          {saving ? 'Starting search…' : 'Save & start searching again'}
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={saving || busy}
+                          className="w-full bg-white text-indigo-700 font-semibold py-3 rounded-xl border border-indigo-200 disabled:opacity-50"
+                        >
+                          {saving ? 'Saving…' : 'Save changes only'}
+                        </button>
+                      </>
+                    ) : (
+                      <button type="submit" disabled={saving || busy} className="w-full bg-indigo-600 text-white font-semibold py-3 rounded-xl disabled:opacity-50">
+                        {saving ? 'Saving…' : 'Save & close'}
+                      </button>
+                    )}
                     <button
                       type="button"
                       disabled={saving || busy}
                       onClick={() => onClose?.()}
                       className="w-full bg-gray-100 text-gray-700 font-semibold py-3 rounded-xl disabled:opacity-50"
                     >
-                      Close without saving
+                      Cancel
                     </button>
                   </div>
                 </form>
@@ -202,9 +256,14 @@ export default function RecruiterShiftDetailSheet({
                     Cancel shift
                   </button>
                 )}
-                {canRedispatch && (
-                  <button type="button" disabled={busy} onClick={() => onRedispatch?.(shiftId)} className="w-full text-sm font-semibold py-3 rounded-xl bg-indigo-600 text-white">
-                    Post shift again
+                {canRedispatch && !repostIntent && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => onRedispatch?.(shiftId)}
+                    className="w-full text-sm font-semibold py-3 rounded-xl bg-indigo-600 text-white"
+                  >
+                    Start searching again
                   </button>
                 )}
                 {canArchive && (

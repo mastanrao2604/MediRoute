@@ -367,7 +367,8 @@ def _is_production() -> bool:
 
     Render pilot: dashboard sets SMS_PROVIDER=log — we must NOT call MSG91 even if ENV=production.
 
-    When SMS_PROVIDER is unset, legacy behaviour is preserved: ENV=production → MSG91 path.
+    When SMS_PROVIDER is unset on Render, use MSG91 only if MSG91_AUTH_KEY and MSG91_TEMPLATE_ID
+    are both set; otherwise pilot DB OTP + dev_otp (internal testing without SMS).
     When SMS_PROVIDER is set to anything other than msg91, we use DB OTP (Twilio etc. not wired here).
     """
     sms_raw = os.getenv("SMS_PROVIDER")
@@ -375,16 +376,20 @@ def _is_production() -> bool:
         s = sms_raw.strip().lower()
         if not s or s == "log":
             return False
-        if s != "msg91":
-            logger.warning(
-                "[OTP] SMS_PROVIDER=%r is not msg91 — using DB-backed OTP (dev_otp). "
-                "Set SMS_PROVIDER=msg91 and MSG91_* for live SMS.",
-                sms_raw,
-            )
-            return False
+        if s == "msg91":
+            return True
+        logger.warning(
+            "[OTP] SMS_PROVIDER=%r is not msg91 — using DB-backed OTP (dev_otp). "
+            "Set SMS_PROVIDER=msg91 and MSG91_* for live SMS.",
+            sms_raw,
+        )
+        return False
 
     env = os.getenv("ENV", "").strip().lower()
     if env == "production":
+        # Pilot default: production without MSG91 keys → dev_otp (matches render.yaml before MSG91 go-live)
+        if not (os.getenv("MSG91_AUTH_KEY") and os.getenv("MSG91_TEMPLATE_ID")):
+            return False
         return True
     if env == "development":
         return False
@@ -439,8 +444,8 @@ def validate_production_config() -> None:
             if not s or s == "log" or s != "msg91":
                 using_msg91 = False
         else:
-            # Unset SMS_PROVIDER preserves legacy behaviour: MSG91 in production when keys exist / required
-            using_msg91 = True
+            # Unset SMS_PROVIDER: MSG91 only when keys are configured; else pilot dev_otp
+            using_msg91 = auth_key_set and template_id_set
 
         if using_msg91 and force_dev_requested:
             logger.warning(

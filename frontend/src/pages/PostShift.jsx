@@ -5,6 +5,7 @@ import MainLayout from '../layouts/MainLayout';
 import { useAuth } from '../context/AuthContext';
 import { mlog, mlogError } from '../utils/mobileLogger';
 import { geocodePincode, reverseGeocodeCoords } from '../utils/geocodePincode';
+import { datetimeLocalToUtcIso, nowDatetimeLocalPlusMinutes } from '../utils/shiftDateTime';
 
 const ROLES = [
   { value: 'nurse',           label: 'Nurse' },
@@ -60,13 +61,6 @@ const URGENCY = [
   },
 ];
 
-function nowPlusMinutes(minutes) {
-  const d = new Date(Date.now() + minutes * 60 * 1000);
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-
 export default function PostShift() {
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -76,7 +70,7 @@ export default function PostShift() {
     role_required: 'nurse',
     specialty: '',
     hospital_name: user?.company_name || '',
-    shift_start: nowPlusMinutes(30),
+    shift_start: nowDatetimeLocalPlusMinutes(30),
     shift_end: '',
     urgency: 'standard',
     pay_rate: '',
@@ -189,8 +183,8 @@ export default function PostShift() {
       return;
     }
 
-    const shiftStartISO = new Date(form.shift_start).toISOString();
-    const shiftEndISO   = form.shift_end ? new Date(form.shift_end).toISOString() : undefined;
+    const shiftStartISO = datetimeLocalToUtcIso(form.shift_start);
+    const shiftEndISO   = form.shift_end ? datetimeLocalToUtcIso(form.shift_end) : undefined;
 
     const payload = {
       role_required:       form.role_required,
@@ -215,6 +209,8 @@ export default function PostShift() {
     if (shiftEndISO)           payload.shift_end  = shiftEndISO;
     if (form.pay_rate.trim())  payload.pay_rate   = form.pay_rate.trim();
     if (form.notes.trim())     payload.notes      = form.notes.trim();
+    const localityFromLabel = (areaLabel || '').split('—')[0].trim();
+    if (localityFromLabel) payload.hospital_locality = localityFromLabel;
 
     console.log('[PostShift] submit urgency=%s role=%s', payload.urgency, payload.role_required);
     mlog('dispatch', 'shift_post_start', { role: payload.role_required, urgency: payload.urgency });

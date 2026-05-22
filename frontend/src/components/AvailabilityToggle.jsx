@@ -7,23 +7,41 @@ import { Link } from 'react-router-dom';
 import { useAvailability } from '../context/AvailabilityContext';
 import { useAuth } from '../context/AuthContext';
 import { normalizeIndianPincode } from '../utils/geocodePincode';
+import NurseActiveShiftSummary from './NurseActiveShiftSummary';
 
-export default function AvailabilityToggle() {
+export default function AvailabilityToggle({ activeShift = null, onOpenActiveShift }) {
   const { user } = useAuth();
-  const { isAvailable, cityId, loading, toggling, error, toggle, isEligible, locationSource } = useAvailability();
+  const {
+    isAvailable,
+    loading,
+    toggling,
+    error,
+    toggle,
+    isEligible,
+    locationSource,
+    areaDisplayLabel,
+  } = useAvailability();
 
   if (!isEligible || loading) return null;
 
   const serverPc = normalizeIndianPincode(user?.service_pincode || '');
   const hasServiceArea = serverPc !== null;
 
+  const areaLine = areaDisplayLabel || (serverPc ? `Pin ${serverPc}` : '');
+
   const locLabel = !isAvailable
     ? null
     : locationSource === 'gps'
-      ? '📍 Using GPS for this session'
+      ? areaLine
+        ? `📍 Live location · ${areaLine}`
+        : '📍 Live location'
       : locationSource === 'pincode'
-        ? `📍 Using profile pincode ${serverPc || ''}`
-        : '⚠️ No GPS — using profile coordinates if available';
+        ? areaLine
+          ? `📍 ${areaLine}`
+          : `📍 Pin ${serverPc || ''}`
+        : areaLine
+          ? `📍 ${areaLine}`
+          : '⚠️ Turn on location for best nearby matching';
 
   const noGpsPing = isAvailable && locationSource === 'none';
 
@@ -45,7 +63,7 @@ export default function AvailabilityToggle() {
             {isAvailable ? 'Available for Shifts' : 'Offline'}
           </p>
           <p className="text-xs text-gray-400 mt-0.5 leading-tight">
-            {isAvailable ? `${locLabel} · ${cityId}` : 'Go online for urgent nearby shift offers'}
+            {isAvailable ? locLabel : 'Go online for urgent nearby shift offers'}
           </p>
         </div>
 
@@ -91,6 +109,11 @@ export default function AvailabilityToggle() {
       {error && (
         <p className="text-xs text-red-600 mt-2 bg-red-50 px-3 py-1.5 rounded-lg">{error}</p>
       )}
+
+      <NurseActiveShiftSummary
+        shift={activeShift}
+        onOpen={() => activeShift && onOpenActiveShift?.(activeShift)}
+      />
     </div>
   );
 }

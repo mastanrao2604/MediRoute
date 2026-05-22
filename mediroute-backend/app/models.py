@@ -456,6 +456,7 @@ class ShiftRequest(Base):
     hospital_latitude = Column(Float, nullable=False)
     hospital_longitude = Column(Float, nullable=False)
     hospital_pincode = Column(String(10), nullable=True)
+    hospital_locality = Column(String(255), nullable=True)
     shift_start = Column(DateTime, nullable=False)
     shift_end = Column(DateTime, nullable=True)
     status = Column(
