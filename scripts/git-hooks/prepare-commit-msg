@@ -1,0 +1,8 @@
+#!/bin/sh
+# Strip Cursor / agent attribution from commit messages (local safety net).
+MSG_FILE="$1"
+[ -f "$MSG_FILE" ] || exit 0
+sed -i '/cursoragent@cursor\.com/d' "$MSG_FILE" 2>/dev/null || sed -i '' '/cursoragent@cursor\.com/d' "$MSG_FILE"
+sed -i '/^Co-authored-by: Cursor/d' "$MSG_FILE" 2>/dev/null || sed -i '' '/^Co-authored-by: Cursor/d' "$MSG_FILE"
+sed -i '/^Made-with: Cursor/d' "$MSG_FILE" 2>/dev/null || sed -i '' '/^Made-with: Cursor/d' "$MSG_FILE"
+exit 0

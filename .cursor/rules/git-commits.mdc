@@ -1,0 +1,27 @@
+---
+description: Git commit message standards for MediRoute
+alwaysApply: true
+---
+
+# Git commits
+
+- Write commit messages as normal project commits only.
+- Do NOT add Cursor, AI, agent, or co-author attribution.
+- Do NOT include lines such as `Co-authored-by: Cursor` or `Made-with: Cursor`.
+- Do NOT pass `--trailer` on any git commit command.
+- Use concise conventional subjects (e.g. `fix(recruiter):`, `feat(nurse):`).
+- Body text should describe user-visible or operational changes only.
+
+## How to commit from the agent (Windows)
+
+Cursor's terminal may rewrite `git commit` and inject co-author trailers. Always use one of:
+
+1. `C:\Program Files\Git\bin\git.exe commit -F .git/COMMIT_MSG_CLEAN.tmp` (write message to the file first), or
+2. `.\scripts\git-commit-clean.ps1 -Subject "fix: summary" -Body "optional details"`
+
+Never use bare `git commit` in agent shell commands.
+
+## User setup (one time)
+
+- Cursor Settings → Agents → Attribution → turn **off** Commit Attribution and PR Attribution, then restart Cursor.
+- Run `.\scripts\install-git-hooks.ps1` so `prepare-commit-msg` strips any Cursor lines that slip through.
