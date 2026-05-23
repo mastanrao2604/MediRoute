@@ -2,7 +2,14 @@ import { createPortal } from 'react-dom';
 import { useLockBodyScroll } from '../../hooks/useLockBodyScroll';
 import { formatRoleLabel } from '../../utils/staffingStatusCopy';
 
-export default function AssignedNurseProfileSheet({ nurse, shiftLabel, onClose }) {
+export default function AssignedNurseProfileSheet({
+  nurse,
+  shiftLabel,
+  onClose,
+  onConfirmStaff,
+  canConfirm = false,
+  confirmBusy = false,
+}) {
   useLockBodyScroll(Boolean(nurse));
 
   if (!nurse || typeof document === 'undefined') return null;
@@ -28,7 +35,7 @@ export default function AssignedNurseProfileSheet({ nurse, shiftLabel, onClose }
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4">
           <div className="rounded-2xl bg-indigo-600 text-white p-5 mb-4">
-            <p className="text-indigo-200 text-xs uppercase tracking-wide font-medium">Confirmed for</p>
+            <p className="text-indigo-200 text-xs uppercase tracking-wide font-medium">Applicant for</p>
             <p className="text-sm mt-1 text-indigo-100">{shiftLabel || 'This shift'}</p>
             <p className="text-2xl font-bold mt-3">{nurse.name}</p>
             {nurse.phone && (
@@ -87,6 +94,16 @@ export default function AssignedNurseProfileSheet({ nurse, shiftLabel, onClose }
               </div>
             )}
           </dl>
+          {canConfirm && onConfirmStaff && (
+            <button
+              type="button"
+              disabled={confirmBusy}
+              onClick={() => onConfirmStaff(nurse)}
+              className="mt-4 w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-bold py-3.5 rounded-xl text-sm"
+            >
+              {confirmBusy ? 'Confirming…' : 'Confirm this nurse'}
+            </button>
+          )}
         </div>
       </div>
     </div>,

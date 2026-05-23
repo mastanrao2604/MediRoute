@@ -30,6 +30,7 @@ from ..dispatch.events import (
     SHIFT_CREATED, SHIFT_CANCELLED, SHIFT_EXPIRED, ASSIGNMENT_CHECKIN, ASSIGNMENT_CHECKOUT,
     ASSIGNMENT_COMPLETED, ASSIGNMENT_NO_SHOW, MANUAL_RETRY_TRIGGERED,
     RECRUITER_ARCHIVED,
+    RECRUITER_STAFF_CONFIRMED,
 )
 from ..ws_manager import ws_manager
 from ..utils.datetime_util import to_utc_naive, utc_iso
@@ -130,6 +131,10 @@ class ShiftCreateRequest(BaseModel):
         if v and not (0.5 <= v <= 50):
             raise ValueError("dispatch_radius_km must be between 0.5 and 50")
         return v
+
+
+class ConfirmStaffRequest(BaseModel):
+    nurse_user_id: int
 
 
 class ShiftUpdateRequest(BaseModel):
@@ -390,7 +395,7 @@ def _attach_recruiter_staffing(d: dict, shift: models.ShiftRequest, db: Session)
     )
     nurses_required = getattr(shift, "nurses_required", None) or 1
     d["applicants"] = applicants
-    d["confirmed_count"] = len(applicants)
+    d["confirmed_count"] = len(assignments)
     d["nurses_required"] = nurses_required
     d["pending_responses"] = pending_responses
     d["search_active"] = shift_search_open(shift)
@@ -406,6 +411,15 @@ def _attach_recruiter_staffing(d: dict, shift: models.ShiftRequest, db: Session)
         }
         d["assigned_nurse"] = _assigned_nurse_summary(db, a0.nurse_user_id)
     return d
+
+
+def _reliability_display_score(rs: Optional[models.ReliabilityScore]) -> float:
+    """New users show 100% until enough offer history to score fairly."""
+    if not rs or rs.score is None:
+        return 100.0
+    if (rs.total_offers or 0) <= 2:
+        return 100.0
+    return round(float(rs.score), 1)
 
 
 def _assigned_nurse_summary(db: Session, nurse_user_id: int) -> dict:
@@ -427,7 +441,7 @@ def _assigned_nurse_summary(db: Session, nurse_user_id: int) -> dict:
         "skills": profile.skills if profile else None,
         "education": profile.education if profile else None,
         "service_locality": profile.service_locality if profile else None,
-        "rating": round(float(rs.score), 1) if rs and rs.score is not None else None,
+        "rating": _reliability_display_score(rs),
         "completed_shifts": int(rs.completed_shifts) if rs else 0,
     }
 
@@ -958,6 +972,155 @@ def archive_shift(
         db.commit()
 
     return {"success": True, "shift_id": shift_id}
+
+
+@router.post("/{shift_id}/confirm-staff")
+async def confirm_staff(
+    shift_id: int,
+    req: ConfirmStaffRequest,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Recruiter selects a nurse who already accepted and closes the shift for applications.
+    Cancels other applicants, stops dispatch, and notifies both sides in real time.
+    """
+    if current_user.role != models.UserRole.recruiter:
+        raise HTTPException(status_code=403, detail="Only recruiters can confirm staff.")
+
+    shift = db.query(models.ShiftRequest).filter(
+        models.ShiftRequest.id == shift_id,
+        models.ShiftRequest.hospital_user_id == current_user.id,
+    ).first()
+    if not shift:
+        raise HTTPException(status_code=404, detail="Shift not found.")
+
+    nurse_id = req.nurse_user_id
+    assignment = (
+        db.query(models.LiveAssignment)
+        .filter(
+            models.LiveAssignment.shift_request_id == shift_id,
+            models.LiveAssignment.nurse_user_id == nurse_id,
+            models.LiveAssignment.status.in_([
+                models.AssignmentStatus.confirmed,
+                models.AssignmentStatus.checked_in,
+            ]),
+        )
+        .first()
+    )
+    if not assignment:
+        pending = db.query(models.DispatchOffer).filter(
+            models.DispatchOffer.shift_request_id == shift_id,
+            models.DispatchOffer.nurse_user_id == nurse_id,
+            models.DispatchOffer.status == models.OfferStatus.pending,
+        ).first()
+        if pending:
+            raise HTTPException(
+                status_code=400,
+                detail="This nurse has not accepted yet. Wait for them to accept, then confirm.",
+            )
+        raise HTTPException(status_code=404, detail="Applicant not found for this shift.")
+
+    if getattr(shift, "search_closed_at", None):
+        confirmed = (
+            db.query(models.LiveAssignment)
+            .filter(
+                models.LiveAssignment.shift_request_id == shift_id,
+                models.LiveAssignment.status.in_([
+                    models.AssignmentStatus.confirmed,
+                    models.AssignmentStatus.checked_in,
+                ]),
+            )
+            .count()
+        )
+        return {
+            "confirmed": True,
+            "shift_id": shift_id,
+            "nurse_user_id": nurse_id,
+            "confirmed_count": confirmed,
+            "search_closed": True,
+        }
+
+    now = datetime.utcnow()
+    other_assignments = (
+        db.query(models.LiveAssignment)
+        .filter(
+            models.LiveAssignment.shift_request_id == shift_id,
+            models.LiveAssignment.nurse_user_id != nurse_id,
+            models.LiveAssignment.status.in_([
+                models.AssignmentStatus.confirmed,
+                models.AssignmentStatus.checked_in,
+            ]),
+        )
+        .all()
+    )
+    not_selected_ids = []
+    for other in other_assignments:
+        other.status = models.AssignmentStatus.cancelled
+        not_selected_ids.append(other.nurse_user_id)
+
+    _stop_all_dispatch_for_shift(db, shift)
+    _finalize_search_closed_sync(db, shift_id, now, "recruiter_confirm")
+    db.refresh(shift)
+
+    nurse = db.query(models.User).filter(models.User.id == nurse_id).first()
+    nurse_name = (nurse.name if nurse and nurse.name else None) or f"Staff #{nurse_id}"
+
+    db.add(
+        models.ShiftTimelineEvent(
+            shift_request_id=shift_id,
+            event_type=RECRUITER_STAFF_CONFIRMED,
+            actor_user_id=current_user.id,
+            city_id=shift.city_id,
+            payload={
+                "nurse_user_id": nurse_id,
+                "not_selected": not_selected_ids,
+            },
+        )
+    )
+    db.commit()
+
+    confirmed_count = 1
+    await ws_manager.send(nurse_id, {
+        "type": "assignment_confirmed",
+        "shift_id": shift_id,
+        "assignment_id": assignment.id,
+        "hospital_name": shift.hospital_name,
+        "shift_start": utc_iso(shift.shift_start),
+        "message": "Shift confirmed — the hospital selected you. Get ready for your shift.",
+    })
+    for uid in not_selected_ids:
+        await ws_manager.send(uid, {
+            "type": "offer_revoked",
+            "shift_id": shift_id,
+            "message": "Position filled — another staff member was selected for this shift.",
+        })
+    await ws_manager.send(shift.hospital_user_id, {
+        "type": "shift_filled",
+        "shift_id": shift_id,
+        "nurse_name": nurse_name,
+        "nurse_user_id": nurse_id,
+        "confirmed_count": confirmed_count,
+        "message": f"{nurse_name} confirmed · applications closed.",
+    })
+    await ws_manager.send(shift.hospital_user_id, {
+        "type": "shift_search_stopped",
+        "shift_id": shift_id,
+        "confirmed_count": confirmed_count,
+        "message": "Applications closed — no new staff can apply.",
+    })
+
+    logger.info(
+        "[shifts] shift %d staff confirmed nurse=%d by recruiter %d",
+        shift_id, nurse_id, current_user.id,
+    )
+    return {
+        "confirmed": True,
+        "shift_id": shift_id,
+        "nurse_user_id": nurse_id,
+        "confirmed_count": confirmed_count,
+        "search_closed": True,
+    }
 
 
 @router.post("/{shift_id}/stop-search")

@@ -30,6 +30,8 @@ export default function RecruiterShiftDetailSheet({
   onArchive,
   onRedispatch,
   onStopSearch,
+  onConfirmStaff,
+  confirmingNurseId = null,
   busy,
   onViewNurseProfile,
 }) {
@@ -176,6 +178,12 @@ export default function RecruiterShiftDetailSheet({
                   <div className="mt-3">
                     <ShiftApplicantsPanel
                       shift={shift}
+                      confirmingNurseId={confirmingNurseId}
+                      onConfirmStaff={
+                        onConfirmStaff
+                          ? (nurse) => onConfirmStaff(shift.id, nurse.user_id)
+                          : undefined
+                      }
                       onViewProfile={(nurse) => onViewNurseProfile?.(nurse, shift)}
                     />
                   </div>

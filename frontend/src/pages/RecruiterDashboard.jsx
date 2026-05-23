@@ -11,7 +11,12 @@ import AssignedNurseProfileSheet from '../components/recruiter/AssignedNurseProf
 import ShiftApplicantsPanel from '../components/recruiter/ShiftApplicantsPanel';
 import { mlog } from '../utils/mobileLogger';
 import { formatApiErrorDetail } from '../utils/apiErrorMessage';
-import { SHIFT_CARD_STATUS, SEARCH_PHASE_LABEL, isPastShiftStart } from '../utils/staffingStatusCopy';
+import {
+  SHIFT_CARD_STATUS,
+  SEARCH_PHASE_LABEL,
+  isPastShiftStart,
+  recruiterShiftCardStatus,
+} from '../utils/staffingStatusCopy';
 import { formatShiftDateTime } from '../utils/shiftDateTime';
 
 const STAFF_SHIFT_STATUS_PILL = {
@@ -68,6 +73,8 @@ export default function RecruiterDashboard() {
   const [highlightShiftId, setHighlightShiftId] = useState(null);
   const [profileNurse, setProfileNurse] = useState(null);
   const [profileShiftLabel, setProfileShiftLabel] = useState('');
+  const [profileShiftId, setProfileShiftId] = useState(null);
+  const [confirmingNurseId, setConfirmingNurseId] = useState(null);
 
   const loadShifts = useCallback(() => (
     api.get('/shifts/')
@@ -124,6 +131,25 @@ export default function RecruiterDashboard() {
       const d = e?.response?.data?.detail;
       setShiftsError(typeof d === 'string' ? d : 'Could not cancel shift.');
     } finally {
+      setShiftBusyId(null);
+    }
+  }
+
+  async function confirmStaff(shiftId, nurseUserId) {
+    if (!window.confirm('Confirm this nurse and close applications for this shift?')) return;
+    setConfirmingNurseId(nurseUserId);
+    setShiftBusyId(shiftId);
+    try {
+      await api.post(`/shifts/${shiftId}/confirm-staff`, { nurse_user_id: nurseUserId });
+      await loadShifts();
+      setProfileNurse(null);
+      setProfileShiftLabel('');
+      setProfileShiftId(null);
+    } catch (e) {
+      const d = e?.response?.data?.detail;
+      setShiftsError(typeof d === 'string' ? d : 'Could not confirm staff.');
+    } finally {
+      setConfirmingNurseId(null);
       setShiftBusyId(null);
     }
   }
@@ -339,8 +365,11 @@ export default function RecruiterDashboard() {
                     {(hasApplicants || live?.type === 'nurse_accepted') && (
                       <ShiftApplicantsPanel
                         shift={s}
+                        confirmingNurseId={confirmingNurseId}
+                        onConfirmStaff={(nurse) => confirmStaff(s.id, nurse.user_id)}
                         onViewProfile={(nurse) => {
                           setProfileNurse(nurse);
+                          setProfileShiftId(s.id);
                           setProfileShiftLabel(`${s.hospital_name} · ${formatShiftDateTime(s.shift_start)}`);
                         }}
                       />
@@ -496,8 +525,11 @@ export default function RecruiterDashboard() {
           onArchive={archiveStaffingShift}
           onRedispatch={redispatchStaffingShift}
           onStopSearch={stopStaffSearch}
+          onConfirmStaff={confirmStaff}
+          confirmingNurseId={confirmingNurseId}
           onViewNurseProfile={(nurse, shiftRow) => {
             setProfileNurse(nurse);
+            setProfileShiftId(shiftRow.id);
             setProfileShiftLabel(
               `${shiftRow.hospital_name} · ${formatShiftDateTime(shiftRow.shift_start)}`,
             );
@@ -509,9 +541,18 @@ export default function RecruiterDashboard() {
         <AssignedNurseProfileSheet
           nurse={profileNurse}
           shiftLabel={profileShiftLabel}
+          canConfirm={
+            profileShiftId != null
+            && shifts.find((s) => s.id === profileShiftId)?.search_active !== false
+            && !shifts.find((s) => s.id === profileShiftId)?.search_closed
+            && profileNurse.status === 'confirmed'
+          }
+          confirmBusy={confirmingNurseId === profileNurse.user_id}
+          onConfirmStaff={(nurse) => confirmStaff(profileShiftId, nurse.user_id)}
           onClose={() => {
             setProfileNurse(null);
             setProfileShiftLabel('');
+            setProfileShiftId(null);
           }}
         />
       )}

@@ -15,9 +15,9 @@ export const SEARCH_PHASE_LABEL = {
 export const SHIFT_CARD_STATUS = {
   open: 'Getting ready',
   dispatching: 'Finding staff',
-  filled: 'Staff finalized',
-  search_paused: 'Search paused',
-  receiving: 'Receiving applications',
+  filled: 'Staff assigned',
+  search_paused: 'Applications closed',
+  receiving: 'Nurses applied',
   expired: 'Shift expired',
   cancelled: 'Cancelled',
 };
@@ -59,11 +59,11 @@ export function formatRoleLabel(role) {
 
 /** Nurse dashboard — their confirmed shift progress */
 export const NURSE_ASSIGNMENT_STATUS = {
-  confirmed: 'Confirmed',
+  confirmed: 'Shift confirmed',
   checked_in: 'On shift',
   completed: 'Completed',
   no_show: 'Missed',
-  cancelled: 'Cancelled',
+  cancelled: 'Position filled',
 };
 
 export function nurseAssignmentStatusLabel(status) {

@@ -245,7 +245,9 @@ def accept_offer(
         rs.accepted += 1
         rs.last_calculated_at = now
     else:
-        rs = models.ReliabilityScore(user_id=current_user.id, total_offers=1, accepted=1)
+        rs = models.ReliabilityScore(
+            user_id=current_user.id, total_offers=1, accepted=1, score=100.0,
+        )
         db.add(rs)
     db.commit()
 
@@ -369,7 +371,9 @@ def decline_offer(
             rs.score = max(0.0, min(100.0, (accept_rate * 100) - (timeout_penalty * 10) - (no_show_penalty * 10)))
         rs.last_calculated_at = now
     else:
-        rs = models.ReliabilityScore(user_id=current_user.id, total_offers=1, declined=1, score=80.0)
+        rs = models.ReliabilityScore(
+            user_id=current_user.id, total_offers=1, declined=1, score=100.0,
+        )
         db.add(rs)
 
     db.commit()

@@ -3,7 +3,12 @@ import AssignedNurseCard from './AssignedNurseCard';
 /**
  * Confirmed + in-progress applicants for an active staffing shift.
  */
-export default function ShiftApplicantsPanel({ shift, onViewProfile }) {
+export default function ShiftApplicantsPanel({
+  shift,
+  onViewProfile,
+  onConfirmStaff,
+  confirmingNurseId = null,
+}) {
   const applicants = shift?.applicants || [];
   const confirmed = shift?.confirmed_count ?? applicants.length;
   const required = shift?.nurses_required ?? 1;
@@ -22,7 +27,7 @@ export default function ShiftApplicantsPanel({ shift, onViewProfile }) {
           <span className="text-indigo-700 font-medium">Staff search active</span>
         )}
         {!searchActive && shift?.search_closed && (
-          <span className="text-green-800 font-medium">Search paused</span>
+          <span className="text-green-800 font-medium">Applications closed</span>
         )}
         {pending > 0 && (
           <span className="text-amber-800">{pending} waiting for response</span>
@@ -37,6 +42,9 @@ export default function ShiftApplicantsPanel({ shift, onViewProfile }) {
           nurse={nurse}
           compact
           onViewProfile={onViewProfile}
+          onConfirmStaff={onConfirmStaff}
+          canConfirm={searchActive && nurse.status === 'confirmed'}
+          confirmBusy={confirmingNurseId === nurse.user_id}
         />
       ))}
     </div>

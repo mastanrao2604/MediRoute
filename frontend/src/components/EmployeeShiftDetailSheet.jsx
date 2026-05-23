@@ -45,6 +45,10 @@ function hasActiveAssignment(shift) {
   return st && ACTIVE_ASSIGNMENT.has(st);
 }
 
+function isHospitalFinalized(shift) {
+  return Boolean(shift?.search_closed) || shift?.status === 'filled';
+}
+
 export default function EmployeeShiftDetailSheet({
   shiftId,
   onClose,
@@ -101,7 +105,9 @@ export default function EmployeeShiftDetailSheet({
     if (initialShift?.id === shiftId) {
       setShift(initialShift);
       setOffer(offerFromMyOffer(initialShift));
-      if (hasActiveAssignment(initialShift)) setAcceptPhase('confirmed');
+      if (hasActiveAssignment(initialShift)) {
+        setAcceptPhase(isHospitalFinalized(initialShift) ? 'confirmed' : 'confirming');
+      }
       setLoading(false);
     }
     load();
@@ -121,10 +127,14 @@ export default function EmployeeShiftDetailSheet({
         const loaded = shiftRes.data?.shift ?? null;
         if (loaded) {
           setShift(loaded);
-          if (hasActiveAssignment(loaded)) {
+          if (hasActiveAssignment(loaded) && isHospitalFinalized(loaded)) {
             setOffer(null);
             setAcceptPhase('confirmed');
             onResponded?.('confirmed');
+            return;
+          }
+          if (hasActiveAssignment(loaded)) {
+            setAcceptPhase('confirming');
             return;
           }
           if (loaded.my_offer?.status === 'accepted' && !loaded.my_offer?.respondable) {
@@ -181,8 +191,11 @@ export default function EmployeeShiftDetailSheet({
   const isAssignedView = mode === 'assigned' || hasActiveAssignment(shift);
   const shiftOpen = shift ? isBeforeShiftStartUtc(shift.shift_start) : false;
   const isConfirmed =
-    acceptPhase === 'confirmed' || hasActiveAssignment(shift);
-  const isConfirming = acceptPhase === 'confirming' && !isConfirmed;
+    acceptPhase === 'confirmed'
+    || (hasActiveAssignment(shift) && isHospitalFinalized(shift));
+  const isConfirming =
+    (acceptPhase === 'confirming' || (hasActiveAssignment(shift) && !isHospitalFinalized(shift)))
+    && !isConfirmed;
   const canRespond =
     !isAssignedView &&
     !isConfirmed &&
@@ -314,7 +327,7 @@ export default function EmployeeShiftDetailSheet({
                 <div className="mt-4 rounded-xl bg-green-50 border border-green-200 px-3 py-3">
                   <p className="text-sm font-semibold text-green-900">Shift confirmed</p>
                   <p className="text-xs text-green-800 mt-1">
-                    Accepted successfully. Waiting for shift start — check your dashboard for updates.
+                    The hospital confirmed you. Waiting for shift start — see your dashboard for details.
                   </p>
                 </div>
               )}

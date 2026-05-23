@@ -35,9 +35,16 @@ export function activeShiftSummaryLine(shift) {
 /** Second line: role + status + urgency */
 export function activeShiftMetaLine(shift) {
   if (!shift) return '';
+  const awaitingHospital =
+    shift.assignment
+    && !shift.search_closed
+    && shift.status !== 'filled';
+  const statusLabel = awaitingHospital
+    ? 'Waiting for hospital confirmation'
+    : nurseAssignmentStatusLabel(shift.assignment?.status);
   const parts = [
     formatRoleLabel(shift.role_required),
-    nurseAssignmentStatusLabel(shift.assignment?.status),
+    statusLabel,
     urgencyLabel(shift.urgency),
   ].filter(Boolean);
   return parts.join(' · ');

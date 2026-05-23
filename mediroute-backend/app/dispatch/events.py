@@ -53,3 +53,4 @@ MANUAL_SESSION_CLOSED     = "dispatch.session_closed"
 
 # Recruiter UI — hide cancelled/expired shifts from dashboard list (audit row kept)
 RECRUITER_ARCHIVED        = "recruiter.archived"
+RECRUITER_STAFF_CONFIRMED = "recruiter.staff_confirmed"

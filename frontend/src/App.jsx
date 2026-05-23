@@ -330,7 +330,12 @@ function DispatchManager() {
           window.dispatchEvent(new CustomEvent('mr-recruiter-shifts-refresh'));
         }
         if (DISPATCH_ELIGIBLE_ROLES.has(user?.role)) {
-          if (msg.type === 'shift_cancelled' || msg.type === 'shift_expired' || msg.type === 'shift_filled') {
+          if (
+            msg.type === 'shift_cancelled'
+            || msg.type === 'shift_expired'
+            || msg.type === 'shift_filled'
+            || msg.type === 'offer_revoked'
+          ) {
             window.dispatchEvent(new CustomEvent('mr-nurse-active-shift-refresh'));
             window.dispatchEvent(new CustomEvent('mr-jobs-shifts-refresh'));
             if (msg.shift_id != null) {
