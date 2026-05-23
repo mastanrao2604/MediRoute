@@ -15,6 +15,9 @@ import {
   nurseAssignmentStatusLabel,
   shiftStatusLabel,
   urgencyLabel,
+  isApplicationFinalized,
+  isApplicationPending,
+  APPLICATION_STATUS_LABEL,
 } from '../utils/staffingStatusCopy';
 import { useAreaLabel } from '../hooks/useAreaLabel';
 import { formatAreaDisplaySync, shiftAreaSource } from '../utils/areaLabel';
@@ -45,9 +48,6 @@ function hasActiveAssignment(shift) {
   return st && ACTIVE_ASSIGNMENT.has(st);
 }
 
-function isHospitalFinalized(shift) {
-  return Boolean(shift?.search_closed) || shift?.status === 'filled';
-}
 
 export default function EmployeeShiftDetailSheet({
   shiftId,
@@ -106,7 +106,7 @@ export default function EmployeeShiftDetailSheet({
       setShift(initialShift);
       setOffer(offerFromMyOffer(initialShift));
       if (hasActiveAssignment(initialShift)) {
-        setAcceptPhase(isHospitalFinalized(initialShift) ? 'confirmed' : 'confirming');
+        setAcceptPhase(isApplicationFinalized(initialShift) ? 'confirmed' : 'applied');
       }
       setLoading(false);
     }
@@ -127,14 +127,14 @@ export default function EmployeeShiftDetailSheet({
         const loaded = shiftRes.data?.shift ?? null;
         if (loaded) {
           setShift(loaded);
-          if (hasActiveAssignment(loaded) && isHospitalFinalized(loaded)) {
+          if (hasActiveAssignment(loaded) && isApplicationFinalized(loaded)) {
             setOffer(null);
             setAcceptPhase('confirmed');
             onResponded?.('confirmed');
             return;
           }
           if (hasActiveAssignment(loaded)) {
-            setAcceptPhase('confirming');
+            setAcceptPhase('applied');
             return;
           }
           if (loaded.my_offer?.status === 'accepted' && !loaded.my_offer?.respondable) {
@@ -156,7 +156,7 @@ export default function EmployeeShiftDetailSheet({
     try {
       await api.post(`/dispatch/offers/${offer.offer_id}/accept`);
       setOffer(null);
-      setAcceptPhase('confirming');
+      setAcceptPhase('applied');
       await waitForConfirmation();
     } catch (err) {
       setAcceptPhase(null);
@@ -192,14 +192,14 @@ export default function EmployeeShiftDetailSheet({
   const shiftOpen = shift ? isBeforeShiftStartUtc(shift.shift_start) : false;
   const isConfirmed =
     acceptPhase === 'confirmed'
-    || (hasActiveAssignment(shift) && isHospitalFinalized(shift));
-  const isConfirming =
-    (acceptPhase === 'confirming' || (hasActiveAssignment(shift) && !isHospitalFinalized(shift)))
+    || (hasActiveAssignment(shift) && isApplicationFinalized(shift));
+  const isPendingReview =
+    (acceptPhase === 'applied' || isApplicationPending(shift))
     && !isConfirmed;
   const canRespond =
     !isAssignedView &&
     !isConfirmed &&
-    !isConfirming &&
+    !isPendingReview &&
     Boolean(shift?.my_offer?.respondable && offer && shiftOpen);
   const canAccept = canRespond && shiftCanAccept(shift);
   const acceptBlockedMsg =
@@ -314,11 +314,11 @@ export default function EmployeeShiftDetailSheet({
                 )}
               </dl>
 
-              {isConfirming && (
+              {isPendingReview && (
                 <div className="mt-4 rounded-xl bg-amber-50 border border-amber-200 px-3 py-3">
-                  <p className="text-sm font-semibold text-amber-900">Confirming your shift…</p>
+                  <p className="text-sm font-semibold text-amber-900">Application submitted</p>
                   <p className="text-xs text-amber-800 mt-1">
-                    Please wait a moment while the hospital confirms your acceptance.
+                    {APPLICATION_STATUS_LABEL.applied}. You will be notified when the hospital confirms.
                   </p>
                 </div>
               )}
@@ -327,8 +327,36 @@ export default function EmployeeShiftDetailSheet({
                 <div className="mt-4 rounded-xl bg-green-50 border border-green-200 px-3 py-3">
                   <p className="text-sm font-semibold text-green-900">Shift confirmed</p>
                   <p className="text-xs text-green-800 mt-1">
-                    The hospital confirmed you. Waiting for shift start — see your dashboard for details.
+                    {APPLICATION_STATUS_LABEL.confirmed}. Waiting for shift start — see your dashboard.
                   </p>
+                </div>
+              )}
+
+              {shift.hospital_contact && (
+                <div className="mt-4 rounded-xl border border-gray-100 bg-gray-50 px-3 py-3">
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Hospital</p>
+                  <p className="text-sm font-medium text-gray-900 mt-1">
+                    {shift.hospital_contact.hospital_name}
+                    {shift.hospital_contact.company_name
+                      ? ` · ${shift.hospital_contact.company_name}`
+                      : ''}
+                  </p>
+                  {shift.hospital_contact.locality && (
+                    <p className="text-xs text-gray-600 mt-0.5">{shift.hospital_contact.locality}</p>
+                  )}
+                  {shift.hospital_contact.phone && (
+                    <a
+                      href={`tel:${shift.hospital_contact.phone}`}
+                      className="inline-flex mt-2 text-sm font-semibold text-indigo-700"
+                    >
+                      Call hospital · {shift.hospital_contact.phone}
+                    </a>
+                  )}
+                  {!shift.hospital_contact.phone && isPendingReview && (
+                    <p className="text-xs text-gray-500 mt-1">
+                      Hospital phone will appear after they confirm your application.
+                    </p>
+                  )}
                 </div>
               )}
 

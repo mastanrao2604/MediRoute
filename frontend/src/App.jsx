@@ -302,6 +302,16 @@ function DispatchManager() {
         break;
       }
 
+      case 'application_submitted':
+        mlog('dispatch', 'ws_application_submitted', tracePayload());
+        setCurrentOffer(null);
+        setMinimizedOffer(null);
+        if (DISPATCH_ELIGIBLE_ROLES.has(user?.role)) {
+          window.dispatchEvent(new CustomEvent('mr-nurse-active-shift-refresh'));
+          window.dispatchEvent(new CustomEvent('mr-jobs-shifts-refresh'));
+        }
+        break;
+
       case 'assignment_confirmed':
         mlog('dispatch', 'ws_assignment_confirmed', tracePayload());
         setCurrentOffer(null);
@@ -314,6 +324,7 @@ function DispatchManager() {
 
       case 'dispatch_started':
       case 'dispatch_wave_update':
+      case 'nurse_applied':
       case 'nurse_accepted':
       case 'shift_search_stopped':
       case 'shift_filled':
@@ -325,7 +336,7 @@ function DispatchManager() {
         publish(msg);
         if (
           user?.role === 'recruiter'
-          && (msg.type === 'shift_filled' || msg.type === 'nurse_accepted' || msg.type === 'shift_search_stopped')
+          && (msg.type === 'shift_filled' || msg.type === 'nurse_accepted' || msg.type === 'nurse_applied' || msg.type === 'shift_search_stopped')
         ) {
           window.dispatchEvent(new CustomEvent('mr-recruiter-shifts-refresh'));
         }

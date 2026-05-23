@@ -24,6 +24,7 @@ const HOSPITAL_EVENT_TYPES = new Set([
   'dispatch_started',
   'dispatch_wave_update',
   'nurse_accepted',
+  'nurse_applied',
   'shift_search_stopped',
   'shift_filled',
   'shift_expired',

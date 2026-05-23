@@ -27,6 +27,7 @@ from functools import partial
 from typing import Optional
 
 import sentry_sdk
+from sqlalchemy import text
 
 from ..database import SessionLocal
 from .. import models
@@ -558,9 +559,26 @@ def _check_session_filled_sync(db, session_id: int) -> bool:
 
 
 def _count_assignments_sync(db, shift_id: int) -> int:
+    """All applications (including pending recruiter confirmation)."""
     return (
         db.query(models.LiveAssignment)
         .filter(models.LiveAssignment.shift_request_id == shift_id)
+        .count()
+    )
+
+
+def _count_recruiter_confirmed_sync(db, shift_id: int) -> int:
+    """Staff finalized by recruiter — not merely applied."""
+    return (
+        db.query(models.LiveAssignment)
+        .filter(
+            models.LiveAssignment.shift_request_id == shift_id,
+            models.LiveAssignment.recruiter_confirmed_at.isnot(None),
+            models.LiveAssignment.status.in_([
+                models.AssignmentStatus.confirmed,
+                models.AssignmentStatus.checked_in,
+            ]),
+        )
         .count()
     )
 
@@ -587,9 +605,15 @@ def record_nurse_accept_sync(
     db, shift_id: int, nurse_id: int, offer_id: int, now: datetime, *, commit: bool = True
 ) -> models.LiveAssignment:
     """
-    Confirm one nurse for a shift without closing the hospital search.
-    Idempotent per (shift, nurse).
+    Record a job seeker application (pending recruiter confirmation).
+    Does not finalize the shift — recruiter must confirm via POST /shifts/{id}/confirm-staff.
     """
+    db.execute(
+        text(
+            "ALTER TABLE live_assignments "
+            "ADD COLUMN IF NOT EXISTS recruiter_confirmed_at TIMESTAMPTZ"
+        )
+    )
     shift = db.query(models.ShiftRequest).filter(
         models.ShiftRequest.id == shift_id
     ).first()
@@ -643,7 +667,11 @@ def _finalize_search_closed_sync(
         .filter(models.LiveAssignment.shift_request_id == shift_id)
         .all()
     )
-    for assignment in assignments:
+    finalized = [
+        a for a in assignments
+        if getattr(a, "recruiter_confirmed_at", None) is not None
+    ]
+    for assignment in finalized:
         presence = db.query(models.PresenceState).filter(
             models.PresenceState.user_id == assignment.nurse_user_id
         ).first()
@@ -656,7 +684,7 @@ def _finalize_search_closed_sync(
             avail.is_available = False
             avail.updated_at = now
 
-    if assignments:
+    if finalized:
         shift.status = models.ShiftRequestStatus.filled
         shift.filled_at = now
     elif shift.status == models.ShiftRequestStatus.dispatching:
@@ -676,7 +704,7 @@ def _finalize_search_closed_sync(
             event_type=SHIFT_FILLED if assignments else SHIFT_EXPIRED,
             actor_user_id=None,
             city_id=shift.city_id,
-            payload={"reason": reason, "confirmed_count": len(assignments)},
+            payload={"reason": reason, "confirmed_count": len(finalized)},
         )
     )
     db.commit()
@@ -995,7 +1023,7 @@ async def _do_fill(
         return False
 
     now = datetime.utcnow()
-    confirmed_count = await asyncio.get_running_loop().run_in_executor(
+    applied_count = await asyncio.get_running_loop().run_in_executor(
         _executor, functools.partial(_count_assignments_sync, db, shift_id)
     )
     nurses_required = getattr(shift, "nurses_required", None) or 1
@@ -1010,15 +1038,15 @@ async def _do_fill(
     )
     nurse_name = (nurse_user.name or f"Staff #{accepted_offer.nurse_user_id}") if nurse_user else "Nurse"
 
-    await _notify_hospital(shift.hospital_user_id, shift_id, "nurse_accepted", {
+    await _notify_hospital(shift.hospital_user_id, shift_id, "nurse_applied", {
         "nurse_name": nurse_name,
         "nurse_user_id": accepted_offer.nurse_user_id,
-        "confirmed_count": confirmed_count,
+        "applied_count": applied_count,
         "nurses_required": nurses_required,
         "wave": wave_num,
         "message": (
-            f"{nurse_name} accepted ({confirmed_count} of {nurses_required} confirmed) "
-            "— still searching for more staff."
+            f"{nurse_name} applied ({applied_count} applicant"
+            f"{'' if applied_count == 1 else 's'}) — review and confirm."
         ),
     })
 
@@ -1033,15 +1061,18 @@ async def _do_fill(
             _executor,
             functools.partial(_finalize_search_closed_sync, db, shift_id, now, "auto"),
         )
-        if confirmed_count > 0:
+        recruiter_confirmed = await asyncio.get_running_loop().run_in_executor(
+            _executor, functools.partial(_count_recruiter_confirmed_sync, db, shift_id)
+        )
+        if recruiter_confirmed > 0:
             await _notify_hospital(shift.hospital_user_id, shift_id, "shift_search_stopped", {
-                "confirmed_count": confirmed_count,
-                "message": "Staff search closed.",
+                "confirmed_count": recruiter_confirmed,
+                "message": "Applications closed.",
             })
             await _notify_hospital(shift.hospital_user_id, shift_id, "shift_filled", {
                 "nurse_name": nurse_name,
-                "confirmed_count": confirmed_count,
-                "message": "Staff finalized for this shift.",
+                "confirmed_count": recruiter_confirmed,
+                "message": "Staff assigned for this shift.",
             })
             _metrics["dispatches_filled"] += 1
         logger.info("[dispatch] shift %d search closed (wave %d)", shift_id, wave_num)
@@ -1049,17 +1080,16 @@ async def _do_fill(
 
     await _notify_hospital(shift.hospital_user_id, shift_id, "dispatch_wave_update", {
         "status": "receiving",
-        "confirmed_count": confirmed_count,
+        "applied_count": applied_count,
         "nurses_required": nurses_required,
         "message": (
-            f"{confirmed_count} of {nurses_required} confirmed — still searching for more staff."
+            f"{applied_count} applicant{'s' if applied_count != 1 else ''} — review profiles and confirm."
         ),
     })
     logger.info(
-        "[dispatch] shift %d nurse accepted — search continues (%d/%d)",
+        "[dispatch] shift %d application received — search continues (%d applied)",
         shift_id,
-        confirmed_count,
-        nurses_required,
+        applied_count,
     )
     return False
 
@@ -1445,8 +1475,8 @@ async def _run_dispatch_inner(db, shift_id: int) -> None:
 
         if not filled:
             now = datetime.utcnow()
-            confirmed_count = await asyncio.get_running_loop().run_in_executor(
-                _executor, functools.partial(_count_assignments_sync, db, shift_id)
+            recruiter_confirmed = await asyncio.get_running_loop().run_in_executor(
+                _executor, functools.partial(_count_recruiter_confirmed_sync, db, shift_id)
             )
             search_closed = await asyncio.get_running_loop().run_in_executor(
                 _executor, functools.partial(_is_search_closed_sync, db, shift_id)
@@ -1455,29 +1485,32 @@ async def _run_dispatch_inner(db, shift_id: int) -> None:
             shift_start_naive = (
                 _ss.astimezone(timezone.utc).replace(tzinfo=None) if _ss.tzinfo else _ss
             )
-            if confirmed_count > 0 and not search_closed and now >= shift_start_naive:
+            if recruiter_confirmed > 0 and not search_closed and now >= shift_start_naive:
                 await asyncio.get_running_loop().run_in_executor(
                     _executor,
                     functools.partial(_finalize_search_closed_sync, db, shift_id, now, "shift_start"),
                 )
                 await _notify_hospital(shift.hospital_user_id, shift_id, "shift_search_stopped", {
-                    "confirmed_count": confirmed_count,
-                    "message": "Shift started — staff finalized.",
+                    "confirmed_count": recruiter_confirmed,
+                    "message": "Shift started — staff assigned.",
                 })
                 await _notify_hospital(shift.hospital_user_id, shift_id, "shift_filled", {
-                    "confirmed_count": confirmed_count,
-                    "message": "Staff finalized for this shift.",
+                    "confirmed_count": recruiter_confirmed,
+                    "message": "Staff assigned for this shift.",
                 })
                 logger.info(
-                    "[dispatch] shift %d auto-closed at shift start (%d confirmed)",
-                    shift_id, confirmed_count,
+                    "[dispatch] shift %d auto-closed at shift start (%d recruiter-confirmed)",
+                    shift_id, recruiter_confirmed,
                 )
                 return
-            if confirmed_count > 0 and not search_closed:
+            applied_count = await asyncio.get_running_loop().run_in_executor(
+                _executor, functools.partial(_count_assignments_sync, db, shift_id)
+            )
+            if applied_count > 0 and not search_closed:
                 logger.info(
-                    "[dispatch] shift %d: %d confirmed — search stays open until close",
+                    "[dispatch] shift %d: %d applications pending recruiter confirm",
                     shift_id,
-                    confirmed_count,
+                    applied_count,
                 )
                 return
 

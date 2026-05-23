@@ -44,6 +44,7 @@ export default function ShiftDispatchLive({ shift, live, dispatchStartTime }) {
       live?.type === 'dispatch_started' ||
       live?.type === 'dispatch_wave_update' ||
       live?.type === 'nurse_accepted' ||
+      live?.type === 'nurse_applied' ||
       (confirmed > 0 && searchActive));
 
   useEffect(() => {

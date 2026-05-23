@@ -253,7 +253,7 @@ def accept_offer(
 
     _metrics["offers_accepted"] += 1  # keep dispatch metrics in sync
 
-    confirmed_count = (
+    applied_count = (
         db.query(models.LiveAssignment)
         .filter(models.LiveAssignment.shift_request_id == offer.shift_request_id)
         .count()
@@ -263,23 +263,24 @@ def accept_offer(
 
     async def _notify_accept() -> None:
         await ws_manager.send(current_user.id, {
-            "type": "assignment_confirmed",
+            "type": "application_submitted",
             "assignment_id": assignment.id,
             "shift_id": offer.shift_request_id,
             "hospital_name": shift.hospital_name if shift else "",
             "shift_start": utc_iso(shift.shift_start) if shift else None,
-            "message": "Shift confirmed — get ready for your shift.",
+            "application_status": "applied",
+            "message": "Application submitted — the hospital is reviewing your profile.",
         })
         await ws_manager.send(shift.hospital_user_id, {
-            "type": "nurse_accepted",
+            "type": "nurse_applied",
             "shift_id": offer.shift_request_id,
             "nurse_name": nurse_name,
             "nurse_user_id": current_user.id,
-            "confirmed_count": confirmed_count,
+            "applied_count": applied_count,
             "nurses_required": nurses_required,
             "message": (
-                f"{nurse_name} accepted ({confirmed_count} of {nurses_required} confirmed) "
-                "— still searching for more staff."
+                f"{nurse_name} applied ({applied_count} applicant"
+                f"{'' if applied_count == 1 else 's'}) — review and confirm."
             ),
         })
 
@@ -309,7 +310,8 @@ def accept_offer(
         "offer_id": offer_id,
         "shift_id": offer.shift_request_id,
         "assignment_id": assignment.id,
-        "message": "Shift confirmed — the hospital can still add more staff until search closes.",
+        "message": "Application submitted — waiting for the hospital to confirm.",
+        "application_status": "applied",
     }
 
 

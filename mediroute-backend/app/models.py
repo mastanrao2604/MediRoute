@@ -567,6 +567,7 @@ class LiveAssignment(Base):
         Enum(AssignmentStatus), nullable=False, default=AssignmentStatus.confirmed
     )
     confirmed_at = Column(DateTime, default=datetime.utcnow)
+    recruiter_confirmed_at = Column(DateTime, nullable=True)
     check_in_at = Column(DateTime, nullable=True)
     check_out_at = Column(DateTime, nullable=True)
     check_in_latitude = Column(Float, nullable=True)

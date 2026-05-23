@@ -101,7 +101,7 @@ export default function AssignedNurseProfileSheet({
               onClick={() => onConfirmStaff(nurse)}
               className="mt-4 w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-bold py-3.5 rounded-xl text-sm"
             >
-              {confirmBusy ? 'Confirming…' : 'Confirm this nurse'}
+              {confirmBusy ? 'Confirming…' : 'Confirm this applicant'}
             </button>
           )}
         </div>

@@ -21,7 +21,9 @@ export default function AssignedNurseCard({
       className={`rounded-xl border ${
         nurse.status === 'waiting'
           ? 'border-amber-200 bg-amber-50/80'
-          : 'border-green-200 bg-green-50/80'
+          : nurse.status === 'applied'
+            ? 'border-indigo-200 bg-indigo-50/80'
+            : 'border-green-200 bg-green-50/80'
       } ${compact ? 'px-3 py-2.5' : 'px-3 py-3'}`}
     >
       <div className="flex items-start gap-3">
@@ -34,10 +36,12 @@ export default function AssignedNurseCard({
         <div className="flex-1 min-w-0">
           <p className="text-xs font-semibold text-green-800 uppercase tracking-wide">
             {nurse.status === 'confirmed'
-              ? 'Confirmed nurse'
-              : nurse.status === 'waiting'
-                ? 'Waiting for response'
-                : 'Interested nurse'}
+              ? 'Staff assigned'
+              : nurse.status === 'applied'
+                ? 'Application received'
+                : nurse.status === 'waiting'
+                  ? 'Waiting for response'
+                  : 'Interested nurse'}
           </p>
           <p className="text-sm font-bold text-gray-900 truncate mt-0.5">{nurse.name}</p>
           <div className="flex flex-wrap gap-x-2 gap-y-0.5 mt-1 text-xs text-gray-600">
@@ -70,7 +74,7 @@ export default function AssignedNurseCard({
             }}
             className="w-full text-sm font-bold text-white py-2.5 rounded-xl bg-green-600 hover:bg-green-700 disabled:opacity-50"
           >
-            {confirmBusy ? 'Confirming…' : 'Confirm nurse'}
+            {confirmBusy ? 'Confirming…' : 'Confirm applicant'}
           </button>
         )}
         {onViewProfile && (

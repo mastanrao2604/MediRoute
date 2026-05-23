@@ -24,10 +24,11 @@ export const SHIFT_CARD_STATUS = {
 
 /** Recruiter card — search still running with at least one confirm. */
 export function recruiterShiftCardStatus(shift, live) {
-  const confirmed = shift?.confirmed_count ?? (shift?.applicants?.length || 0);
+  const confirmed = shift?.confirmed_count ?? 0;
+  const applied = shift?.applied_count ?? 0;
   const searchActive = shift?.search_active !== false && !shift?.search_closed;
   if (shift?.search_closed && confirmed > 0) return 'search_paused';
-  if (searchActive && confirmed > 0) return 'receiving';
+  if (searchActive && (applied > 0 || confirmed > 0)) return 'receiving';
   if (shift?.status === 'filled' && !searchActive) return 'filled';
   if (shift?.status === 'dispatching' || shift?.status === 'open') return 'dispatching';
   if (live?.type === 'nurse_accepted' && searchActive) return 'receiving';
@@ -65,6 +66,24 @@ export const NURSE_ASSIGNMENT_STATUS = {
   no_show: 'Missed',
   cancelled: 'Position filled',
 };
+
+export const APPLICATION_STATUS_LABEL = {
+  applied: 'Recruiter reviewing your application',
+  confirmed: 'Hospital confirmed your application',
+};
+
+/** Job seeker shift finalized only after recruiter confirms (not on apply alone). */
+export function isApplicationFinalized(shift) {
+  if (!shift?.assignment) return false;
+  if (shift.assignment.recruiter_confirmed === true) return true;
+  if (shift.assignment.application_status === 'confirmed') return true;
+  if (shift.search_closed || shift.status === 'filled') return true;
+  return false;
+}
+
+export function isApplicationPending(shift) {
+  return Boolean(shift?.assignment) && !isApplicationFinalized(shift);
+}
 
 export function nurseAssignmentStatusLabel(status) {
   return NURSE_ASSIGNMENT_STATUS[status] || 'Active';

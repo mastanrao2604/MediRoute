@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "461943303725",
+    "project_id": "mediroute-app-dev",
+    "storage_bucket": "mediroute-app-dev.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:461943303725:android:0000000000000000",
+        "android_client_info": {
+          "package_name": "com.mediroute.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "placeholder-not-for-production-use"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

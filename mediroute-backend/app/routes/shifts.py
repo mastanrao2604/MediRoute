@@ -45,6 +45,7 @@ logger.parent = logging.getLogger("uvicorn.error")
 router = APIRouter(prefix="/shifts", tags=["Shifts"])
 
 _shift_cols_ready = False
+_assignment_cols_ready = False
 
 
 def _ensure_shift_location_columns(db: Session) -> None:
@@ -61,6 +62,59 @@ def _ensure_shift_location_columns(db: Session) -> None:
         db.execute(text(stmt))
     db.commit()
     _shift_cols_ready = True
+
+
+def _ensure_assignment_columns(db: Session) -> None:
+    """Idempotent DDL for recruiter confirmation timestamp on applications."""
+    global _assignment_cols_ready
+    if _assignment_cols_ready:
+        return
+    db.execute(
+        text(
+            "ALTER TABLE live_assignments "
+            "ADD COLUMN IF NOT EXISTS recruiter_confirmed_at TIMESTAMPTZ"
+        )
+    )
+    db.commit()
+    _assignment_cols_ready = True
+
+
+def _assignment_recruiter_confirmed(
+    assignment: Optional[models.LiveAssignment],
+    shift: Optional[models.ShiftRequest] = None,
+) -> bool:
+    """True only after recruiter explicitly confirms (legacy: shift already closed)."""
+    if not assignment:
+        return False
+    if getattr(assignment, "recruiter_confirmed_at", None):
+        return True
+    if shift and getattr(shift, "search_closed_at", None):
+        return True
+    return False
+
+
+def _attach_hospital_contact(
+    d: dict,
+    shift: models.ShiftRequest,
+    db: Session,
+    *,
+    full_contact: bool,
+) -> None:
+    """Hospital/recruiter contact for job seeker shift views."""
+    recruiter = (
+        db.query(models.User)
+        .filter(models.User.id == shift.hospital_user_id)
+        .first()
+    )
+    contact = {
+        "hospital_name": shift.hospital_name,
+        "company_name": getattr(recruiter, "company_name", None) if recruiter else None,
+        "locality": getattr(shift, "hospital_locality", None),
+        "city_id": shift.city_id,
+    }
+    if full_contact and recruiter and recruiter.phone:
+        contact["phone"] = recruiter.phone
+    d["hospital_contact"] = contact
 
 
 # ── Pydantic schemas ──────────────────────────────────────────────────────────
@@ -368,7 +422,9 @@ def _attach_recruiter_staffing(d: dict, shift: models.ShiftRequest, db: Session)
     applicants = []
     for a in assignments:
         card = _assigned_nurse_summary(db, a.nurse_user_id)
-        card["status"] = "confirmed"
+        card["status"] = (
+            "confirmed" if _assignment_recruiter_confirmed(a, shift) else "applied"
+        )
         card["assignment_id"] = a.id
         applicants.append(card)
 
@@ -395,7 +451,12 @@ def _attach_recruiter_staffing(d: dict, shift: models.ShiftRequest, db: Session)
     )
     nurses_required = getattr(shift, "nurses_required", None) or 1
     d["applicants"] = applicants
-    d["confirmed_count"] = len(assignments)
+    d["confirmed_count"] = sum(
+        1 for a in assignments if _assignment_recruiter_confirmed(a, shift)
+    )
+    d["applied_count"] = sum(
+        1 for a in assignments if not _assignment_recruiter_confirmed(a, shift)
+    )
     d["nurses_required"] = nurses_required
     d["pending_responses"] = pending_responses
     d["search_active"] = shift_search_open(shift)
@@ -471,11 +532,17 @@ def _shift_to_dict(shift: models.ShiftRequest, assignment: Optional[models.LiveA
         "created_at": utc_iso(shift.created_at),
     }
     if assignment:
+        recruiter_ok = _assignment_recruiter_confirmed(assignment, shift)
         d["assignment"] = {
             "id": assignment.id,
             "nurse_user_id": assignment.nurse_user_id,
             "status": assignment.status.value,
+            "recruiter_confirmed": recruiter_ok,
+            "application_status": "confirmed" if recruiter_ok else "applied",
             "confirmed_at": assignment.confirmed_at.isoformat() if assignment.confirmed_at else None,
+            "recruiter_confirmed_at": utc_iso(
+                getattr(assignment, "recruiter_confirmed_at", None)
+            ),
             "check_in_at": assignment.check_in_at.isoformat() if assignment.check_in_at else None,
             "check_out_at": assignment.check_out_at.isoformat() if assignment.check_out_at else None,
         }
@@ -583,6 +650,7 @@ async def create_shift(
 
     try:
         _ensure_shift_location_columns(db)
+        _ensure_assignment_columns(db)
         shift = models.ShiftRequest(
             city_id=req.city_id or "HYD",
             hospital_user_id=current_user.id,
@@ -805,7 +873,14 @@ def get_shift(
             models.LiveAssignment.nurse_user_id == current_user.id,
         ).first()
         if assignment:
-            return {"shift": _shift_to_dict(shift, assignment)}
+            d = _shift_to_dict(shift, assignment)
+            _attach_hospital_contact(
+                d,
+                shift,
+                db,
+                full_contact=_assignment_recruiter_confirmed(assignment, shift),
+            )
+            return {"shift": d}
         # Browse/detail: nurses may view open shifts before receiving an offer
         if shift.status in (
             models.ShiftRequestStatus.open,
@@ -1017,11 +1092,15 @@ async def confirm_staff(
         if pending:
             raise HTTPException(
                 status_code=400,
-                detail="This nurse has not accepted yet. Wait for them to accept, then confirm.",
+                detail="This applicant has not applied yet. Wait for them to apply first.",
             )
         raise HTTPException(status_code=404, detail="Applicant not found for this shift.")
 
-    if getattr(shift, "search_closed_at", None):
+    _ensure_assignment_columns(db)
+
+    if _assignment_recruiter_confirmed(assignment, shift) and getattr(
+        shift, "search_closed_at", None
+    ):
         confirmed = (
             db.query(models.LiveAssignment)
             .filter(
@@ -1042,6 +1121,9 @@ async def confirm_staff(
         }
 
     now = datetime.utcnow()
+    if not getattr(assignment, "recruiter_confirmed_at", None):
+        assignment.recruiter_confirmed_at = now
+
     other_assignments = (
         db.query(models.LiveAssignment)
         .filter(
@@ -1357,6 +1439,11 @@ def check_in(
     shift = db.query(models.ShiftRequest).filter(
         models.ShiftRequest.id == shift_id
     ).first()
+    if not _assignment_recruiter_confirmed(assignment, shift):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The hospital has not confirmed your application yet.",
+        )
 
     # GPS proximity check (§21.2)
     distance_m = haversine_km(

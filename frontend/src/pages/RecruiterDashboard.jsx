@@ -40,7 +40,7 @@ function effectiveShiftStatus(shift, live) {
     return 'filled';
   }
   if (searchActive && confirmed > 0) return 'receiving';
-  if (db === 'dispatching' || live?.type === 'dispatch_started' || live?.type === 'dispatch_wave_update' || live?.type === 'nurse_accepted') {
+  if (db === 'dispatching' || live?.type === 'dispatch_started' || live?.type === 'dispatch_wave_update' || live?.type === 'nurse_accepted' || live?.type === 'nurse_applied') {
     return 'dispatching';
   }
   if (db === 'open') {
@@ -362,7 +362,7 @@ export default function RecruiterDashboard() {
                       />
                     )}
 
-                    {(hasApplicants || live?.type === 'nurse_accepted') && (
+                    {(hasApplicants || live?.type === 'nurse_accepted' || live?.type === 'nurse_applied') && (
                       <ShiftApplicantsPanel
                         shift={s}
                         confirmingNurseId={confirmingNurseId}
@@ -545,7 +545,7 @@ export default function RecruiterDashboard() {
             profileShiftId != null
             && shifts.find((s) => s.id === profileShiftId)?.search_active !== false
             && !shifts.find((s) => s.id === profileShiftId)?.search_closed
-            && profileNurse.status === 'confirmed'
+            && profileNurse.status === 'applied'
           }
           confirmBusy={confirmingNurseId === profileNurse.user_id}
           onConfirmStaff={(nurse) => confirmStaff(profileShiftId, nurse.user_id)}
@@ -578,6 +578,11 @@ const EVENT_META = {
   },
   nurse_accepted: {
     label: 'Receiving applications',
+    dot: 'bg-green-500', text: 'text-green-700', bg: 'bg-green-50',
+    active: true,
+  },
+  nurse_applied: {
+    label: 'New application',
     dot: 'bg-green-500', text: 'text-green-700', bg: 'bg-green-50',
     active: true,
   },

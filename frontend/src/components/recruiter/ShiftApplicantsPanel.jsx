@@ -21,7 +21,8 @@ export default function ShiftApplicantsPanel({
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <span className="font-semibold text-indigo-900 bg-indigo-50 px-2 py-1 rounded-lg">
-          {confirmed} of {required} nurses confirmed
+          {confirmed} of {required} staff assigned
+          {shift?.applied_count > 0 && ` · ${shift.applied_count} to review`}
         </span>
         {searchActive && (
           <span className="text-indigo-700 font-medium">Staff search active</span>
@@ -43,7 +44,7 @@ export default function ShiftApplicantsPanel({
           compact
           onViewProfile={onViewProfile}
           onConfirmStaff={onConfirmStaff}
-          canConfirm={searchActive && nurse.status === 'confirmed'}
+          canConfirm={searchActive && nurse.status === 'applied'}
           confirmBusy={confirmingNurseId === nurse.user_id}
         />
       ))}

@@ -1,0 +1,492 @@
+﻿{"ts":"2026-05-23T02:17:07.956Z","cat":"websocket","ev":"reconnect_scheduled","delay_ms":2389,"next_backoff_sec":4}
+{"ts":"2026-05-23T02:17:07.964Z","cat":"auth","ev":"session_validated","role":"recruiter"}
+{"ts":"2026-05-23T02:17:07.968Z","cat":"websocket","ev":"connecting","user_id":19}
+{"ts":"2026-05-23T02:17:08.024Z","cat":"notification","ev":"fcm_registration_error","msg":"Please set a valid API key. A Firebase API key is required to communicate with Firebase server APIs: It authenticates yo"}
+{"ts":"2026-05-23T02:17:08.728Z","cat":"websocket","ev":"connected"}
+{"ts":"2026-05-23T02:17:09.896Z","cat":"lifecycle","ev":"foreground"}
+{"ts":"2026-05-23T02:17:11.360Z","cat":"lifecycle","ev":"foreground"}
+{"ts":"2026-05-23T02:17:12.532Z","cat":"lifecycle","ev":"foreground"}
+{"ts":"2026-05-23T02:17:13.226Z","cat":"lifecycle","ev":"foreground"}
+{"ts":"2026-05-23T02:17:13.969Z","cat":"lifecycle","ev":"foreground"}
+{"ts":"2026-05-23T02:17:14.947Z","cat":"lifecycle","ev":"foreground"}
+{"ts":"2026-05-23T02:17:18.133Z","cat":"lifecycle","ev":"foreground"}
+{"ts":"2026-05-23T02:17:19.031Z","cat":"lifecycle","ev":"foreground"}
+{"ts":"2026-05-23T02:17:19.850Z","cat":"lifecycle","ev":"foreground"}
+{"ts":"2026-05-23T02:17:20.515Z","cat":"lifecycle","ev":"foreground"}
+{"ts":"2026-05-23T02:17:24.210Z","cat":"auth","ev":"logout"}
+{"ts":"2026-05-23T02:17:25.634Z","cat":"auth","ev":"logout"}
+{"ts":"2026-05-23T02:17:30.524Z","cat":"otp","ev":"send_start"}
+{"ts":"2026-05-23T02:17:32.727Z","cat":"otp","ev":"send_success","dev_mode":true}
+{"ts":"2026-05-23T02:17:32.759Z","cat":"otp","ev":"verify_screen_open","autofilled":true,"from_storage_fallback":false}
+{"ts":"2026-05-23T02:17:33.888Z","cat":"otp","ev":"verify_start"}
+{"ts":"2026-05-23T02:17:38.457Z","cat":"auth","ev":"login_success","role":"nurse"}
+{"ts":"2026-05-23T02:17:38.463Z","cat":"websocket","ev":"connecting","user_id":28}
+{"ts":"2026-05-23T02:17:38.517Z","cat":"notification","ev":"fcm_registration_error","msg":"Please set a valid API key. A Firebase API key is required to communicate with Firebase server APIs: It authenticates yo"}
+{"ts":"2026-05-23T02:17:39.273Z","cat":"websocket","ev":"connected"}
+{"ts":"2026-05-23T02:22:10.092Z","cat":"lifecycle","ev":"foreground"}
+{"ts":"2026-05-23T02:26:40.052Z","cat":"lifecycle","ev":"foreground"}
+{"ts":"2026-05-23T02:31:10.056Z","cat":"lifecycle","ev":"foreground"}
+{"ts":"2026-05-23T02:35:40.052Z","cat":"lifecycle","ev":"foreground"}
+{"ts":"2026-05-23T02:40:10.075Z","cat":"lifecycle","ev":"foreground"}
+{"ts":"2026-05-23T02:44:40.049Z","cat":"lifecycle","ev":"foreground"}
+{"ts":"2026-05-23T02:46:25.640Z","cat":"lifecycle","ev":"app_start"}
+{"ts":"2026-05-23T02:46:25.643Z","cat":"auth","ev":"session_restored_from_cache","role":"nurse"}
+{"ts":"2026-05-23T02:46:25.655Z","cat":"api","ev":"base_url","host":"mediroute-8az0.onrender.com"}
+{"ts":"2026-05-23T02:46:25.699Z","cat":"websocket","ev":"connecting","user_id":28}
+{"ts":"2026-05-23T02:46:25.914Z","cat":"notification","ev":"fcm_registration_error","msg":"Please set a valid API key. A Firebase API key is required to communicate with Firebase server APIs: It authenticates yo"}
+{"ts":"2026-05-23T02:46:26.717Z","cat":"websocket","ev":"connected"}
+{"ts":"2026-05-23T02:46:27.604Z","cat":"auth","ev":"session_validated","role":"nurse"}
+{"ts":"2026-05-23T03:09:35.067Z","cat":"lifecycle","ev":"app_start"}
+{"ts":"2026-05-23T03:09:35.070Z","cat":"auth","ev":"session_restored_from_cache","role":"nurse"}
+{"ts":"2026-05-23T03:09:35.079Z","cat":"api","ev":"base_url","host":"mediroute-8az0.onrender.com"}
+{"ts":"2026-05-23T03:09:35.110Z","cat":"websocket","ev":"connecting","user_id":28}
+{"ts":"2026-05-23T03:09:35.241Z","cat":"notification","ev":"fcm_registration_error","msg":"Please set a valid API key. A Firebase API key is required to communicate with Firebase server APIs: It authenticates yo"}
+{"ts":"2026-05-23T03:09:36.265Z","cat":"websocket","ev":"connected"}
+{"ts":"2026-05-23T03:09:36.687Z","cat":"auth","ev":"session_validated","role":"nurse"}
+{"ts":"2026-05-23T03:23:09.915Z","cat":"lifecycle","ev":"app_start"}
+{"ts":"2026-05-23T03:23:09.917Z","cat":"auth","ev":"session_restored_from_cache","role":"nurse"}
+{"ts":"2026-05-23T03:23:09.921Z","cat":"api","ev":"base_url","host":"mediroute-8az0.onrender.com"}
+{"ts":"2026-05-23T03:23:09.938Z","cat":"websocket","ev":"connecting","user_id":28}
+{"ts":"2026-05-23T03:23:10.182Z","cat":"notification","ev":"fcm_registration_error","msg":"Please set a valid API key. A Firebase API key is required to communicate with Firebase server APIs: It authenticates yo"}
+{"ts":"2026-05-23T03:23:11.008Z","cat":"websocket","ev":"connected"}
+{"ts":"2026-05-23T03:23:12.020Z","cat":"auth","ev":"session_validated","role":"nurse"}
+{"ts":"2026-05-23T03:36:19.520Z","cat":"lifecycle","ev":"app_start"}
+{"ts":"2026-05-23T03:36:19.523Z","cat":"auth","ev":"session_restored_from_cache","role":"nurse"}
+{"ts":"2026-05-23T03:36:19.535Z","cat":"api","ev":"base_url","host":"mediroute-8az0.onrender.com"}
+{"ts":"2026-05-23T03:36:19.576Z","cat":"websocket","ev":"connecting","user_id":28}
+{"ts":"2026-05-23T03:36:19.881Z","cat":"notification","ev":"fcm_registration_error","msg":"Please set a valid API key. A Firebase API key is required to communicate with Firebase server APIs: It authenticates yo"}
+{"ts":"2026-05-23T03:36:20.792Z","cat":"websocket","ev":"connected"}
+{"ts":"2026-05-23T03:36:21.648Z","cat":"auth","ev":"session_validated","role":"nurse"}
+{"ts":"2026-05-23T03:40:40.116Z","cat":"availability","ev":"toggle_offline_ok","city_id":"HYD","loc_source":"none"}
+{"ts":"2026-05-23T03:40:43.375Z","cat":"lifecycle","ev":"prof_mount","role":"nurse","needs_service_area":true}
+{"ts":"2026-05-23T03:40:44.998Z","cat":"lifecycle","ev":"prof_fetch_done","profile_http":"ok","prefs_http":"ok"}
+{"ts":"2026-05-23T03:40:44.998Z","cat":"lifecycle","ev":"prof_profile_shape","exp_t":"number","skills_t":"string","edu_t":"object","pin_t":"string"}
+{"ts":"2026-05-23T03:40:45.019Z","cat":"lifecycle","ev":"prof_post_fetch","view_mode":true,"has_prefs":true,"types":{"exp":"number","skills":"string","pin":"string"}}
+{"ts":"2026-05-23T03:40:47.980Z","cat":"lifecycle","ev":"prof_post_fetch","view_mode":false,"has_prefs":true,"types":{"exp":"number","skills":"string","pin":"string"}}
+{"ts":"2026-05-23T03:50:25.542Z","cat":"lifecycle","ev":"app_start"}
+{"ts":"2026-05-23T03:50:25.545Z","cat":"auth","ev":"session_restored_from_cache","role":"nurse"}
+{"ts":"2026-05-23T03:50:25.560Z","cat":"api","ev":"base_url","host":"mediroute-8az0.onrender.com"}
+{"ts":"2026-05-23T03:50:25.610Z","cat":"websocket","ev":"connecting","user_id":28}
+{"ts":"2026-05-23T03:50:25.912Z","cat":"notification","ev":"fcm_registration_error","msg":"Please set a valid API key. A Firebase API key is required to communicate with Firebase server APIs: It authenticates yo"}
+{"ts":"2026-05-23T03:50:26.727Z","cat":"websocket","ev":"closed","code":1006,"clean":false}
+{"ts":"2026-05-23T03:50:26.728Z","cat":"websocket","ev":"reconnect_scheduled","delay_ms":1025,"next_backoff_sec":2}
+{"ts":"2026-05-23T03:50:27.754Z","cat":"websocket","ev":"connecting","user_id":28}
+{"ts":"2026-05-23T03:50:28.399Z","cat":"auth","ev":"session_validated","role":"nurse"}
+{"ts":"2026-05-23T03:50:28.409Z","cat":"websocket","ev":"connecting","user_id":28}
+{"ts":"2026-05-23T03:50:28.443Z","cat":"notification","ev":"fcm_registration_error","msg":"Please set a valid API key. A Firebase API key is required to communicate with Firebase server APIs: It authenticates yo"}
+{"ts":"2026-05-23T03:50:29.162Z","cat":"websocket","ev":"connected"}
+{"ts":"2026-05-23T04:05:05.079Z","cat":"auth","ev":"logout"}
+{"ts":"2026-05-23T04:05:06.190Z","cat":"auth","ev":"logout"}
+{"ts":"2026-05-23T04:05:11.673Z","cat":"otp","ev":"send_start"}
+{"ts":"2026-05-23T04:05:13.861Z","cat":"otp","ev":"send_success","dev_mode":true}
+{"ts":"2026-05-23T04:05:13.894Z","cat":"otp","ev":"verify_screen_open","autofilled":true,"from_storage_fallback":false}
+{"ts":"2026-05-23T04:05:14.936Z","cat":"otp","ev":"verify_start"}
+{"ts":"2026-05-23T04:05:19.475Z","cat":"auth","ev":"login_success","role":"nurse"}
+{"ts":"2026-05-23T04:05:19.483Z","cat":"websocket","ev":"connecting","user_id":28}
+{"ts":"2026-05-23T04:05:19.526Z","cat":"notification","ev":"fcm_registration_error","msg":"Please set a valid API key. A Firebase API key is required to communicate with Firebase server APIs: It authenticates yo"}
+{"ts":"2026-05-23T04:05:20.217Z","cat":"websocket","ev":"connected"}
+{"ts":"2026-05-23T04:05:26.097Z","cat":"lifecycle","ev":"prof_mount","role":"nurse","needs_service_area":true}
+{"ts":"2026-05-23T04:05:27.361Z","cat":"lifecycle","ev":"prof_fetch_done","profile_http":"ok","prefs_http":"ok"}
+{"ts":"2026-05-23T04:05:27.361Z","cat":"lifecycle","ev":"prof_profile_shape","exp_t":"number","skills_t":"string","edu_t":"object","pin_t":"string"}
+{"ts":"2026-05-23T04:05:27.375Z","cat":"lifecycle","ev":"prof_post_fetch","view_mode":true,"has_prefs":true,"types":{"exp":"number","skills":"string","pin":"string"}}
+{"ts":"2026-05-23T04:05:28.845Z","cat":"lifecycle","ev":"prof_post_fetch","view_mode":false,"has_prefs":true,"types":{"exp":"number","skills":"string","pin":"string"}}
+{"ts":"2026-05-23T04:05:45.014Z","cat":"lifecycle","ev":"background"}
+{"ts":"2026-05-23T04:05:49.927Z","cat":"websocket","ev":"closed","code":1006,"clean":false}
+{"ts":"2026-05-23T04:05:49.928Z","cat":"websocket","ev":"reconnect_scheduled","delay_ms":1077,"next_backoff_sec":2}
+{"ts":"2026-05-23T04:05:51.712Z","cat":"websocket","ev":"connecting","user_id":28}
+{"ts":"2026-05-23T05:54:45.392Z","cat":"lifecycle","ev":"foreground"}
+{"ts":"2026-05-23T05:54:45.650Z","cat":"websocket","ev":"closed","code":1006,"clean":false}
+{"ts":"2026-05-23T05:54:45.651Z","cat":"websocket","ev":"reconnect_scheduled","delay_ms":2388,"next_backoff_sec":4}
+{"ts":"2026-05-23T05:54:48.038Z","cat":"websocket","ev":"connecting","user_id":28}
+{"ts":"2026-05-23T05:54:48.825Z","cat":"websocket","ev":"closed","code":1006,"clean":false}
+{"ts":"2026-05-23T05:54:48.825Z","cat":"websocket","ev":"reconnect_scheduled","delay_ms":3385,"next_backoff_sec":8}
+{"ts":"2026-05-23T05:54:52.210Z","cat":"websocket","ev":"connecting","user_id":28}
+{"ts":"2026-05-23T05:54:53.019Z","cat":"websocket","ev":"closed","code":1006,"clean":false}
+{"ts":"2026-05-23T05:54:53.019Z","cat":"websocket","ev":"reconnect_scheduled","delay_ms":6559,"next_backoff_sec":16}
+{"ts":"2026-05-23T05:54:55.339Z","cat":"lifecycle","ev":"background"}
+{"ts":"2026-05-23T05:54:59.711Z","cat":"websocket","ev":"connecting","user_id":28}
+{"ts":"2026-05-23T05:55:00.391Z","cat":"websocket","ev":"closed","code":1006,"clean":false}
+{"ts":"2026-05-23T05:55:00.392Z","cat":"websocket","ev":"rapid_fail_auth_suspected","rapid_count":3}
+{"ts":"2026-05-23T05:55:00.421Z","cat":"api","ev":"request_error","method":"GET","url":"/auth/me","status":null,"code":"ERR_NETWORK"}
+{"ts":"2026-05-23T05:55:04.712Z","cat":"websocket","ev":"connecting","user_id":28}
+{"ts":"2026-05-23T08:23:41.869Z","cat":"lifecycle","ev":"foreground"}
+{"ts":"2026-05-23T08:23:41.877Z","cat":"websocket","ev":"closed","code":1006,"clean":false}
+{"ts":"2026-05-23T08:23:41.877Z","cat":"websocket","ev":"reconnect_scheduled","delay_ms":4722,"next_backoff_sec":8}
+{"ts":"2026-05-23T08:23:46.600Z","cat":"websocket","ev":"connecting","user_id":28}
+{"ts":"2026-05-23T08:23:47.421Z","cat":"websocket","ev":"closed","code":1006,"clean":false}
+{"ts":"2026-05-23T08:23:47.421Z","cat":"websocket","ev":"reconnect_scheduled","delay_ms":9408,"next_backoff_sec":16}
+{"ts":"2026-05-23T08:23:48.311Z","cat":"lifecycle","ev":"prof_mount","role":"nurse","needs_service_area":true}
+{"ts":"2026-05-23T08:23:51.006Z","cat":"lifecycle","ev":"prof_fetch_done","profile_http":"ok","prefs_http":"ok"}
+{"ts":"2026-05-23T08:23:51.006Z","cat":"lifecycle","ev":"prof_profile_shape","exp_t":"number","skills_t":"string","edu_t":"object","pin_t":"string"}
+{"ts":"2026-05-23T08:23:51.018Z","cat":"lifecycle","ev":"prof_post_fetch","view_mode":true,"has_prefs":true,"types":{"exp":"number","skills":"string","pin":"string"}}
+{"ts":"2026-05-23T08:23:56.830Z","cat":"websocket","ev":"connecting","user_id":28}
+{"ts":"2026-05-23T08:23:57.673Z","cat":"websocket","ev":"closed","code":1006,"clean":false}
+{"ts":"2026-05-23T08:23:57.673Z","cat":"websocket","ev":"reconnect_scheduled","delay_ms":16710,"next_backoff_sec":30}
+{"ts":"2026-05-23T08:23:58.089Z","cat":"lifecycle","ev":"prof_post_fetch","view_mode":false,"has_prefs":true,"types":{"exp":"number","skills":"string","pin":"string"}}
+{"ts":"2026-05-23T08:24:14.384Z","cat":"websocket","ev":"connecting","user_id":28}
+{"ts":"2026-05-23T08:24:15.185Z","cat":"websocket","ev":"closed","code":1006,"clean":false}
+{"ts":"2026-05-23T08:24:15.187Z","cat":"websocket","ev":"rapid_fail_auth_suspected","rapid_count":3}
+{"ts":"2026-05-23T08:24:16.420Z","cat":"websocket","ev":"connecting","user_id":28}
+{"ts":"2026-05-23T08:24:16.651Z","cat":"notification","ev":"fcm_registration_error","msg":"Please set a valid API key. A Firebase API key is required to communicate with Firebase server APIs: It authenticates yo"}
+{"ts":"2026-05-23T08:24:17.232Z","cat":"websocket","ev":"connected"}
+{"ts":"2026-05-23T08:34:37.113Z","cat":"lifecycle","ev":"app_start"}
+{"ts":"2026-05-23T08:34:37.126Z","cat":"auth","ev":"session_restored_from_cache","role":"nurse"}
+{"ts":"2026-05-23T08:34:37.131Z","cat":"api","ev":"base_url","host":"mediroute-8az0.onrender.com"}
+{"ts":"2026-05-23T08:34:37.152Z","cat":"websocket","ev":"connecting","user_id":28}
+{"ts":"2026-05-23T08:34:37.279Z","cat":"notification","ev":"fcm_registration_error","msg":"Please set a valid API key. A Firebase API key is required to communicate with Firebase server APIs: It authenticates yo"}
+{"ts":"2026-05-23T08:34:38.195Z","cat":"websocket","ev":"connected"}
+{"ts":"2026-05-23T08:34:39.122Z","cat":"auth","ev":"session_validated","role":"nurse"}
+{"ts":"2026-05-23T08:34:43.930Z","cat":"lifecycle","ev":"prof_mount","role":"nurse","needs_service_area":true}
+{"ts":"2026-05-23T08:34:45.170Z","cat":"lifecycle","ev":"prof_fetch_done","profile_http":"ok","prefs_http":"ok"}
+{"ts":"2026-05-23T08:34:45.170Z","cat":"lifecycle","ev":"prof_profile_shape","exp_t":"number","skills_t":"string","edu_t":"object","pin_t":"string"}
+{"ts":"2026-05-23T08:34:45.187Z","cat":"lifecycle","ev":"prof_post_fetch","view_mode":true,"has_prefs":true,"types":{"exp":"number","skills":"string","pin":"string"}}
+{"ts":"2026-05-23T08:34:47.086Z","cat":"lifecycle","ev":"prof_post_fetch","view_mode":false,"has_prefs":true,"types":{"exp":"number","skills":"string","pin":"string"}}
+{"ts":"2026-05-23T08:34:50.389Z","cat":"lifecycle","ev":"prof_gps_refresh_start"}
+{"ts":"2026-05-23T08:34:50.390Z","cat":"location","ev":"capture_start","audience":"job_seeker","syncProfile":true}
+{"ts":"2026-05-23T08:39:38.103Z","cat":"lifecycle","ev":"app_start"}
+{"ts":"2026-05-23T08:39:38.106Z","cat":"auth","ev":"session_restored_from_cache","role":"nurse"}
+{"ts":"2026-05-23T08:39:38.111Z","cat":"api","ev":"base_url","host":"mediroute-8az0.onrender.com"}
+{"ts":"2026-05-23T08:39:38.138Z","cat":"websocket","ev":"connecting","user_id":28}
+{"ts":"2026-05-23T08:39:38.352Z","cat":"notification","ev":"fcm_registration_error","msg":"Please set a valid API key. A Firebase API key is required to communicate with Firebase server APIs: It authenticates yo"}
+{"ts":"2026-05-23T08:39:39.355Z","cat":"websocket","ev":"connected"}
+{"ts":"2026-05-23T08:39:39.781Z","cat":"auth","ev":"session_validated","role":"nurse"}
+{"ts":"2026-05-23T08:39:40.382Z","cat":"lifecycle","ev":"prof_mount","role":"nurse","needs_service_area":true}
+{"ts":"2026-05-23T08:39:41.618Z","cat":"lifecycle","ev":"prof_fetch_done","profile_http":"ok","prefs_http":"ok"}
+{"ts":"2026-05-23T08:39:41.618Z","cat":"lifecycle","ev":"prof_profile_shape","exp_t":"number","skills_t":"string","edu_t":"object","pin_t":"string"}
+{"ts":"2026-05-23T08:39:41.632Z","cat":"lifecycle","ev":"prof_post_fetch","view_mode":true,"has_prefs":true,"types":{"exp":"number","skills":"string","pin":"string"}}
+{"ts":"2026-05-23T08:39:42.892Z","cat":"lifecycle","ev":"prof_post_fetch","view_mode":false,"has_prefs":true,"types":{"exp":"number","skills":"string","pin":"string"}}
+{"ts":"2026-05-23T08:39:44.794Z","cat":"lifecycle","ev":"prof_gps_refresh_start"}
+{"ts":"2026-05-23T08:39:44.794Z","cat":"location","ev":"capture_start","audience":"job_seeker","syncProfile":true}
+{"ts":"2026-05-23T08:40:53.350Z","cat":"websocket","ev":"closed","code":1012,"clean":true}
+{"ts":"2026-05-23T08:40:53.351Z","cat":"websocket","ev":"reconnect_scheduled","delay_ms":1124,"next_backoff_sec":2}
+{"ts":"2026-05-23T08:40:54.477Z","cat":"websocket","ev":"connecting","user_id":28}
+{"ts":"2026-05-23T08:40:55.238Z","cat":"websocket","ev":"connected"}
+{"ts":"2026-05-23T08:41:57.101Z","cat":"auth","ev":"logout"}
+{"ts":"2026-05-23T08:41:58.665Z","cat":"location","ev":"capture_start","audience":"job_seeker","syncProfile":true}
+{"ts":"2026-05-23T08:42:22.095Z","cat":"otp","ev":"send_start"}
+{"ts":"2026-05-23T08:42:24.333Z","cat":"otp","ev":"send_success","dev_mode":true}
+{"ts":"2026-05-23T08:42:24.373Z","cat":"otp","ev":"verify_screen_open","autofilled":true,"from_storage_fallback":false}
+{"ts":"2026-05-23T08:42:25.273Z","cat":"otp","ev":"verify_start"}
+{"ts":"2026-05-23T08:42:29.766Z","cat":"auth","ev":"login_success","role":"nurse"}
+{"ts":"2026-05-23T08:42:29.771Z","cat":"websocket","ev":"connecting","user_id":28}
+{"ts":"2026-05-23T08:42:29.846Z","cat":"notification","ev":"fcm_registration_error","msg":"Please set a valid API key. A Firebase API key is required to communicate with Firebase server APIs: It authenticates yo"}
+{"ts":"2026-05-23T08:42:30.979Z","cat":"websocket","ev":"connected"}
+{"ts":"2026-05-23T08:49:09.596Z","cat":"location","ev":"plugin_warmup_ok"}
+{"ts":"2026-05-23T08:49:09.601Z","cat":"lifecycle","ev":"app_start"}
+{"ts":"2026-05-23T08:49:09.601Z","cat":"auth","ev":"session_restored_from_cache","role":"nurse"}
+{"ts":"2026-05-23T08:49:09.605Z","cat":"api","ev":"base_url","host":"mediroute-8az0.onrender.com"}
+{"ts":"2026-05-23T08:49:09.623Z","cat":"websocket","ev":"connecting","user_id":28}
+{"ts":"2026-05-23T08:49:09.771Z","cat":"notification","ev":"fcm_registration_error","msg":"Please set a valid API key. A Firebase API key is required to communicate with Firebase server APIs: It authenticates yo"}
+{"ts":"2026-05-23T08:49:10.756Z","cat":"websocket","ev":"connected"}
+{"ts":"2026-05-23T08:49:12.227Z","cat":"auth","ev":"session_validated","role":"nurse"}
+{"ts":"2026-05-23T08:50:08.542Z","cat":"location","ev":"capture_start","audience":"job_seeker","syncProfile":true}
+{"ts":"2026-05-23T08:50:08.542Z","cat":"location","ev":"gps_begin","native":true}
+{"ts":"2026-05-23T08:50:12.445Z","cat":"lifecycle","ev":"foreground"}
+{"ts":"2026-05-23T08:50:17.663Z","cat":"location","ev":"native_gps_ok","acc":100}
+{"ts":"2026-05-23T08:50:20.705Z","cat":"api","ev":"request_error","method":"GET","url":"/geo/reverse","status":503,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T08:50:20.708Z","cat":"location","ev":"backend_geo_fail","msg":"Request failed with status code 503","status":503,"code":"ERR_BAD_RESPONSE","path":"/geo/reverse"}
+{"ts":"2026-05-23T08:50:20.708Z","cat":"location","ev":"reverse_fail","msg":"Geocode rate limited ΓÇö retry in a moment","status":null,"code":null}
+{"ts":"2026-05-23T08:50:20.708Z","cat":"availability","ev":"location_gps_partial"}
+{"ts":"2026-05-23T08:50:25.518Z","cat":"availability","ev":"toggle_online_ok","city_id":"HYD","loc_source":"gps"}
+{"ts":"2026-05-23T08:50:31.997Z","cat":"location","ev":"capture_start","audience":"job_seeker","syncProfile":true}
+{"ts":"2026-05-23T08:50:31.997Z","cat":"location","ev":"gps_begin","native":true}
+{"ts":"2026-05-23T08:50:37.143Z","cat":"location","ev":"native_gps_ok","acc":100}
+{"ts":"2026-05-23T08:50:41.903Z","cat":"api","ev":"request_error","method":"GET","url":"/geo/reverse","status":503,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T08:50:41.903Z","cat":"location","ev":"backend_geo_fail","msg":"Request failed with status code 503","status":503,"code":"ERR_BAD_RESPONSE","path":"/geo/reverse"}
+{"ts":"2026-05-23T08:50:41.904Z","cat":"location","ev":"reverse_fail","msg":"Geocode rate limited ΓÇö retry in a moment","status":null,"code":null}
+{"ts":"2026-05-23T08:50:47.864Z","cat":"lifecycle","ev":"prof_mount","role":"nurse","needs_service_area":true}
+{"ts":"2026-05-23T08:50:49.679Z","cat":"lifecycle","ev":"prof_fetch_done","profile_http":"ok","prefs_http":"ok"}
+{"ts":"2026-05-23T08:50:49.679Z","cat":"lifecycle","ev":"prof_profile_shape","exp_t":"number","skills_t":"string","edu_t":"object","pin_t":"string"}
+{"ts":"2026-05-23T08:50:49.694Z","cat":"lifecycle","ev":"prof_post_fetch","view_mode":true,"has_prefs":true,"types":{"exp":"number","skills":"string","pin":"string"}}
+{"ts":"2026-05-23T08:50:51.395Z","cat":"lifecycle","ev":"prof_post_fetch","view_mode":false,"has_prefs":true,"types":{"exp":"number","skills":"string","pin":"string"}}
+{"ts":"2026-05-23T08:50:54.707Z","cat":"lifecycle","ev":"prof_gps_refresh_start"}
+{"ts":"2026-05-23T08:50:54.707Z","cat":"location","ev":"capture_start","audience":"job_seeker","syncProfile":true}
+{"ts":"2026-05-23T08:50:54.707Z","cat":"location","ev":"gps_begin","native":true}
+{"ts":"2026-05-23T08:50:59.812Z","cat":"location","ev":"native_gps_ok","acc":100}
+{"ts":"2026-05-23T08:51:02.794Z","cat":"api","ev":"request_error","method":"GET","url":"/geo/reverse","status":503,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T08:51:02.795Z","cat":"location","ev":"backend_geo_fail","msg":"Request failed with status code 503","status":503,"code":"ERR_BAD_RESPONSE","path":"/geo/reverse"}
+{"ts":"2026-05-23T08:51:02.795Z","cat":"location","ev":"reverse_fail","msg":"Geocode rate limited ΓÇö retry in a moment","status":null,"code":null}
+{"ts":"2026-05-23T08:51:02.795Z","cat":"lifecycle","ev":"prof_gps_refresh_fail","code":"reverse_failed"}
+{"ts":"2026-05-23T08:51:42.314Z","cat":"api","ev":"request_error","method":"POST","url":"/preferences","status":405,"code":"ERR_BAD_REQUEST"}
+{"ts":"2026-05-23T08:51:44.780Z","cat":"lifecycle","ev":"prof_fetch_done","profile_http":"ok","prefs_http":"ok"}
+{"ts":"2026-05-23T08:51:44.780Z","cat":"lifecycle","ev":"prof_profile_shape","exp_t":"number","skills_t":"string","edu_t":"object","pin_t":"string"}
+{"ts":"2026-05-23T08:51:44.788Z","cat":"lifecycle","ev":"prof_post_fetch","view_mode":true,"has_prefs":true,"types":{"exp":"number","skills":"string","pin":"string"}}
+{"ts":"2026-05-23T08:54:55.545Z","cat":"location","ev":"gps_begin","native":true}
+{"ts":"2026-05-23T08:54:55.563Z","cat":"location","ev":"native_perm_check","location":"granted","coarse":"granted"}
+{"ts":"2026-05-23T08:54:55.600Z","cat":"location","ev":"native_gps_ok","acc":100}
+{"ts":"2026-05-23T08:58:29.069Z","cat":"location","ev":"plugin_warmup_ok"}
+{"ts":"2026-05-23T08:58:29.081Z","cat":"lifecycle","ev":"app_start"}
+{"ts":"2026-05-23T08:58:29.083Z","cat":"auth","ev":"session_restored_from_cache","role":"nurse"}
+{"ts":"2026-05-23T08:58:29.092Z","cat":"api","ev":"base_url","host":"mediroute-8az0.onrender.com"}
+{"ts":"2026-05-23T08:58:29.134Z","cat":"websocket","ev":"connecting","user_id":28}
+{"ts":"2026-05-23T08:58:29.254Z","cat":"notification","ev":"fcm_registration_error","msg":"Please set a valid API key. A Firebase API key is required to communicate with Firebase server APIs: It authenticates yo"}
+{"ts":"2026-05-23T08:58:30.172Z","cat":"websocket","ev":"connected"}
+{"ts":"2026-05-23T08:58:30.692Z","cat":"auth","ev":"session_validated","role":"nurse"}
+{"ts":"2026-05-23T08:59:51.305Z","cat":"lifecycle","ev":"prof_mount","role":"nurse","needs_service_area":true}
+{"ts":"2026-05-23T08:59:52.926Z","cat":"lifecycle","ev":"prof_fetch_done","profile_http":"ok","prefs_http":"ok"}
+{"ts":"2026-05-23T08:59:52.927Z","cat":"lifecycle","ev":"prof_profile_shape","exp_t":"number","skills_t":"string","edu_t":"object","pin_t":"string"}
+{"ts":"2026-05-23T08:59:52.939Z","cat":"lifecycle","ev":"prof_post_fetch","view_mode":true,"has_prefs":true,"types":{"exp":"number","skills":"string","pin":"string"}}
+{"ts":"2026-05-23T08:59:54.046Z","cat":"lifecycle","ev":"prof_post_fetch","view_mode":false,"has_prefs":true,"types":{"exp":"number","skills":"string","pin":"string"}}
+{"ts":"2026-05-23T08:59:55.631Z","cat":"lifecycle","ev":"prof_gps_refresh_start"}
+{"ts":"2026-05-23T08:59:55.631Z","cat":"location","ev":"capture_start","audience":"job_seeker","syncProfile":true}
+{"ts":"2026-05-23T08:59:55.632Z","cat":"location","ev":"gps_begin","native":true}
+{"ts":"2026-05-23T08:59:58.229Z","cat":"location","ev":"native_gps_ok","acc":17.822}
+{"ts":"2026-05-23T09:00:00.973Z","cat":"api","ev":"request_error","method":"GET","url":"/geo/reverse","status":503,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:00:00.976Z","cat":"location","ev":"backend_geo_fail","msg":"Request failed with status code 503","status":503,"code":"ERR_BAD_RESPONSE","path":"/geo/reverse"}
+{"ts":"2026-05-23T09:00:00.976Z","cat":"location","ev":"reverse_fail","msg":"Geocode rate limited ΓÇö retry in a moment","status":null,"code":null}
+{"ts":"2026-05-23T09:00:00.977Z","cat":"lifecycle","ev":"prof_gps_refresh_fail","code":"reverse_failed"}
+{"ts":"2026-05-23T09:02:11.426Z","cat":"lifecycle","ev":"prof_gps_refresh_start"}
+{"ts":"2026-05-23T09:02:11.426Z","cat":"location","ev":"capture_start","audience":"job_seeker","syncProfile":true}
+{"ts":"2026-05-23T09:02:11.426Z","cat":"location","ev":"gps_begin","native":true}
+{"ts":"2026-05-23T09:02:13.938Z","cat":"location","ev":"native_gps_ok","acc":18.615}
+{"ts":"2026-05-23T09:02:16.993Z","cat":"api","ev":"request_error","method":"GET","url":"/geo/reverse","status":503,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:02:16.993Z","cat":"location","ev":"backend_geo_fail","msg":"Request failed with status code 503","status":503,"code":"ERR_BAD_RESPONSE","path":"/geo/reverse"}
+{"ts":"2026-05-23T09:02:16.993Z","cat":"location","ev":"reverse_fail","msg":"Geocode rate limited ΓÇö retry in a moment","status":null,"code":null}
+{"ts":"2026-05-23T09:02:16.994Z","cat":"lifecycle","ev":"prof_gps_refresh_fail","code":"reverse_failed"}
+{"ts":"2026-05-23T09:02:36.516Z","cat":"lifecycle","ev":"prof_gps_refresh_start"}
+{"ts":"2026-05-23T09:02:36.516Z","cat":"location","ev":"capture_start","audience":"job_seeker","syncProfile":true}
+{"ts":"2026-05-23T09:02:36.516Z","cat":"location","ev":"gps_begin","native":true}
+{"ts":"2026-05-23T09:02:40.018Z","cat":"location","ev":"native_gps_ok","acc":16.046}
+{"ts":"2026-05-23T09:02:42.807Z","cat":"api","ev":"request_error","method":"GET","url":"/geo/reverse","status":503,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:02:42.807Z","cat":"location","ev":"backend_geo_fail","msg":"Request failed with status code 503","status":503,"code":"ERR_BAD_RESPONSE","path":"/geo/reverse"}
+{"ts":"2026-05-23T09:02:42.808Z","cat":"location","ev":"reverse_fail","msg":"Geocode rate limited ΓÇö retry in a moment","status":null,"code":null}
+{"ts":"2026-05-23T09:02:42.808Z","cat":"lifecycle","ev":"prof_gps_refresh_fail","code":"reverse_failed"}
+{"ts":"2026-05-23T09:03:00.896Z","cat":"location","ev":"gps_begin","native":true}
+{"ts":"2026-05-23T09:03:00.914Z","cat":"location","ev":"native_perm_check","location":"granted","coarse":"granted"}
+{"ts":"2026-05-23T09:03:00.946Z","cat":"location","ev":"native_gps_ok","acc":16.046}
+{"ts":"2026-05-23T09:04:28.950Z","cat":"lifecycle","ev":"prof_gps_refresh_start"}
+{"ts":"2026-05-23T09:04:28.950Z","cat":"location","ev":"capture_start","audience":"job_seeker","syncProfile":true}
+{"ts":"2026-05-23T09:04:28.950Z","cat":"location","ev":"gps_begin","native":true}
+{"ts":"2026-05-23T09:04:31.519Z","cat":"location","ev":"native_gps_ok","acc":17.781}
+{"ts":"2026-05-23T09:04:36.396Z","cat":"api","ev":"request_error","method":"GET","url":"/geo/reverse","status":503,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:04:36.396Z","cat":"location","ev":"backend_geo_fail","msg":"Request failed with status code 503","status":503,"code":"ERR_BAD_RESPONSE","path":"/geo/reverse"}
+{"ts":"2026-05-23T09:04:36.397Z","cat":"location","ev":"reverse_fail","msg":"Geocode rate limited ΓÇö retry in a moment","status":null,"code":null}
+{"ts":"2026-05-23T09:04:36.397Z","cat":"lifecycle","ev":"prof_gps_refresh_fail","code":"reverse_failed"}
+{"ts":"2026-05-23T09:05:02.123Z","cat":"lifecycle","ev":"prof_gps_refresh_start"}
+{"ts":"2026-05-23T09:05:02.123Z","cat":"location","ev":"capture_start","audience":"job_seeker","syncProfile":true}
+{"ts":"2026-05-23T09:05:02.123Z","cat":"location","ev":"gps_begin","native":true}
+{"ts":"2026-05-23T09:05:07.239Z","cat":"location","ev":"native_gps_ok","acc":100}
+{"ts":"2026-05-23T09:05:09.843Z","cat":"api","ev":"request_error","method":"GET","url":"/geo/reverse","status":503,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:05:09.843Z","cat":"location","ev":"backend_geo_fail","msg":"Request failed with status code 503","status":503,"code":"ERR_BAD_RESPONSE","path":"/geo/reverse"}
+{"ts":"2026-05-23T09:05:09.844Z","cat":"location","ev":"reverse_fail","msg":"Geocode rate limited ΓÇö retry in a moment","status":null,"code":null}
+{"ts":"2026-05-23T09:05:09.844Z","cat":"lifecycle","ev":"prof_gps_refresh_fail","code":"reverse_failed"}
+{"ts":"2026-05-23T09:05:11.588Z","cat":"auth","ev":"logout"}
+{"ts":"2026-05-23T09:05:18.523Z","cat":"otp","ev":"send_start"}
+{"ts":"2026-05-23T09:05:20.812Z","cat":"otp","ev":"send_success","dev_mode":true}
+{"ts":"2026-05-23T09:05:20.841Z","cat":"otp","ev":"verify_screen_open","autofilled":true,"from_storage_fallback":false}
+{"ts":"2026-05-23T09:05:21.779Z","cat":"otp","ev":"verify_start"}
+{"ts":"2026-05-23T09:05:26.337Z","cat":"auth","ev":"login_success","role":"recruiter"}
+{"ts":"2026-05-23T09:05:26.342Z","cat":"websocket","ev":"connecting","user_id":19}
+{"ts":"2026-05-23T09:05:26.397Z","cat":"notification","ev":"fcm_registration_error","msg":"Please set a valid API key. A Firebase API key is required to communicate with Firebase server APIs: It authenticates yo"}
+{"ts":"2026-05-23T09:05:27.153Z","cat":"websocket","ev":"connected"}
+{"ts":"2026-05-23T09:05:30.597Z","cat":"location","ev":"capture_start","audience":"recruiter","syncProfile":false}
+{"ts":"2026-05-23T09:05:30.597Z","cat":"location","ev":"gps_begin","native":true}
+{"ts":"2026-05-23T09:05:33.187Z","cat":"location","ev":"native_gps_ok","acc":19.659}
+{"ts":"2026-05-23T09:05:37.404Z","cat":"api","ev":"request_error","method":"GET","url":"/geo/reverse","status":503,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:05:37.406Z","cat":"location","ev":"backend_geo_fail","msg":"Request failed with status code 503","status":503,"code":"ERR_BAD_RESPONSE","path":"/geo/reverse"}
+{"ts":"2026-05-23T09:05:37.407Z","cat":"location","ev":"reverse_fail","msg":"Geocode rate limited ΓÇö retry in a moment","status":null,"code":null}
+{"ts":"2026-05-23T09:09:51.561Z","cat":"location","ev":"capture_start","audience":"recruiter","syncProfile":false}
+{"ts":"2026-05-23T09:09:51.561Z","cat":"location","ev":"gps_begin","native":true}
+{"ts":"2026-05-23T09:09:54.203Z","cat":"location","ev":"native_gps_ok","acc":19.103}
+{"ts":"2026-05-23T09:09:58.522Z","cat":"api","ev":"request_error","method":"GET","url":"/geo/reverse","status":503,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:09:58.523Z","cat":"location","ev":"backend_geo_fail","msg":"Request failed with status code 503","status":503,"code":"ERR_BAD_RESPONSE","path":"/geo/reverse"}
+{"ts":"2026-05-23T09:09:58.524Z","cat":"location","ev":"reverse_fail","msg":"Geocode rate limited ΓÇö retry in a moment","status":null,"code":null}
+{"ts":"2026-05-23T09:13:59.473Z","cat":"location","ev":"plugin_warmup_ok"}
+{"ts":"2026-05-23T09:13:59.478Z","cat":"lifecycle","ev":"app_start"}
+{"ts":"2026-05-23T09:13:59.479Z","cat":"auth","ev":"session_restored_from_cache","role":"recruiter"}
+{"ts":"2026-05-23T09:13:59.482Z","cat":"api","ev":"base_url","host":"mediroute-8az0.onrender.com"}
+{"ts":"2026-05-23T09:13:59.528Z","cat":"websocket","ev":"connecting","user_id":19}
+{"ts":"2026-05-23T09:13:59.639Z","cat":"notification","ev":"fcm_registration_error","msg":"Please set a valid API key. A Firebase API key is required to communicate with Firebase server APIs: It authenticates yo"}
+{"ts":"2026-05-23T09:14:00.537Z","cat":"websocket","ev":"connected"}
+{"ts":"2026-05-23T09:14:01.452Z","cat":"auth","ev":"session_validated","role":"recruiter"}
+{"ts":"2026-05-23T09:15:15.437Z","cat":"location","ev":"capture_start","audience":"recruiter","syncProfile":false}
+{"ts":"2026-05-23T09:15:15.437Z","cat":"location","ev":"gps_begin","native":true}
+{"ts":"2026-05-23T09:15:18.094Z","cat":"location","ev":"native_gps_ok","acc":17.168}
+{"ts":"2026-05-23T09:15:21.707Z","cat":"api","ev":"request_error","method":"GET","url":"/geo/reverse","status":503,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:15:21.709Z","cat":"location","ev":"backend_geo_fail","msg":"Request failed with status code 503","status":503,"code":"ERR_BAD_RESPONSE","path":"/geo/reverse","attempt":0}
+{"ts":"2026-05-23T09:15:25.894Z","cat":"api","ev":"request_error","method":"GET","url":"/geo/reverse","status":503,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:15:25.894Z","cat":"location","ev":"backend_geo_fail","msg":"Request failed with status code 503","status":503,"code":"ERR_BAD_RESPONSE","path":"/geo/reverse","attempt":1}
+{"ts":"2026-05-23T09:15:25.894Z","cat":"location","ev":"reverse_backend_fallback","msg":"Geocode rate limited ΓÇö retry in a moment"}
+{"ts":"2026-05-23T09:15:26.724Z","cat":"location","ev":"reverse_parse","source":"nominatim_direct","micro_field":"suburb","city_field":null,"address_keys":"neighbourhood,suburb,city,county,state_district,state,ISO3166-2-lvl4,postcode,country,country_code","locality":"Ward 114 KPHB Colony","pin":"500***"}
+{"ts":"2026-05-23T09:15:26.726Z","cat":"location","ev":"capture_ok","has_pin":true,"has_locality":true}
+{"ts":"2026-05-23T09:15:26.727Z","cat":"location","ev":"post_shift_gps_ok","locality":"Ward 114 KPHB Colony"}
+{"ts":"2026-05-23T09:15:57.304Z","cat":"dispatch","ev":"shift_post_start","role":"nurse","urgency":"standard"}
+{"ts":"2026-05-23T09:16:00.006Z","cat":"api","ev":"request_error","method":"POST","url":"/shifts/","status":500,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:16:00.007Z","cat":"dispatch","ev":"shift_post_fail","msg":"Request failed with status code 500","status":500,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:16:15.995Z","cat":"dispatch","ev":"shift_post_start","role":"nurse","urgency":"standard"}
+{"ts":"2026-05-23T09:16:17.507Z","cat":"api","ev":"request_error","method":"POST","url":"/shifts/","status":500,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:16:17.508Z","cat":"dispatch","ev":"shift_post_fail","msg":"Request failed with status code 500","status":500,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:21:37.503Z","cat":"dispatch","ev":"shift_post_start","role":"nurse","urgency":"standard"}
+{"ts":"2026-05-23T09:21:39.663Z","cat":"api","ev":"request_error","method":"POST","url":"/shifts/","status":500,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:21:39.664Z","cat":"dispatch","ev":"shift_post_fail","msg":"Request failed with status code 500","status":500,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:22:18.212Z","cat":"location","ev":"plugin_warmup_ok"}
+{"ts":"2026-05-23T09:22:18.216Z","cat":"lifecycle","ev":"app_start"}
+{"ts":"2026-05-23T09:22:18.217Z","cat":"auth","ev":"session_restored_from_cache","role":"recruiter"}
+{"ts":"2026-05-23T09:22:18.220Z","cat":"api","ev":"base_url","host":"mediroute-8az0.onrender.com"}
+{"ts":"2026-05-23T09:22:18.235Z","cat":"websocket","ev":"connecting","user_id":19}
+{"ts":"2026-05-23T09:22:18.344Z","cat":"notification","ev":"fcm_registration_error","msg":"Please set a valid API key. A Firebase API key is required to communicate with Firebase server APIs: It authenticates yo"}
+{"ts":"2026-05-23T09:22:19.386Z","cat":"websocket","ev":"connected"}
+{"ts":"2026-05-23T09:22:20.111Z","cat":"auth","ev":"session_validated","role":"recruiter"}
+{"ts":"2026-05-23T09:24:12.008Z","cat":"location","ev":"capture_start","audience":"recruiter","syncProfile":false}
+{"ts":"2026-05-23T09:24:12.008Z","cat":"location","ev":"gps_begin","native":true}
+{"ts":"2026-05-23T09:24:14.593Z","cat":"location","ev":"native_gps_ok","acc":15.173}
+{"ts":"2026-05-23T09:24:17.673Z","cat":"api","ev":"request_error","method":"GET","url":"/geo/reverse","status":503,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:24:17.678Z","cat":"location","ev":"backend_geo_fail","msg":"Request failed with status code 503","status":503,"code":"ERR_BAD_RESPONSE","path":"/geo/reverse","attempt":0}
+{"ts":"2026-05-23T09:24:21.761Z","cat":"api","ev":"request_error","method":"GET","url":"/geo/reverse","status":503,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:24:21.761Z","cat":"location","ev":"backend_geo_fail","msg":"Request failed with status code 503","status":503,"code":"ERR_BAD_RESPONSE","path":"/geo/reverse","attempt":1}
+{"ts":"2026-05-23T09:24:21.761Z","cat":"location","ev":"reverse_backend_fallback","msg":"Geocode rate limited ΓÇö retry in a moment"}
+{"ts":"2026-05-23T09:24:22.790Z","cat":"location","ev":"reverse_parse","source":"nominatim_direct","micro_field":"suburb","city_field":null,"address_keys":"neighbourhood,suburb,city,county,state_district,state,ISO3166-2-lvl4,postcode,country,country_code","locality":"Ward 114 KPHB Colony","pin":"500***"}
+{"ts":"2026-05-23T09:24:22.793Z","cat":"location","ev":"capture_ok","has_pin":true,"has_locality":true}
+{"ts":"2026-05-23T09:24:22.795Z","cat":"location","ev":"post_shift_gps_ok","locality":"Ward 114 KPHB Colony"}
+{"ts":"2026-05-23T09:24:52.647Z","cat":"location","ev":"plugin_warmup_ok"}
+{"ts":"2026-05-23T09:24:52.651Z","cat":"lifecycle","ev":"app_start"}
+{"ts":"2026-05-23T09:24:52.652Z","cat":"auth","ev":"session_restored_from_cache","role":"recruiter"}
+{"ts":"2026-05-23T09:24:52.655Z","cat":"api","ev":"base_url","host":"mediroute-8az0.onrender.com"}
+{"ts":"2026-05-23T09:24:52.669Z","cat":"websocket","ev":"connecting","user_id":19}
+{"ts":"2026-05-23T09:24:52.782Z","cat":"notification","ev":"fcm_registration_error","msg":"Please set a valid API key. A Firebase API key is required to communicate with Firebase server APIs: It authenticates yo"}
+{"ts":"2026-05-23T09:24:53.909Z","cat":"websocket","ev":"connected"}
+{"ts":"2026-05-23T09:24:54.022Z","cat":"location","ev":"capture_start","audience":"recruiter","syncProfile":false}
+{"ts":"2026-05-23T09:24:54.023Z","cat":"location","ev":"gps_begin","native":true}
+{"ts":"2026-05-23T09:24:54.578Z","cat":"auth","ev":"session_validated","role":"recruiter"}
+{"ts":"2026-05-23T09:24:56.774Z","cat":"location","ev":"native_gps_ok","acc":16.197}
+{"ts":"2026-05-23T09:24:58.320Z","cat":"location","ev":"backend_geo_ok","path":"/geo/reverse","attempt":0}
+{"ts":"2026-05-23T09:24:58.320Z","cat":"location","ev":"reverse_parse","source":"backend","micro_field":"suburb","city_field":null,"locality":"Ward 114 KPHB Colony","pin":"500***"}
+{"ts":"2026-05-23T09:24:58.323Z","cat":"location","ev":"capture_ok","has_pin":true,"has_locality":true}
+{"ts":"2026-05-23T09:24:58.325Z","cat":"location","ev":"post_shift_gps_ok","locality":"Ward 114 KPHB Colony"}
+{"ts":"2026-05-23T09:25:26.227Z","cat":"dispatch","ev":"shift_post_start","role":"nurse","urgency":"standard"}
+{"ts":"2026-05-23T09:25:28.534Z","cat":"api","ev":"request_error","method":"POST","url":"/shifts/","status":500,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:25:28.535Z","cat":"dispatch","ev":"shift_post_fail","msg":"Request failed with status code 500","status":500,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:29:26.739Z","cat":"location","ev":"plugin_warmup_ok"}
+{"ts":"2026-05-23T09:29:26.745Z","cat":"lifecycle","ev":"app_start"}
+{"ts":"2026-05-23T09:29:26.745Z","cat":"auth","ev":"session_restored_from_cache","role":"recruiter"}
+{"ts":"2026-05-23T09:29:26.748Z","cat":"api","ev":"base_url","host":"mediroute-8az0.onrender.com"}
+{"ts":"2026-05-23T09:29:26.768Z","cat":"websocket","ev":"connecting","user_id":19}
+{"ts":"2026-05-23T09:29:26.911Z","cat":"notification","ev":"fcm_registration_error","msg":"Please set a valid API key. A Firebase API key is required to communicate with Firebase server APIs: It authenticates yo"}
+{"ts":"2026-05-23T09:29:27.733Z","cat":"websocket","ev":"connected"}
+{"ts":"2026-05-23T09:29:28.139Z","cat":"location","ev":"capture_start","audience":"recruiter","syncProfile":false}
+{"ts":"2026-05-23T09:29:28.140Z","cat":"location","ev":"gps_begin","native":true}
+{"ts":"2026-05-23T09:29:29.375Z","cat":"auth","ev":"session_validated","role":"recruiter"}
+{"ts":"2026-05-23T09:29:31.103Z","cat":"location","ev":"native_gps_ok","acc":17.283}
+{"ts":"2026-05-23T09:29:33.677Z","cat":"location","ev":"backend_geo_ok","path":"/geo/reverse","attempt":0}
+{"ts":"2026-05-23T09:29:33.677Z","cat":"location","ev":"reverse_parse","source":"backend","micro_field":"suburb","city_field":null,"locality":"Ward 114 KPHB Colony","pin":"500***"}
+{"ts":"2026-05-23T09:29:33.679Z","cat":"location","ev":"capture_ok","has_pin":true,"has_locality":true}
+{"ts":"2026-05-23T09:29:33.682Z","cat":"location","ev":"post_shift_gps_ok","locality":"Ward 114 KPHB Colony"}
+{"ts":"2026-05-23T09:29:49.347Z","cat":"auth","ev":"logout"}
+{"ts":"2026-05-23T09:29:50.331Z","cat":"auth","ev":"logout"}
+{"ts":"2026-05-23T09:29:58.341Z","cat":"otp","ev":"send_start"}
+{"ts":"2026-05-23T09:30:00.501Z","cat":"otp","ev":"send_success","dev_mode":true}
+{"ts":"2026-05-23T09:30:00.532Z","cat":"otp","ev":"verify_screen_open","autofilled":true,"from_storage_fallback":false}
+{"ts":"2026-05-23T09:30:01.420Z","cat":"otp","ev":"verify_start"}
+{"ts":"2026-05-23T09:30:05.830Z","cat":"auth","ev":"login_success","role":"nurse"}
+{"ts":"2026-05-23T09:30:05.837Z","cat":"websocket","ev":"connecting","user_id":28}
+{"ts":"2026-05-23T09:30:05.892Z","cat":"notification","ev":"fcm_registration_error","msg":"Please set a valid API key. A Firebase API key is required to communicate with Firebase server APIs: It authenticates yo"}
+{"ts":"2026-05-23T09:30:06.646Z","cat":"websocket","ev":"connected"}
+{"ts":"2026-05-23T09:30:09.256Z","cat":"location","ev":"capture_start","audience":"job_seeker","syncProfile":true}
+{"ts":"2026-05-23T09:30:09.256Z","cat":"location","ev":"gps_begin","native":true}
+{"ts":"2026-05-23T09:30:11.747Z","cat":"location","ev":"native_gps_ok","acc":17.023}
+{"ts":"2026-05-23T09:30:13.001Z","cat":"api","ev":"request_error","method":"PUT","url":"/profile/me","status":422,"code":"ERR_BAD_REQUEST"}
+{"ts":"2026-05-23T09:30:13.002Z","cat":"location","ev":"profile_sync_fail","msg":"Request failed with status code 422","status":422,"code":"ERR_BAD_REQUEST"}
+{"ts":"2026-05-23T09:30:13.002Z","cat":"location","ev":"capture_ok","has_pin":true,"has_locality":true}
+{"ts":"2026-05-23T09:30:15.048Z","cat":"location","ev":"manual_refresh_ok","has_pin":true}
+{"ts":"2026-05-23T09:30:56.216Z","cat":"lifecycle","ev":"prof_mount","role":"nurse","needs_service_area":true}
+{"ts":"2026-05-23T09:30:57.374Z","cat":"lifecycle","ev":"prof_fetch_done","profile_http":"ok","prefs_http":"ok"}
+{"ts":"2026-05-23T09:30:57.375Z","cat":"lifecycle","ev":"prof_profile_shape","exp_t":"number","skills_t":"string","edu_t":"object","pin_t":"string"}
+{"ts":"2026-05-23T09:30:57.385Z","cat":"lifecycle","ev":"prof_post_fetch","view_mode":true,"has_prefs":true,"types":{"exp":"number","skills":"string","pin":"string"}}
+{"ts":"2026-05-23T09:30:58.603Z","cat":"lifecycle","ev":"prof_post_fetch","view_mode":false,"has_prefs":true,"types":{"exp":"number","skills":"string","pin":"string"}}
+{"ts":"2026-05-23T09:31:01.642Z","cat":"lifecycle","ev":"prof_gps_refresh_start"}
+{"ts":"2026-05-23T09:31:01.642Z","cat":"location","ev":"capture_start","audience":"job_seeker","syncProfile":true}
+{"ts":"2026-05-23T09:31:01.642Z","cat":"location","ev":"gps_begin","native":true}
+{"ts":"2026-05-23T09:31:04.385Z","cat":"location","ev":"native_gps_ok","acc":16.735}
+{"ts":"2026-05-23T09:31:07.173Z","cat":"location","ev":"backend_geo_ok","path":"/geo/reverse","attempt":0}
+{"ts":"2026-05-23T09:31:07.173Z","cat":"location","ev":"reverse_parse","source":"backend","micro_field":"suburb","city_field":null,"locality":"Ward 114 KPHB Colony","pin":"500***"}
+{"ts":"2026-05-23T09:31:09.317Z","cat":"api","ev":"request_error","method":"PUT","url":"/profile/me","status":422,"code":"ERR_BAD_REQUEST"}
+{"ts":"2026-05-23T09:31:09.318Z","cat":"location","ev":"profile_sync_fail","msg":"Request failed with status code 422","status":422,"code":"ERR_BAD_REQUEST"}
+{"ts":"2026-05-23T09:31:09.318Z","cat":"location","ev":"capture_ok","has_pin":true,"has_locality":true}
+{"ts":"2026-05-23T09:31:09.318Z","cat":"lifecycle","ev":"prof_gps_refresh_ok","has_pin":true,"has_locality":true}
+{"ts":"2026-05-23T09:31:17.307Z","cat":"api","ev":"request_error","method":"POST","url":"/preferences","status":405,"code":"ERR_BAD_REQUEST"}
+{"ts":"2026-05-23T09:31:19.771Z","cat":"lifecycle","ev":"prof_fetch_done","profile_http":"ok","prefs_http":"ok"}
+{"ts":"2026-05-23T09:31:19.771Z","cat":"lifecycle","ev":"prof_profile_shape","exp_t":"number","skills_t":"string","edu_t":"object","pin_t":"string"}
+{"ts":"2026-05-23T09:31:19.779Z","cat":"lifecycle","ev":"prof_post_fetch","view_mode":true,"has_prefs":true,"types":{"exp":"number","skills":"string","pin":"string"}}
+{"ts":"2026-05-23T09:31:30.483Z","cat":"auth","ev":"logout"}
+{"ts":"2026-05-23T09:31:31.950Z","cat":"auth","ev":"logout"}
+{"ts":"2026-05-23T09:31:37.583Z","cat":"otp","ev":"send_start"}
+{"ts":"2026-05-23T09:31:39.631Z","cat":"otp","ev":"send_success","dev_mode":true}
+{"ts":"2026-05-23T09:31:39.645Z","cat":"otp","ev":"verify_screen_open","autofilled":true,"from_storage_fallback":false}
+{"ts":"2026-05-23T09:31:40.521Z","cat":"otp","ev":"verify_start"}
+{"ts":"2026-05-23T09:31:45.159Z","cat":"auth","ev":"login_success","role":"recruiter"}
+{"ts":"2026-05-23T09:31:45.166Z","cat":"websocket","ev":"connecting","user_id":19}
+{"ts":"2026-05-23T09:31:45.220Z","cat":"notification","ev":"fcm_registration_error","msg":"Please set a valid API key. A Firebase API key is required to communicate with Firebase server APIs: It authenticates yo"}
+{"ts":"2026-05-23T09:31:46.283Z","cat":"websocket","ev":"connected"}
+{"ts":"2026-05-23T09:31:47.733Z","cat":"location","ev":"capture_start","audience":"recruiter","syncProfile":false}
+{"ts":"2026-05-23T09:31:47.733Z","cat":"location","ev":"gps_begin","native":true}
+{"ts":"2026-05-23T09:31:50.476Z","cat":"location","ev":"native_gps_ok","acc":17.216}
+{"ts":"2026-05-23T09:31:50.478Z","cat":"location","ev":"capture_ok","has_pin":true,"has_locality":true}
+{"ts":"2026-05-23T09:31:50.478Z","cat":"location","ev":"post_shift_gps_ok","locality":"Ward 114 KPHB Colony"}
+{"ts":"2026-05-23T09:32:00.393Z","cat":"dispatch","ev":"shift_post_start","role":"nurse","urgency":"standard"}
+{"ts":"2026-05-23T09:32:01.857Z","cat":"api","ev":"request_error","method":"POST","url":"/shifts/","status":500,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:32:01.858Z","cat":"dispatch","ev":"shift_post_fail","msg":"Request failed with status code 500","status":500,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:33:36.935Z","cat":"dispatch","ev":"shift_post_start","role":"nurse","urgency":"standard"}
+{"ts":"2026-05-23T09:33:38.829Z","cat":"api","ev":"request_error","method":"POST","url":"/shifts/","status":500,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:33:38.829Z","cat":"dispatch","ev":"shift_post_fail","msg":"Request failed with status code 500","status":500,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:40:40.230Z","cat":"location","ev":"plugin_warmup_ok"}
+{"ts":"2026-05-23T09:40:40.237Z","cat":"lifecycle","ev":"app_start"}
+{"ts":"2026-05-23T09:40:40.238Z","cat":"auth","ev":"session_restored_from_cache","role":"recruiter"}
+{"ts":"2026-05-23T09:40:40.240Z","cat":"api","ev":"base_url","host":"mediroute-8az0.onrender.com"}
+{"ts":"2026-05-23T09:40:40.254Z","cat":"websocket","ev":"connecting","user_id":19}
+{"ts":"2026-05-23T09:40:40.560Z","cat":"notification","ev":"fcm_registration_error","msg":"Please set a valid API key. A Firebase API key is required to communicate with Firebase server APIs: It authenticates yo"}
+{"ts":"2026-05-23T09:40:41.536Z","cat":"websocket","ev":"connected"}
+{"ts":"2026-05-23T09:40:42.374Z","cat":"auth","ev":"session_validated","role":"recruiter"}
+{"ts":"2026-05-23T09:46:10.508Z","cat":"location","ev":"capture_start","audience":"recruiter","syncProfile":false}
+{"ts":"2026-05-23T09:46:10.509Z","cat":"location","ev":"gps_begin","native":true}
+{"ts":"2026-05-23T09:46:13.116Z","cat":"location","ev":"native_gps_ok","acc":19.636}
+{"ts":"2026-05-23T09:46:14.754Z","cat":"location","ev":"backend_geo_ok","path":"/geo/reverse","attempt":0}
+{"ts":"2026-05-23T09:46:14.755Z","cat":"location","ev":"reverse_parse","source":"backend","micro_field":"suburb","city_field":null,"locality":"Ward 114 KPHB Colony","pin":"500***"}
+{"ts":"2026-05-23T09:46:14.757Z","cat":"location","ev":"capture_ok","has_pin":true,"has_locality":true}
+{"ts":"2026-05-23T09:46:14.760Z","cat":"location","ev":"post_shift_gps_ok","locality":"Ward 114 KPHB Colony"}
+{"ts":"2026-05-23T09:46:18.366Z","cat":"dispatch","ev":"shift_post_start","role":"nurse","urgency":"standard"}
+{"ts":"2026-05-23T09:46:20.184Z","cat":"api","ev":"request_error","method":"POST","url":"/shifts/","status":500,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:46:20.185Z","cat":"dispatch","ev":"shift_post_fail","msg":"Request failed with status code 500","status":500,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:46:54.610Z","cat":"dispatch","ev":"shift_post_start","role":"nurse","urgency":"standard"}
+{"ts":"2026-05-23T09:46:56.022Z","cat":"api","ev":"request_error","method":"POST","url":"/shifts/","status":500,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:46:56.024Z","cat":"dispatch","ev":"shift_post_fail","msg":"Request failed with status code 500","status":500,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:49:54.752Z","cat":"dispatch","ev":"shift_post_start","role":"nurse","urgency":"standard"}
+{"ts":"2026-05-23T09:49:56.660Z","cat":"api","ev":"request_error","method":"POST","url":"/shifts/","status":500,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:49:56.661Z","cat":"dispatch","ev":"shift_post_fail","msg":"Request failed with status code 500","status":500,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:56:50.865Z","cat":"dispatch","ev":"shift_post_start","role":"nurse","urgency":"standard"}
+{"ts":"2026-05-23T09:56:52.922Z","cat":"api","ev":"request_error","method":"POST","url":"/shifts/","status":500,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T09:56:52.924Z","cat":"dispatch","ev":"shift_post_fail","msg":"Request failed with status code 500","status":500,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T10:05:21.985Z","cat":"location","ev":"plugin_warmup_ok"}
+{"ts":"2026-05-23T10:05:21.995Z","cat":"lifecycle","ev":"app_start"}
+{"ts":"2026-05-23T10:05:21.997Z","cat":"auth","ev":"session_restored_from_cache","role":"recruiter"}
+{"ts":"2026-05-23T10:05:22.000Z","cat":"api","ev":"base_url","host":"mediroute-8az0.onrender.com"}
+{"ts":"2026-05-23T10:05:22.022Z","cat":"websocket","ev":"connecting","user_id":19}
+{"ts":"2026-05-23T10:05:22.130Z","cat":"notification","ev":"fcm_registration_error","msg":"Please set a valid API key. A Firebase API key is required to communicate with Firebase server APIs: It authenticates yo"}
+{"ts":"2026-05-23T10:05:23.082Z","cat":"websocket","ev":"closed","code":1006,"clean":false}
+{"ts":"2026-05-23T10:05:23.083Z","cat":"websocket","ev":"reconnect_scheduled","delay_ms":1167,"next_backoff_sec":2}
+{"ts":"2026-05-23T10:05:23.451Z","cat":"location","ev":"capture_start","audience":"recruiter","syncProfile":false}
+{"ts":"2026-05-23T10:05:23.452Z","cat":"location","ev":"gps_begin","native":true}
+{"ts":"2026-05-23T10:05:24.250Z","cat":"websocket","ev":"connecting","user_id":19}
+{"ts":"2026-05-23T10:05:25.012Z","cat":"websocket","ev":"closed","code":1006,"clean":false}
+{"ts":"2026-05-23T10:05:25.012Z","cat":"websocket","ev":"reconnect_scheduled","delay_ms":2090,"next_backoff_sec":4}
+{"ts":"2026-05-23T10:05:25.329Z","cat":"auth","ev":"session_validated","role":"recruiter"}
+{"ts":"2026-05-23T10:05:25.336Z","cat":"websocket","ev":"connecting","user_id":19}
+{"ts":"2026-05-23T10:05:25.395Z","cat":"notification","ev":"fcm_registration_error","msg":"Please set a valid API key. A Firebase API key is required to communicate with Firebase server APIs: It authenticates yo"}
+{"ts":"2026-05-23T10:05:26.038Z","cat":"websocket","ev":"connected"}
+{"ts":"2026-05-23T10:05:26.181Z","cat":"location","ev":"native_gps_ok","acc":18.235}
+{"ts":"2026-05-23T10:05:27.787Z","cat":"location","ev":"backend_geo_ok","path":"/geo/reverse","attempt":0}
+{"ts":"2026-05-23T10:05:27.788Z","cat":"location","ev":"reverse_parse","source":"backend","micro_field":"suburb","city_field":null,"locality":"Ward 114 KPHB Colony","pin":"500***"}
+{"ts":"2026-05-23T10:05:27.788Z","cat":"location","ev":"capture_ok","has_pin":true,"has_locality":true}
+{"ts":"2026-05-23T10:05:27.789Z","cat":"location","ev":"post_shift_gps_ok","locality":"Ward 114 KPHB Colony"}
+{"ts":"2026-05-23T10:05:30.553Z","cat":"dispatch","ev":"shift_post_start","role":"nurse","urgency":"emergency"}
+{"ts":"2026-05-23T10:05:33.324Z","cat":"api","ev":"request_error","method":"POST","url":"/shifts/","status":500,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T10:05:33.325Z","cat":"dispatch","ev":"shift_post_fail","msg":"Request failed with status code 500","status":500,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T10:06:24.825Z","cat":"websocket","ev":"closed","code":1012,"clean":true}
+{"ts":"2026-05-23T10:06:24.826Z","cat":"websocket","ev":"reconnect_scheduled","delay_ms":821,"next_backoff_sec":2}
+{"ts":"2026-05-23T10:06:25.648Z","cat":"websocket","ev":"connecting","user_id":19}
+{"ts":"2026-05-23T10:06:26.463Z","cat":"websocket","ev":"connected"}
+{"ts":"2026-05-23T10:06:31.906Z","cat":"dispatch","ev":"shift_post_start","role":"nurse","urgency":"emergency"}
+{"ts":"2026-05-23T10:06:35.275Z","cat":"api","ev":"request_error","method":"POST","url":"/shifts/","status":500,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T10:06:35.277Z","cat":"dispatch","ev":"shift_post_fail","msg":"Request failed with status code 500","status":500,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T10:07:02.645Z","cat":"dispatch","ev":"shift_post_start","role":"nurse","urgency":"emergency"}
+{"ts":"2026-05-23T10:07:04.158Z","cat":"api","ev":"request_error","method":"POST","url":"/shifts/","status":500,"code":"ERR_BAD_RESPONSE"}
+{"ts":"2026-05-23T10:07:04.159Z","cat":"dispatch","ev":"shift_post_fail","msg":"Request failed with status code 500","status":500,"code":"ERR_BAD_RESPONSE"}

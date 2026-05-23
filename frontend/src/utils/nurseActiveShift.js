@@ -1,5 +1,12 @@
 import { formatShiftDateTime } from './shiftDateTime';
-import { formatRoleLabel, nurseAssignmentStatusLabel, urgencyLabel } from './staffingStatusCopy';
+import {
+  formatRoleLabel,
+  nurseAssignmentStatusLabel,
+  urgencyLabel,
+  isApplicationFinalized,
+  isApplicationPending,
+  APPLICATION_STATUS_LABEL,
+} from './staffingStatusCopy';
 import { formatAreaDisplaySync, shiftAreaSource } from './areaLabel';
 
 const ACTIVE_ASSIGNMENT = new Set(['confirmed', 'checked_in']);
@@ -13,6 +20,9 @@ export function pickActiveNurseShift(shifts) {
     const a = shift?.assignment;
     if (!a || TERMINAL_ASSIGNMENT.has(a.status)) continue;
     if (TERMINAL_SHIFT.has(shift.status)) continue;
+    if (isApplicationPending(shift) || isApplicationFinalized(shift)) {
+      return shift;
+    }
     if (ACTIVE_ASSIGNMENT.has(a.status) || shift.status === 'filled') {
       return shift;
     }
@@ -35,12 +45,8 @@ export function activeShiftSummaryLine(shift) {
 /** Second line: role + status + urgency */
 export function activeShiftMetaLine(shift) {
   if (!shift) return '';
-  const awaitingHospital =
-    shift.assignment
-    && !shift.search_closed
-    && shift.status !== 'filled';
-  const statusLabel = awaitingHospital
-    ? 'Waiting for hospital confirmation'
+  const statusLabel = isApplicationPending(shift)
+    ? APPLICATION_STATUS_LABEL.applied
     : nurseAssignmentStatusLabel(shift.assignment?.status);
   const parts = [
     formatRoleLabel(shift.role_required),

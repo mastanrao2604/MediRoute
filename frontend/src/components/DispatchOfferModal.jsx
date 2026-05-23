@@ -75,13 +75,16 @@ export default function DispatchOfferModal({ offer, onClose }) {
   if (result === 'accepted') {
     content = (
       <div
-        className="fixed inset-0 z-[100] flex items-center justify-center bg-green-700"
+        className="fixed inset-0 z-[100] flex items-center justify-center bg-indigo-700"
         style={{ paddingTop: 'env(safe-area-inset-top, 0px)', paddingBottom: 'var(--mobile-bottom-safe)' }}
       >
         <div className="text-center text-white px-6 max-w-sm">
-          <h2 className="text-2xl font-bold mb-1">Shift confirmed</h2>
-          <p className="text-green-100 text-base mt-1">{offer.hospital_name}</p>
-          <p className="text-green-200 text-sm mt-1">{formatShiftDateTime(offer.shift_start)}</p>
+          <h2 className="text-2xl font-bold mb-1">Application submitted</h2>
+          <p className="text-indigo-100 text-sm mt-2">
+            The hospital is reviewing your profile. You will be notified when confirmed.
+          </p>
+          <p className="text-indigo-200 text-base mt-3">{offer.hospital_name}</p>
+          <p className="text-indigo-200/80 text-sm mt-1">{formatShiftDateTime(offer.shift_start)}</p>
         </div>
       </div>
     );
