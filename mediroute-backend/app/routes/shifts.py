@@ -18,6 +18,8 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status, Query
 from pydantic import BaseModel, field_validator
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -40,6 +42,24 @@ from .. import crud
 logger = logging.getLogger(__name__)
 logger.parent = logging.getLogger("uvicorn.error")
 router = APIRouter(prefix="/shifts", tags=["Shifts"])
+
+_shift_cols_ready = False
+
+
+def _ensure_shift_location_columns(db: Session) -> None:
+    """Idempotent DDL for pilot DBs where Alembic e5 did not run yet."""
+    global _shift_cols_ready
+    if _shift_cols_ready:
+        return
+    for stmt in (
+        "ALTER TABLE shift_requests ADD COLUMN IF NOT EXISTS hospital_pincode VARCHAR(10)",
+        "ALTER TABLE shift_requests ADD COLUMN IF NOT EXISTS hospital_locality VARCHAR(255)",
+        "ALTER TABLE shift_requests ADD COLUMN IF NOT EXISTS nurses_required INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE shift_requests ADD COLUMN IF NOT EXISTS search_closed_at TIMESTAMPTZ",
+    ):
+        db.execute(text(stmt))
+    db.commit()
+    _shift_cols_ready = True
 
 
 # ── Pydantic schemas ──────────────────────────────────────────────────────────
@@ -547,39 +567,47 @@ async def create_shift(
             detail="shift_start cannot be in the past.",
         )
 
-    shift = models.ShiftRequest(
-        city_id=req.city_id or "HYD",
-        hospital_user_id=current_user.id,
-        role_required=models.UserRole(req.role_required),
-        specialty=req.specialty,
-        hospital_name=req.hospital_name,
-        hospital_latitude=req.hospital_latitude,
-        hospital_longitude=req.hospital_longitude,
-        hospital_pincode=req.hospital_pincode,
-        hospital_locality=(req.hospital_locality or "").strip() or None,
-        shift_start=_to_utc_naive(req.shift_start),
-        shift_end=req.shift_end,
-        urgency=models.ShiftUrgency(req.urgency),
-        pay_rate=req.pay_rate,
-        notes=req.notes,
-        idempotency_key=idempotency_key,
-        dispatch_radius_km=req.dispatch_radius_km or 10.0,
-        nurses_required=max(1, int(req.nurses_required or 1)),
-    )
-    db.add(shift)
-    db.commit()
-    db.refresh(shift)
+    try:
+        _ensure_shift_location_columns(db)
+        shift = models.ShiftRequest(
+            city_id=req.city_id or "HYD",
+            hospital_user_id=current_user.id,
+            role_required=models.UserRole(req.role_required),
+            specialty=req.specialty,
+            hospital_name=req.hospital_name,
+            hospital_latitude=req.hospital_latitude,
+            hospital_longitude=req.hospital_longitude,
+            hospital_pincode=req.hospital_pincode,
+            hospital_locality=(req.hospital_locality or "").strip() or None,
+            shift_start=_to_utc_naive(req.shift_start),
+            shift_end=_to_utc_naive(req.shift_end) if req.shift_end else None,
+            urgency=models.ShiftUrgency(req.urgency),
+            pay_rate=req.pay_rate,
+            notes=req.notes,
+            idempotency_key=idempotency_key,
+            dispatch_radius_km=req.dispatch_radius_km or 10.0,
+            nurses_required=max(1, int(req.nurses_required or 1)),
+        )
+        db.add(shift)
+        db.commit()
+        db.refresh(shift)
 
-    # Timeline event
-    event = models.ShiftTimelineEvent(
-        shift_request_id=shift.id,
-        event_type=SHIFT_CREATED,
-        actor_user_id=current_user.id,
-        city_id=shift.city_id,
-        payload={"urgency": shift.urgency.value, "role": shift.role_required.value},
-    )
-    db.add(event)
-    db.commit()
+        event = models.ShiftTimelineEvent(
+            shift_request_id=shift.id,
+            event_type=SHIFT_CREATED,
+            actor_user_id=current_user.id,
+            city_id=shift.city_id,
+            payload={"urgency": shift.urgency.value, "role": shift.role_required.value},
+        )
+        db.add(event)
+        db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        logger.exception("[shifts] create_shift DB error user=%s", current_user.id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not save shift. Please retry in a moment.",
+        ) from exc
 
     logger.info(
         "[shifts] shift %d created by user %d (%s, %s, city=%s)",

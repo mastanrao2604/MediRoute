@@ -6,6 +6,7 @@ import { useAuth } from '../context/AuthContext';
 import { mlog, mlogError } from '../utils/mobileLogger';
 import { captureCurrentArea, openAppSettings } from '../utils/deviceLocation';
 import { geocodePincode } from '../utils/geocodePincode';
+import { formatAreaDisplaySync } from '../utils/areaLabel';
 import { datetimeLocalToUtcIso, nowDatetimeLocalPlusMinutes } from '../utils/shiftDateTime';
 
 const ROLES = [
@@ -85,7 +86,8 @@ export default function PostShift() {
   // 'detecting' | 'gps_ok' | 'pincode_mode' | 'geocoding' | 'geocode_ok' | 'geocode_err'
   const [locMode, setLocMode] = useState('detecting');
   const [pincode, setPincode] = useState('');
-  const [areaLabel, setAreaLabel] = useState(''); // human-readable confirmed area
+  const [areaLabel, setAreaLabel] = useState('');
+  const [hospitalLocality, setHospitalLocality] = useState('');
   const [geocodeErr, setGeocodeErr] = useState('');
   /** Resolved from GPS via reverse geocode (6-digit pin when available). */
   const [gpsDerivedPincode, setGpsDerivedPincode] = useState('');
@@ -105,6 +107,7 @@ export default function PostShift() {
     setGpsDerivedPincode('');
     setGpsRevWarn('');
     setAreaLabel('');
+    setHospitalLocality('');
     setLocErr('');
     setShowLocSettings(false);
     setLocMode('detecting');
@@ -113,13 +116,16 @@ export default function PostShift() {
       setLat(cap.lat);
       setLng(cap.lng);
       if (cap.pincode) setGpsDerivedPincode(cap.pincode);
-      if (cap.locality) {
-        setAreaLabel(
-          cap.pincode ? `${cap.locality} • ${cap.pincode}` : cap.locality,
-        );
-      } else if (cap.displayLabel) {
-        setAreaLabel(cap.displayLabel);
-      }
+      const locName = (cap.locality || cap.displayLabel || '').trim();
+      if (locName) setHospitalLocality(locName);
+      setAreaLabel(
+        formatAreaDisplaySync({
+          locality: locName,
+          pincode: cap.pincode,
+          cityId: 'HYD',
+          includePincode: Boolean(cap.pincode),
+        }) || locName || 'Your current area',
+      );
       setLocMode('gps_ok');
       mlog('location', 'post_shift_gps_ok', { locality: cap.locality?.slice(0, 24) });
       return;
@@ -150,7 +156,15 @@ export default function PostShift() {
       const result = await geocodePincode(clean);
       setLat(result.lat);
       setLng(result.lng);
-      setAreaLabel(`${result.displayName} — ${clean}`);
+      setHospitalLocality(result.displayName || '');
+      setAreaLabel(
+        formatAreaDisplaySync({
+          locality: result.displayName,
+          pincode: clean,
+          cityId: 'HYD',
+          includePincode: true,
+        }) || result.displayName || clean,
+      );
       setLocMode('geocode_ok');
       console.log('[PostShift] geocode ok:', result.lat, result.lng, result.displayName);
     } catch (e) {
@@ -202,8 +216,8 @@ export default function PostShift() {
     if (shiftEndISO)           payload.shift_end  = shiftEndISO;
     if (form.pay_rate.trim())  payload.pay_rate   = form.pay_rate.trim();
     if (form.notes.trim())     payload.notes      = form.notes.trim();
-    const localityFromLabel = (areaLabel || '').split('—')[0].trim();
-    if (localityFromLabel) payload.hospital_locality = localityFromLabel;
+    const loc = hospitalLocality.trim();
+    if (loc) payload.hospital_locality = loc;
 
     console.log('[PostShift] submit urgency=%s role=%s', payload.urgency, payload.role_required);
     mlog('dispatch', 'shift_post_start', { role: payload.role_required, urgency: payload.urgency });
@@ -221,10 +235,15 @@ export default function PostShift() {
       console.error('[PostShift] error:', err?.response?.status, JSON.stringify(err?.response?.data));
       mlogError('dispatch', 'shift_post_fail', err);
       const raw = err?.response?.data?.detail;
+      const status = err?.response?.status;
       setFormError(
         typeof raw === 'string' ? raw
           : Array.isArray(raw) ? raw.map((e) => e.msg || String(e)).join('. ')
-          : 'Failed to post shift. Check your connection and try again.',
+          : status === 500
+            ? 'Could not save this shift. Please try again in a moment.'
+            : status === 403
+              ? 'Your hospital account must be verified before posting shifts.'
+              : 'Could not post shift. Check your connection and try again.',
       );
     } finally {
       setSubmitting(false);
@@ -266,26 +285,30 @@ export default function PostShift() {
           {locMode === 'gps_ok' && (
             <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 flex flex-col gap-2">
               <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2 text-sm text-green-700">
-                  <span>📍</span>
-                  <span className="font-medium">Using your current location</span>
+                <div className="flex items-center gap-2 text-sm text-green-700 min-w-0">
+                  <span className="shrink-0">📍</span>
+                  <span className="font-medium truncate">
+                    {areaLabel || hospitalLocality || 'Your current area'}
+                  </span>
                 </div>
                 <button
                   type="button"
                   onClick={() => {
                     setGpsDerivedPincode('');
                     setGpsRevWarn('');
+                    setHospitalLocality('');
+                    setAreaLabel('');
                     setLocMode('pincode_mode');
                     setTimeout(() => pincodeRef.current?.focus(), 100);
                   }}
-                  className="text-xs text-green-600 underline whitespace-nowrap"
+                  className="text-xs text-green-600 underline whitespace-nowrap shrink-0"
                 >
                   Change
                 </button>
               </div>
               {gpsDerivedPincode.length === 6 && (
-                <p className="text-xs text-green-800">
-                  Area pincode <span className="font-mono font-semibold">{gpsDerivedPincode}</span> detected — matching will prioritise nurses in this area.
+                <p className="text-xs text-green-800/80">
+                  Postcode {gpsDerivedPincode} saved for matching (not shown to staff as your area name).
                 </p>
               )}
               {gpsDerivedPincode.length !== 6 && gpsRevWarn && (
