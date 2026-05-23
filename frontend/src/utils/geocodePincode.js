@@ -80,19 +80,95 @@ async function nominatimFetch(url) {
   }
 }
 
-async function backendGeoGet(path, params = {}) {
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function backendGeoGet(path, params = {}, { retries = 2 } = {}) {
   const api = (await import('../api/axios')).default;
-  try {
-    const res = await api.get(path, { params, timeout: 16_000 });
-    mlog('location', 'backend_geo_ok', { path });
-    return res.data;
-  } catch (e) {
-    mlogError('location', 'backend_geo_fail', e, { path });
-    const detail = e?.response?.data?.detail;
-    if (typeof detail === 'string') throw new Error(detail);
-    if (e?.code === 'ECONNABORTED') throw new Error('Geocode timed out — check network and retry.');
-    throw new Error('Could not resolve location. Try again or enter pincode manually.');
+  let lastErr;
+  for (let attempt = 0; attempt < retries; attempt += 1) {
+    try {
+      const res = await api.get(path, { params, timeout: 16_000 });
+      mlog('location', 'backend_geo_ok', { path, attempt });
+      return res.data;
+    } catch (e) {
+      lastErr = e;
+      const status = e?.response?.status;
+      mlogError('location', 'backend_geo_fail', e, { path, attempt, status });
+      if ((status === 503 || status === 502) && attempt < retries - 1) {
+        await sleep(1500 * (attempt + 1));
+        continue;
+      }
+    }
   }
+  const detail = lastErr?.response?.data?.detail;
+  if (typeof detail === 'string') throw new Error(detail);
+  if (lastErr?.code === 'ECONNABORTED') {
+    throw new Error('Geocode timed out — check network and retry.');
+  }
+  throw lastErr || new Error('Geocode unavailable');
+}
+
+/** Direct Nominatim (fallback when backend proxy is rate-limited). */
+async function reverseGeocodeDirect(lat, lng) {
+  const la = Number(lat);
+  const ln = Number(lng);
+  const url =
+    `https://nominatim.openstreetmap.org/reverse` +
+    `?lat=${la}&lon=${ln}&format=json&addressdetails=1&zoom=18`;
+
+  const place = await nominatimFetch(url);
+  const a = place.address || {};
+  const rawPostcode = String(a.postcode || '').replace(/\D/g, '');
+  let pincode = rawPostcode.length >= 6 ? rawPostcode.slice(0, 6) : null;
+  if (pincode && pincode.length !== 6) pincode = null;
+  const parsed = parseLocalityFromAddress(a, place.display_name);
+  return {
+    pincode,
+    locality: parsed.label || undefined,
+    displayName: place.display_name,
+    source: 'nominatim_direct',
+    microField: parsed.microField,
+    cityField: parsed.cityField,
+    addressKeys: Object.keys(a).slice(0, 14).join(','),
+  };
+}
+
+/** Pilot service area when geocoders are unavailable but GPS succeeded. */
+export function gracefulAreaFallback(lat, lng) {
+  const la = Number(lat);
+  const ln = Number(lng);
+  const inHyderabad =
+    Number.isFinite(la) &&
+    Number.isFinite(ln) &&
+    la >= 17.15 &&
+    la <= 17.72 &&
+    ln >= 78.25 &&
+    ln <= 78.65;
+  const last = loadLastKnownArea();
+  if (last?.locality) {
+    return {
+      pincode: normalizeIndianPincode(last.pincode),
+      locality: last.locality,
+      displayName: last.locality,
+      source: 'last_known',
+    };
+  }
+  if (inHyderabad) {
+    return {
+      pincode: null,
+      locality: 'Hyderabad, Telangana',
+      displayName: 'Hyderabad, Telangana',
+      source: 'region_fallback',
+    };
+  }
+  return {
+    pincode: null,
+    locality: undefined,
+    displayName: '',
+    source: 'none',
+  };
 }
 
 const useBackendGeo = () => Capacitor.isNativePlatform();
@@ -154,17 +230,52 @@ export async function reverseGeocodeCoords(lat, lng) {
   let displayName;
 
   if (useBackendGeo()) {
-    const data = await backendGeoGet('/geo/reverse', { lat: la, lng: ln });
-    pincode = normalizeIndianPincode(data.pincode);
-    locality = (data.locality || '').trim() || undefined;
-    displayName = data.display_name;
-    mlog('location', 'reverse_parse', {
-      source: 'backend',
-      micro_field: data.micro_field || null,
-      city_field: data.city_field || null,
-      locality: locality ? locality.slice(0, 48) : null,
-      pin: pincode ? `${pincode.slice(0, 3)}***` : null,
-    });
+    let data;
+    let source = 'backend';
+    try {
+      data = await backendGeoGet('/geo/reverse', { lat: la, lng: ln });
+    } catch (backendErr) {
+      mlog('location', 'reverse_backend_fallback', { msg: backendErr?.message });
+      try {
+        const direct = await reverseGeocodeDirect(la, ln);
+        pincode = normalizeIndianPincode(direct.pincode);
+        locality = direct.locality;
+        displayName = direct.displayName;
+        source = direct.source;
+        mlog('location', 'reverse_parse', {
+          source,
+          micro_field: direct.microField || null,
+          city_field: direct.cityField || null,
+          address_keys: direct.addressKeys || null,
+          locality: locality ? locality.slice(0, 48) : null,
+          pin: pincode ? `${pincode.slice(0, 3)}***` : null,
+        });
+      } catch (directErr) {
+        mlogError('location', 'reverse_direct_fail', directErr);
+        const graceful = gracefulAreaFallback(la, ln);
+        pincode = graceful.pincode;
+        locality = graceful.locality;
+        displayName = graceful.displayName;
+        source = graceful.source;
+        mlog('location', 'reverse_parse', {
+          source,
+          locality: locality ? locality.slice(0, 48) : null,
+          pin: pincode ? `${pincode.slice(0, 3)}***` : null,
+        });
+      }
+    }
+    if (source === 'backend' && data) {
+      pincode = normalizeIndianPincode(data.pincode);
+      locality = (data.locality || '').trim() || undefined;
+      displayName = data.display_name;
+      mlog('location', 'reverse_parse', {
+        source: 'backend',
+        micro_field: data.micro_field || null,
+        city_field: data.city_field || null,
+        locality: locality ? locality.slice(0, 48) : null,
+        pin: pincode ? `${pincode.slice(0, 3)}***` : null,
+      });
+    }
   } else {
     const url =
       `https://nominatim.openstreetmap.org/reverse` +

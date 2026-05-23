@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import re
+import threading
+import time
+from collections import OrderedDict
 from typing import Any
 
 import requests
@@ -18,6 +21,14 @@ NOMINATIM_HEADERS = {
     "User-Agent": "MediRoute/1.0 (healthcare staffing; support@mediroute.in)",
 }
 TIMEOUT_SEC = 14
+# Nominatim usage policy: max 1 request/second per app.
+_MIN_NOMINATIM_INTERVAL_SEC = 1.1
+_CACHE_TTL_SEC = 86_400
+_CACHE_MAX_ENTRIES = 800
+
+_nominatim_lock = threading.Lock()
+_last_nominatim_at = 0.0
+_geocode_cache: OrderedDict[tuple, tuple[float, Any]] = OrderedDict()
 
 
 _SKIP_LOCALITY_RE = re.compile(
@@ -112,21 +123,93 @@ def _normalize_pincode(raw: str | None) -> str | None:
     return digits[:6] if len(digits) >= 6 else None
 
 
-def _nominatim_get(path: str, params: dict[str, Any]) -> Any:
-    try:
-        res = requests.get(
-            f"{NOMINATIM_BASE}{path}",
-            params=params,
-            headers=NOMINATIM_HEADERS,
-            timeout=TIMEOUT_SEC,
+def _cache_key(path: str, params: dict[str, Any]) -> tuple:
+    lat = params.get("lat")
+    lon = params.get("lon")
+    if lat is not None and lon is not None:
+        return (
+            path,
+            round(float(lat), 4),
+            round(float(lon), 4),
+            params.get("zoom"),
         )
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail="Geocode service unreachable") from exc
-    if res.status_code == 429:
-        raise HTTPException(status_code=503, detail="Geocode rate limited — retry in a moment")
-    if not res.ok:
+    postal = params.get("postalcode")
+    if postal:
+        return (path, str(postal))
+    return (path, tuple(sorted((k, str(v)) for k, v in params.items())))
+
+
+def _cache_get(key: tuple) -> Any | None:
+    row = _geocode_cache.get(key)
+    if not row:
+        return None
+    ts, data = row
+    if time.time() - ts > _CACHE_TTL_SEC:
+        return None
+    return data
+
+
+def _cache_get_stale(key: tuple) -> Any | None:
+    row = _geocode_cache.get(key)
+    return row[1] if row else None
+
+
+def _cache_set(key: tuple, data: Any) -> None:
+    _geocode_cache[key] = (time.time(), data)
+    _geocode_cache.move_to_end(key)
+    while len(_geocode_cache) > _CACHE_MAX_ENTRIES:
+        _geocode_cache.popitem(last=False)
+
+
+def _nominatim_http(path: str, params: dict[str, Any]) -> Any:
+    global _last_nominatim_at
+    with _nominatim_lock:
+        wait = _MIN_NOMINATIM_INTERVAL_SEC - (time.monotonic() - _last_nominatim_at)
+        if wait > 0:
+            time.sleep(wait)
+        last_err: HTTPException | None = None
+        for attempt in range(3):
+            try:
+                res = requests.get(
+                    f"{NOMINATIM_BASE}{path}",
+                    params=params,
+                    headers=NOMINATIM_HEADERS,
+                    timeout=TIMEOUT_SEC,
+                )
+            except requests.RequestException as exc:
+                raise HTTPException(
+                    status_code=502, detail="Geocode service unreachable"
+                ) from exc
+            if res.status_code == 429:
+                last_err = HTTPException(
+                    status_code=503, detail="Geocode rate limited — retry in a moment"
+                )
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            if not res.ok:
+                raise HTTPException(status_code=502, detail="Geocode service error")
+            _last_nominatim_at = time.monotonic()
+            return res.json()
+        if last_err:
+            raise last_err
         raise HTTPException(status_code=502, detail="Geocode service error")
-    return res.json()
+
+
+def _nominatim_get(path: str, params: dict[str, Any]) -> Any:
+    key = _cache_key(path, params)
+    hit = _cache_get(key)
+    if hit is not None:
+        return hit
+    try:
+        data = _nominatim_http(path, params)
+    except HTTPException as exc:
+        if exc.status_code == 503:
+            stale = _cache_get_stale(key)
+            if stale is not None:
+                return stale
+        raise
+    _cache_set(key, data)
+    return data
 
 
 @router.get("/reverse")

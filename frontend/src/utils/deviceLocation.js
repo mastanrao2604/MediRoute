@@ -14,6 +14,7 @@ import {
   normalizeIndianPincode,
   savePincode,
   saveLastKnownArea,
+  gracefulAreaFallback,
 } from './geocodePincode';
 
 export const LOCATION_AUDIENCE = {
@@ -267,10 +268,10 @@ export function locationErrorMessage(err, audience = 'job_seeker') {
   }
   if (code === 'unsupported') return 'Location is not supported. Enter pincode manually.';
   if (code === 'reverse_failed') {
-    return 'Could not resolve your area name. Coordinates saved — enter pincode if needed.';
+    return 'We saved your GPS location. Add your 6-digit pincode below if your area name did not appear.';
   }
   if (code === 'no_pincode') {
-    return 'GPS worked but pincode was not found. Enter your 6-digit pincode manually.';
+    return 'Area name updated. Add your 6-digit pincode for best nearby matching.';
   }
   if (code === 'denied') return copy.denied;
   return err?.message || copy.denied;
@@ -323,14 +324,8 @@ export async function captureCurrentArea({
       rev = await reverseGeocodeCoords(lat, lng);
     } catch (e) {
       mlogError('location', 'reverse_fail', e);
-      return {
-        ok: false,
-        lat,
-        lng,
-        permissionState: 'granted',
-        error: { code: 'reverse_failed' },
-        userMessage: locationErrorMessage({ code: 'reverse_failed' }, audience),
-      };
+      rev = gracefulAreaFallback(lat, lng);
+      mlog('location', 'reverse_graceful', { source: rev.source || 'unknown' });
     }
 
     const pc = normalizeIndianPincode(rev.pincode);
@@ -354,12 +349,16 @@ export async function captureCurrentArea({
     }
 
     if (!pc && !locality) {
+      mlog('location', 'capture_no_area_label', {});
       return {
-        ok: false,
+        ok: true,
         lat,
         lng,
+        pincode: null,
+        locality: '',
+        displayLabel: '',
         permissionState: 'granted',
-        error: { code: 'no_pincode' },
+        needsPincode: true,
         userMessage: locationErrorMessage({ code: 'no_pincode' }, audience),
       };
     }
