@@ -20,29 +20,91 @@ NOMINATIM_HEADERS = {
 TIMEOUT_SEC = 14
 
 
-def _format_locality(address: dict[str, Any], display_name: str = "") -> str:
-    suburb = (
-        address.get("suburb")
-        or address.get("neighbourhood")
-        or address.get("quarter")
-        or address.get("residential")
-    )
-    town = (
-        address.get("city")
-        or address.get("town")
-        or address.get("village")
-        or address.get("municipality")
-    )
-    if suburb and town and suburb != town:
-        return f"{suburb}, {town}"
-    if suburb:
-        return suburb
-    if town:
-        return town
-    parts = [p.strip() for p in (display_name or "").split(",") if p.strip()]
-    if len(parts) >= 2:
-        return ", ".join(parts[:2])
-    return parts[0] if parts else ""
+_SKIP_LOCALITY_RE = re.compile(
+    r"^(india|telangana|andhra pradesh|hyderabad|hyd|greater hyderabad|telangana zone|\d{6})$",
+    re.I,
+)
+
+_MICRO_KEYS = (
+    "suburb",
+    "neighbourhood",
+    "quarter",
+    "residential",
+    "locality",
+    "city_district",
+    "borough",
+    "hamlet",
+    "village",
+)
+_CITY_KEYS = ("town", "city", "municipality")
+
+
+def _clean_part(raw: Any) -> str:
+    v = str(raw or "").strip()
+    if not v or _SKIP_LOCALITY_RE.match(v) or re.search(r"\bzone$", v, re.I):
+        return ""
+    return v
+
+
+def _first_field(address: dict[str, Any], keys: tuple[str, ...]) -> tuple[str, str] | None:
+    for key in keys:
+        value = _clean_part(address.get(key))
+        if value:
+            return key, value
+    return None
+
+
+def _locality_from_display_name(display_name: str) -> tuple[str, str, str] | None:
+    parts = [
+        p.strip()
+        for p in (display_name or "").split(",")
+        if p.strip() and not _SKIP_LOCALITY_RE.match(p.strip()) and not re.fullmatch(r"\d{6}", p.strip())
+    ]
+    for idx, part in enumerate(parts):
+        if part.lower() == "hyderabad" and idx > 0:
+            candidate = parts[idx - 1]
+            if candidate and not re.search(r"\b(road|street|lane|marg|highway|flyover)\b", candidate, re.I):
+                return "display_name", candidate, "Hyderabad"
+    for part in parts:
+        if re.search(r"\b(road|street|lane|marg|highway)\b", part, re.I):
+            continue
+        if 3 <= len(part) <= 40:
+            return "display_name", part, ""
+    return None
+
+
+def _parse_locality(address: dict[str, Any], display_name: str = "") -> dict[str, Any]:
+    micro = _first_field(address, _MICRO_KEYS)
+    city = _first_field(address, _CITY_KEYS)
+    if micro and city and micro[1].lower() == city[1].lower():
+        city = None
+
+    if micro:
+        city_name = city[1] if city else ""
+        if city_name and micro[1].lower() != "hyderabad":
+            label = f"{micro[1]}, {city_name}"
+        else:
+            label = micro[1]
+        return {
+            "label": label,
+            "micro_field": micro[0],
+            "city_field": city[0] if city else None,
+        }
+
+    from_display = _locality_from_display_name(display_name)
+    if from_display:
+        field, value, city_hint = from_display
+        label = f"{value}, {city_hint}" if city_hint else value
+        return {
+            "label": label,
+            "micro_field": field,
+            "city_field": "city" if city_hint else None,
+        }
+
+    if city:
+        return {"label": city[1], "micro_field": None, "city_field": city[0]}
+
+    return {"label": "", "micro_field": None, "city_field": None}
 
 
 def _normalize_pincode(raw: str | None) -> str | None:
@@ -75,15 +137,18 @@ def reverse_geocode(
 ):
     data = _nominatim_get(
         "/reverse",
-        {"lat": lat, "lon": lng, "format": "json", "addressdetails": 1},
+        {"lat": lat, "lon": lng, "format": "json", "addressdetails": 1, "zoom": 18},
     )
     address = data.get("address") or {}
     pincode = _normalize_pincode(address.get("postcode"))
-    locality = _format_locality(address, data.get("display_name") or "")
+    parsed = _parse_locality(address, data.get("display_name") or "")
+    locality = parsed["label"]
     return {
         "pincode": pincode,
         "locality": locality or None,
         "display_name": data.get("display_name"),
+        "micro_field": parsed.get("micro_field"),
+        "city_field": parsed.get("city_field"),
         "lat": float(data.get("lat") or lat),
         "lng": float(data.get("lon") or lng),
     }
@@ -111,7 +176,8 @@ def geocode_pincode(
         raise HTTPException(status_code=404, detail="Pincode not found")
     place = rows[0]
     address = place.get("address") or {}
-    display_name = _format_locality(address, place.get("display_name") or "")
+    parsed = _parse_locality(address, place.get("display_name") or "")
+    display_name = parsed["label"]
     return {
         "pincode": clean,
         "locality": display_name or None,

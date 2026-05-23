@@ -123,7 +123,7 @@ export async function geocodePincode(pincode) {
 
   const place = data[0];
   const a = place.address || {};
-  const displayName = formatLocalityFromAddress(a, place.display_name);
+  const displayName = parseLocalityFromAddress(a, place.display_name).label;
 
   const result = {
     lat: parseFloat(place.lat),
@@ -158,18 +158,34 @@ export async function reverseGeocodeCoords(lat, lng) {
     pincode = normalizeIndianPincode(data.pincode);
     locality = (data.locality || '').trim() || undefined;
     displayName = data.display_name;
+    mlog('location', 'reverse_parse', {
+      source: 'backend',
+      micro_field: data.micro_field || null,
+      city_field: data.city_field || null,
+      locality: locality ? locality.slice(0, 48) : null,
+      pin: pincode ? `${pincode.slice(0, 3)}***` : null,
+    });
   } else {
     const url =
       `https://nominatim.openstreetmap.org/reverse` +
-      `?lat=${la}&lon=${ln}&format=json&addressdetails=1`;
+      `?lat=${la}&lon=${ln}&format=json&addressdetails=1&zoom=18`;
 
     const place = await nominatimFetch(url);
     const a = place.address || {};
     const rawPostcode = String(a.postcode || '').replace(/\D/g, '');
     pincode = rawPostcode.length >= 6 ? rawPostcode.slice(0, 6) : null;
     if (pincode && pincode.length !== 6) pincode = null;
-    locality = formatLocalityFromAddress(a, place.display_name) || undefined;
+    const parsed = parseLocalityFromAddress(a, place.display_name);
+    locality = parsed.label || undefined;
     displayName = place.display_name;
+    mlog('location', 'reverse_parse', {
+      source: 'nominatim',
+      micro_field: parsed.microField || null,
+      city_field: parsed.cityField || null,
+      address_keys: Object.keys(a).slice(0, 14).join(','),
+      locality: locality ? locality.slice(0, 48) : null,
+      pin: pincode ? `${pincode.slice(0, 3)}***` : null,
+    });
   }
 
   const out = {
@@ -191,18 +207,105 @@ export async function reverseGeocodeCoords(lat, lng) {
   return out;
 }
 
-/** Prefer suburb/neighbourhood over city codes for display. */
-export function formatLocalityFromAddress(a = {}, displayNameFallback = '') {
-  const suburb = a.suburb || a.neighbourhood || a.quarter || a.residential;
-  const town = a.city || a.town || a.village || a.municipality;
-  if (suburb && town && suburb !== town) {
-    return `${suburb}, ${town}`;
+/** OSM micro-area keys (Hyderabad suburbs often appear as city_district). */
+const MICRO_LOCALITY_KEYS = [
+  'suburb',
+  'neighbourhood',
+  'quarter',
+  'residential',
+  'locality',
+  'city_district',
+  'borough',
+  'hamlet',
+  'village',
+];
+
+const CITY_LABEL_KEYS = ['town', 'city', 'municipality'];
+
+const SKIP_LOCALITY_RE =
+  /^(india|telangana|andhra pradesh|hyderabad|hyd|greater hyderabad|telangana zone|\d{6})$/i;
+
+function cleanPart(raw) {
+  const v = String(raw || '').trim();
+  if (!v || SKIP_LOCALITY_RE.test(v) || /\bzone$/i.test(v)) return '';
+  return v;
+}
+
+function firstAddressField(a, keys) {
+  for (const key of keys) {
+    const value = cleanPart(a[key]);
+    if (value) return { field: key, value };
   }
-  if (suburb) return suburb;
-  if (town) return town;
-  const parts = (displayNameFallback || '').split(',').map((s) => s.trim()).filter(Boolean);
-  if (parts.length >= 2) return parts.slice(0, 2).join(', ');
-  return parts[0] || '';
+  return null;
+}
+
+/** Parse Nominatim display_name when address components lack suburb. */
+export function localityFromDisplayName(displayNameFallback = '') {
+  const parts = String(displayNameFallback || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .filter((p) => !SKIP_LOCALITY_RE.test(p) && !/^\d{6}$/.test(p));
+
+  const cityIdx = parts.findIndex((p) => /^hyderabad$/i.test(p));
+  if (cityIdx > 0) {
+    const candidate = parts[cityIdx - 1];
+    if (candidate && !/\b(road|street|lane|marg|highway|flyover)\b/i.test(candidate)) {
+      return { field: 'display_name', value: candidate, city: 'Hyderabad' };
+    }
+  }
+
+  for (const p of parts) {
+    if (/\b(road|street|lane|marg|highway)\b/i.test(p)) continue;
+    if (/^sec(tor)?\s*\d/i.test(p)) return { field: 'display_name', value: p };
+    if (p.length >= 3 && p.length <= 40) return { field: 'display_name', value: p };
+  }
+  return null;
+}
+
+/**
+ * Prefer suburb/neighbourhood/city_district over city-only labels.
+ * @returns {{ label: string, microField?: string, cityField?: string }}
+ */
+export function parseLocalityFromAddress(a = {}, displayNameFallback = '') {
+  const micro = firstAddressField(a, MICRO_LOCALITY_KEYS);
+  let cityPart = firstAddressField(a, CITY_LABEL_KEYS);
+
+  if (cityPart && micro && cityPart.value.toLowerCase() === micro.value.toLowerCase()) {
+    cityPart = null;
+  }
+
+  if (micro) {
+    const cityName = cityPart?.value || (micro.field === 'display_name' ? '' : '');
+    const label =
+      cityName && !/^hyderabad$/i.test(micro.value)
+        ? `${micro.value}, ${cityName}`
+        : micro.value;
+    return {
+      label,
+      microField: micro.field,
+      cityField: cityPart?.field,
+    };
+  }
+
+  const fromDisplay = localityFromDisplayName(displayNameFallback);
+  if (fromDisplay) {
+    const label = fromDisplay.city
+      ? `${fromDisplay.value}, ${fromDisplay.city}`
+      : fromDisplay.value;
+    return { label, microField: fromDisplay.field, cityField: fromDisplay.city ? 'city' : undefined };
+  }
+
+  if (cityPart) {
+    return { label: cityPart.value, microField: undefined, cityField: cityPart.field };
+  }
+
+  return { label: '', microField: undefined, cityField: undefined };
+}
+
+/** @deprecated Use parseLocalityFromAddress — kept for callers expecting a string. */
+export function formatLocalityFromAddress(a = {}, displayNameFallback = '') {
+  return parseLocalityFromAddress(a, displayNameFallback).label;
 }
 
 /** Canonical 6-digit Indian pincode or null */
