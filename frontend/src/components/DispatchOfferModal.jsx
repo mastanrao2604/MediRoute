@@ -8,6 +8,7 @@ import api from '../api/axios';
 import { useLockBodyScroll } from '../hooks/useLockBodyScroll';
 import { formatShiftDateTime } from '../utils/shiftDateTime';
 import { formatRoleLabel, humanizeStaffingError, urgencyLabel } from '../utils/staffingStatusCopy';
+import { SHIFT_ACCEPT_NEARBY_ONLY_MSG } from '../utils/shiftVisibility';
 
 const URGENCY_COLORS = {
   emergency: { bg: 'bg-red-600', ring: 'ring-red-400', text: 'text-red-100', badge: 'bg-red-800' },
@@ -23,12 +24,18 @@ export default function DispatchOfferModal({ offer, onClose }) {
 
   useLockBodyScroll(Boolean(offer));
 
+  const canAccept = offer?.accept_eligible !== false;
+  const acceptBlockedMsg =
+    offer?.accept_blocked_message || SHIFT_ACCEPT_NEARBY_ONLY_MSG;
+
   const handleAccept = useCallback(async () => {
-    if (responding || result) return;
+    if (responding || result || offer?.accept_eligible === false) return;
     setResponding(true);
     try {
       await api.post(`/dispatch/offers/${offer.offer_id}/accept`);
       setResult('accepted');
+      window.dispatchEvent(new CustomEvent('mr-nurse-active-shift-refresh'));
+      window.dispatchEvent(new CustomEvent('mr-jobs-shifts-refresh'));
       setTimeout(onClose, 2500);
     } catch (err) {
       const detail = err.response?.data?.detail;
@@ -162,6 +169,11 @@ export default function DispatchOfferModal({ offer, onClose }) {
                 {formatShiftDateTime(offer.shift_start) ? ` (${formatShiftDateTime(offer.shift_start)})` : ''}.
               </p>
             )}
+            {!canAccept && (
+              <p className="text-white/90 text-xs text-center mb-3 bg-white/10 rounded-lg px-3 py-2">
+                {acceptBlockedMsg}
+              </p>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <button
                 type="button"
@@ -174,10 +186,10 @@ export default function DispatchOfferModal({ offer, onClose }) {
               <button
                 type="button"
                 onClick={handleAccept}
-                disabled={responding}
+                disabled={responding || !canAccept}
                 className="py-3.5 rounded-2xl bg-white text-gray-900 font-bold text-base disabled:opacity-60"
               >
-                {responding ? 'Accepting…' : 'Accept'}
+                {responding ? 'Accepting…' : canAccept ? 'Accept' : 'Nearby staff only'}
               </button>
             </div>
           </div>

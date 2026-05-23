@@ -30,6 +30,7 @@ import {
   saveLastKnownArea,
   loadLastKnownArea,
 } from '../utils/geocodePincode';
+import { getDevicePosition, captureCurrentArea } from '../utils/deviceLocation';
 import { humanizeCityId } from '../utils/areaLabel';
 import { mlog, mlogError } from '../utils/mobileLogger';
 
@@ -43,18 +44,14 @@ export const DISPATCH_ELIGIBLE_ROLES = new Set([
 
 const AvailabilityContext = createContext(null);
 
-function getGeoPosition({ highAccuracy = true, maxAge = 45_000 } = {}) {
-  return new Promise((resolve, reject) => {
-    if (!navigator.geolocation) {
-      reject(new Error('no-geolocation'));
-      return;
-    }
-    navigator.geolocation.getCurrentPosition(resolve, reject, {
-      timeout: 12_000,
-      maximumAge: maxAge,
-      enableHighAccuracy: highAccuracy,
-    });
-  });
+function getGeoPosition(opts) {
+  return getDevicePosition({
+    highAccuracy: opts?.highAccuracy ?? true,
+    maxAgeMs: opts?.maxAge ?? 45_000,
+    requestPermissionFirst: true,
+  }).then(({ lat, lng }) => ({
+    coords: { latitude: lat, longitude: lng },
+  }));
 }
 
 async function syncGpsToProfile(lat, lng) {
@@ -93,6 +90,7 @@ export function AvailabilityProvider({ children, user }) {
   // 'gps' | 'pincode' | 'none' — which location source was used when going online
   const [locationSource, setLocationSource] = useState('none');
   const [sessionAreaLabel, setSessionAreaLabel] = useState('');
+  const [locRefreshing, setLocRefreshing] = useState(false);
 
   // Persist last known coordinates for heartbeat
   const latRef  = useRef(null);
@@ -172,43 +170,75 @@ export function AvailabilityProvider({ children, user }) {
   // Cleanup on unmount
   useEffect(() => () => clearInterval(heartbeatRef.current), []);
 
+  const refreshLocation = useCallback(async () => {
+    if (!isEligible || locRefreshing) return;
+    setLocRefreshing(true);
+    setError('');
+    try {
+      const cap = await captureCurrentArea({
+        audience: 'job_seeker',
+        highAccuracy: true,
+        syncProfile: true,
+      });
+      if (cap.ok) {
+        latRef.current = cap.lat;
+        lngRef.current = cap.lng;
+        if (cap.locality) setSessionAreaLabel(cap.locality);
+        setLocationSource('gps');
+        if (isAvailable && cap.lat != null) {
+          await api.put('/availability/location', {
+            latitude: cap.lat,
+            longitude: cap.lng,
+            city_id: cityRef.current,
+          });
+        }
+        window.dispatchEvent(new CustomEvent('mr-jobs-shifts-refresh'));
+        mlog('location', 'manual_refresh_ok', { has_pin: Boolean(cap.pincode) });
+      } else {
+        setError(cap.userMessage || 'Could not update your location.');
+      }
+    } catch (e) {
+      mlogError('location', 'manual_refresh_fail', e);
+      setError('Could not update your location. Try again.');
+    } finally {
+      setLocRefreshing(false);
+    }
+  }, [isEligible, locRefreshing, isAvailable]);
+
   // ── Toggle availability ───────────────────────────────────────────────────
   const toggle = useCallback(async (wantAvailable) => {
     if (toggling || !isEligible) return;
     setToggling(true);
     setError('');
 
-    if (wantAvailable) {
-      const serverPin = String(user?.service_pincode || '').replace(/\D/g, '');
-      if (serverPin.length !== 6) {
-        setError('Set your service area to receive nearby shifts. Save your pincode in Profile first.');
-        setToggling(false);
-        return;
-      }
-    }
-
     let lat = null;
     let lng = null;
-
     let locSource = 'none';
     if (wantAvailable) {
-      // Step 1: Try GPS (preferred — most accurate)
-      try {
-        const pos = await getGeoPosition({ highAccuracy: true, maxAge: 0 });
-        lat = pos.coords.latitude;
-        lng = pos.coords.longitude;
+      const cap = await captureCurrentArea({
+        audience: 'job_seeker',
+        highAccuracy: true,
+        syncProfile: true,
+      });
+      if (cap.ok) {
+        lat = cap.lat;
+        lng = cap.lng;
         latRef.current = lat;
         lngRef.current = lng;
         locSource = 'gps';
+        if (cap.locality) setSessionAreaLabel(cap.locality);
         mlog('availability', 'location_gps', {});
-        const rev = await syncGpsToProfile(lat, lng);
-        if (rev?.locality) setSessionAreaLabel(rev.locality);
-      } catch (gpsErr) {
-        // Step 2: GPS denied / unavailable — try stored pincode as fallback.
-        // Without coordinates the dispatch engine excludes this nurse entirely,
-        // so geocoding the pincode is critical for dispatch visibility.
-        const storedPincode = loadPincode();
-        if (storedPincode) {
+      } else if (cap.lat != null && cap.lng != null) {
+        lat = cap.lat;
+        lng = cap.lng;
+        latRef.current = lat;
+        lngRef.current = lng;
+        locSource = 'gps';
+        mlog('availability', 'location_gps_partial', {});
+      } else {
+        const serverPin = String(user?.service_pincode || '').replace(/\D/g, '');
+        const storedPincode = loadPincode() || serverPin;
+        if (storedPincode.length === 6) {
           try {
             const result = await geocodePincode(storedPincode);
             lat = result.lat;
@@ -219,12 +249,18 @@ export function AvailabilityProvider({ children, user }) {
             if (result.displayName) setSessionAreaLabel(result.displayName);
             mlog('availability', 'location_pincode_fallback', {});
           } catch {
-            // Geocode failed — proceed without coords (nurse still goes online
-            // but won't receive geo-filtered dispatch offers until location is set)
-            mlog('availability', 'location_none', { gps_err: gpsErr.message });
+            mlog('availability', 'location_none', {});
           }
-        } else {
-          mlog('availability', 'location_none_no_pincode', { gps_err: gpsErr.message });
+        }
+        if (!lat && cap.userMessage) {
+          setError(cap.userMessage);
+          setToggling(false);
+          return;
+        }
+        if (!lat && storedPincode.length !== 6) {
+          setError('Set your service area to receive nearby shifts. Use GPS or save pincode in Profile.');
+          setToggling(false);
+          return;
         }
       }
     }
@@ -268,6 +304,8 @@ export function AvailabilityProvider({ children, user }) {
       user?.service_locality ||
       humanizeCityId(cityId) ||
       '',
+    refreshLocation,
+    locRefreshing,
   };
 
   return (

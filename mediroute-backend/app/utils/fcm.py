@@ -239,7 +239,7 @@ def send_shift_filled_to_hospital(
     return send_push_notification(
         fcm_token=fcm_token,
         title="\u2705 Shift Filled",
-        body=f"{nurse_name} accepted in {fill_time_sec // 60}m {fill_time_sec % 60}s",
+        body=f"{nurse_name} confirmed for your shift.",
         data={"type": "shift_filled", "shift_id": shift_id},
         android_priority="normal",
         channel_id="general",

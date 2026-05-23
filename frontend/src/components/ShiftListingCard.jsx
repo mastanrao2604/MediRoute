@@ -22,7 +22,14 @@ const STATUS_STYLES = {
 /**
  * Instant shift row for the Jobs feed (open / actively finding staff).
  */
-export default function ShiftListingCard({ shift, onSelect, hasInvite, nearbyMatch = true }) {
+export default function ShiftListingCard({
+  shift,
+  onSelect,
+  hasInvite,
+  nearbyMatch = true,
+  acceptEligible = true,
+  confirmed = false,
+}) {
   const areaLabel = useAreaLabel(shiftAreaSource(shift));
   const startLabel = formatShiftDateTime(shift.shift_start, {
     dateStyle: 'medium',
@@ -55,9 +62,19 @@ export default function ShiftListingCard({ shift, onSelect, hasInvite, nearbyMat
           <span className={`text-xs px-2 py-1 rounded-full font-medium ${stClass}`}>
             {shiftStatusLabel(shift.status)}
           </span>
-          {hasInvite && (
+          {confirmed && (
+            <span className="text-xs px-2 py-1 rounded-full font-semibold bg-green-100 text-green-800">
+              Shift confirmed
+            </span>
+          )}
+          {!confirmed && hasInvite && acceptEligible && (
             <span className="text-xs px-2 py-1 rounded-full font-semibold bg-green-100 text-green-800">
               Ready to accept
+            </span>
+          )}
+          {!confirmed && hasInvite && !acceptEligible && (
+            <span className="text-xs px-2 py-1 rounded-full font-medium bg-slate-100 text-slate-700">
+              View only
             </span>
           )}
           {!hasInvite && nearbyMatch && (

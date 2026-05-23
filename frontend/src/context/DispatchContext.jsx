@@ -23,6 +23,8 @@ const MAX_EVENTS_STORED = 50;             // keep last 50 shifts' events
 const HOSPITAL_EVENT_TYPES = new Set([
   'dispatch_started',
   'dispatch_wave_update',
+  'nurse_accepted',
+  'shift_search_stopped',
   'shift_filled',
   'shift_expired',
   'shift_cancelled',
@@ -48,7 +50,12 @@ export function DispatchProvider({ children }) {
     }
 
     // Terminal states — stop elapsed timer
-    if (msg.type === 'shift_cancelled' || msg.type === 'shift_filled' || msg.type === 'shift_expired') {
+    if (
+      msg.type === 'shift_cancelled'
+      || msg.type === 'shift_filled'
+      || msg.type === 'shift_expired'
+      || msg.type === 'shift_search_stopped'
+    ) {
       setStartTimes(prev => {
         const next = { ...prev };
         delete next[shiftId];

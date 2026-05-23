@@ -41,6 +41,7 @@ from .events import (
     OFFER_SENT, OFFER_ACCEPTED, OFFER_DECLINED, OFFER_TIMED_OUT, OFFER_CANCELLED,
     WAVE_EXHAUSTED, DISPATCH_FAILED,
 )
+from .offer_policy import shift_search_open, shift_start_utc_naive
 
 logger = logging.getLogger(__name__)
 
@@ -406,21 +407,17 @@ def _find_candidates_sync(
     exclude_user_ids: list[int],
 ) -> list[tuple[models.User, models.NurseAvailability, float]]:
     """
-    Find eligible nurses for dispatch in city + radius.
-    Phase 1: Haversine distance in Python (no PostGIS).
-    Phase 2: replace with Redis GEORADIUS (sub-millisecond).
+    Find eligible nurses for dispatch in city + role.
+
+    Phase 1 (pilot): include ALL online nurses for notification visibility.
+    Phase 2 TODO: restrict notifications to nurses inside configurable radius only.
 
     Returns list of (User, NurseAvailability, distance_km) sorted by
-    (distance ASC, reliability_score DESC).
-
-    Fallback tiers:
-      Tier 1: Nurses with coordinates within radius_km  (geo-located)
-      Tier 2: Online nurses in the same city without coordinates  (no GPS)
-              — assigned synthetic distance = radius_km + 1 so they sort last
+    (pincode band, distance ASC, reliability DESC).
     """
     freshness_cutoff = datetime.utcnow() - timedelta(minutes=5)
 
-    # ── Tier 1: geo-located nurses within radius ──────────────────────────────
+    # ── Geo-located online nurses (all in city — no wave-radius filter) ───────
     geo_rows = (
         db.query(models.User, models.NurseAvailability)
         .join(models.NurseAvailability, models.User.id == models.NurseAvailability.user_id)
@@ -438,46 +435,42 @@ def _find_candidates_sync(
 
     candidates = []
     geo_total = len(geo_rows)
+    max_dist = 0.0
     for user, avail in geo_rows:
         dist = haversine_km(
             shift.hospital_latitude, shift.hospital_longitude,
             avail.latitude, avail.longitude,
         )
-        if dist <= radius_km:
-            candidates.append((user, avail, dist))
+        candidates.append((user, avail, dist))
+        max_dist = max(max_dist, dist)
 
-    logger.debug(
-        "[dispatch] shift %d: radius=%.1fkm, geo_pool=%d, in_radius=%d, excluded=%d",
-        shift.id, radius_km, geo_total, len(candidates), len(exclude_user_ids)
+    logger.info(
+        "[dispatch] shift %d: phase1 notify pool geo=%d (max_dist=%.1fkm, accept_cap=%.0fkm), excluded=%d",
+        shift.id, geo_total, max_dist, 50.0, len(exclude_user_ids),
     )
 
-    # ── Tier 2: fallback — online city nurses without coordinates ─────────────
-    # These nurses are available but haven't shared GPS or pincode location yet.
-    # Include them as last-resort candidates so dispatch can still notify them.
-    if not candidates:
-        no_geo_rows = (
-            db.query(models.User, models.NurseAvailability)
-            .join(models.NurseAvailability, models.User.id == models.NurseAvailability.user_id)
-            .filter(
-                models.NurseAvailability.city_id == shift.city_id,
-                models.NurseAvailability.is_available == True,
-                models.NurseAvailability.last_seen >= freshness_cutoff,
-                models.User.role == shift.role_required,
-                models.User.id.not_in(exclude_user_ids) if exclude_user_ids else True,
-                # no lat/lng filter — these are the no-GPS nurses
-                models.NurseAvailability.latitude.is_(None),
-            )
-            .all()
+    # ── Online nurses without GPS (still notified in Phase 1) ─────────────────
+    no_geo_rows = (
+        db.query(models.User, models.NurseAvailability)
+        .join(models.NurseAvailability, models.User.id == models.NurseAvailability.user_id)
+        .filter(
+            models.NurseAvailability.city_id == shift.city_id,
+            models.NurseAvailability.is_available == True,
+            models.NurseAvailability.last_seen >= freshness_cutoff,
+            models.User.role == shift.role_required,
+            models.User.id.not_in(exclude_user_ids) if exclude_user_ids else True,
+            models.NurseAvailability.latitude.is_(None),
         )
-        for user, avail in no_geo_rows:
-            # Synthetic distance = radius + 1 so they sort after geo-located nurses
-            candidates.append((user, avail, radius_km + 1.0))
+        .all()
+    )
+    for user, avail in no_geo_rows:
+        candidates.append((user, avail, radius_km + 1.0))
 
-        if no_geo_rows:
-            logger.info(
-                "[dispatch] shift %d: no geo-located nurses in radius — using %d city-fallback nurses (no GPS)",
-                shift.id, len(no_geo_rows)
-            )
+    if no_geo_rows:
+        logger.info(
+            "[dispatch] shift %d: phase1 notify pool +%d no-GPS nurses",
+            shift.id, len(no_geo_rows),
+        )
 
     # ── Sort: pincode relevance, distance ASC, reliability DESC ─────────────────
     scores = {
@@ -564,11 +557,58 @@ def _check_session_filled_sync(db, session_id: int) -> bool:
     ).first() is not None
 
 
-def _finalize_assignment_sync(
-    db, shift_id: int, nurse_id: int, offer_id: int, now: datetime
+def _count_assignments_sync(db, shift_id: int) -> int:
+    return (
+        db.query(models.LiveAssignment)
+        .filter(models.LiveAssignment.shift_request_id == shift_id)
+        .count()
+    )
+
+
+def _is_search_closed_sync(db, shift_id: int) -> bool:
+    shift = db.query(models.ShiftRequest).filter(
+        models.ShiftRequest.id == shift_id
+    ).first()
+    if not shift:
+        return True
+    if getattr(shift, "search_closed_at", None):
+        return True
+    if shift.status in (
+        models.ShiftRequestStatus.cancelled,
+        models.ShiftRequestStatus.expired,
+    ):
+        return True
+    if shift_start_utc_naive(shift.shift_start) <= datetime.utcnow():
+        return True
+    return False
+
+
+def record_nurse_accept_sync(
+    db, shift_id: int, nurse_id: int, offer_id: int, now: datetime, *, commit: bool = True
 ) -> models.LiveAssignment:
-    """Create LiveAssignment, update shift + nurse states. Must be atomic."""
-    # Create assignment
+    """
+    Confirm one nurse for a shift without closing the hospital search.
+    Idempotent per (shift, nurse).
+    """
+    shift = db.query(models.ShiftRequest).filter(
+        models.ShiftRequest.id == shift_id
+    ).first()
+    if not shift:
+        raise ValueError("Shift not found")
+    if not shift_search_open(shift, now):
+        raise ValueError("Search is closed for this shift")
+
+    existing = (
+        db.query(models.LiveAssignment)
+        .filter(
+            models.LiveAssignment.shift_request_id == shift_id,
+            models.LiveAssignment.nurse_user_id == nurse_id,
+        )
+        .first()
+    )
+    if existing:
+        return existing
+
     assignment = models.LiveAssignment(
         shift_request_id=shift_id,
         nurse_user_id=nurse_id,
@@ -576,32 +616,77 @@ def _finalize_assignment_sync(
         confirmed_at=now,
     )
     db.add(assignment)
+    if shift.status == models.ShiftRequestStatus.open:
+        shift.status = models.ShiftRequestStatus.dispatching
+    if commit:
+        db.commit()
+        db.refresh(assignment)
+    else:
+        db.flush()
+    return assignment
 
-    # Mark shift filled
+
+def _finalize_search_closed_sync(
+    db, shift_id: int, now: datetime, reason: str = "manual"
+) -> None:
+    """Stop search, mark nurses busy, set shift filled when staff confirmed."""
     shift = db.query(models.ShiftRequest).filter(
         models.ShiftRequest.id == shift_id
     ).first()
-    if shift:
+    if not shift:
+        return
+    if not getattr(shift, "search_closed_at", None):
+        shift.search_closed_at = now
+
+    assignments = (
+        db.query(models.LiveAssignment)
+        .filter(models.LiveAssignment.shift_request_id == shift_id)
+        .all()
+    )
+    for assignment in assignments:
+        presence = db.query(models.PresenceState).filter(
+            models.PresenceState.user_id == assignment.nurse_user_id
+        ).first()
+        if presence:
+            presence.state = models.PresenceStateEnum.online_busy
+        avail = db.query(models.NurseAvailability).filter(
+            models.NurseAvailability.user_id == assignment.nurse_user_id
+        ).first()
+        if avail:
+            avail.is_available = False
+            avail.updated_at = now
+
+    if assignments:
         shift.status = models.ShiftRequestStatus.filled
         shift.filled_at = now
+    elif shift.status == models.ShiftRequestStatus.dispatching:
+        shift.status = models.ShiftRequestStatus.open
 
-    # Mark nurse online_busy (exclude from future dispatch while on shift)
-    presence = db.query(models.PresenceState).filter(
-        models.PresenceState.user_id == nurse_id
+    session = db.query(models.DispatchSession).filter(
+        models.DispatchSession.shift_request_id == shift_id,
+        models.DispatchSession.status == models.DispatchSessionStatus.active,
     ).first()
-    if presence:
-        presence.state = models.PresenceStateEnum.online_busy
+    if session:
+        session.status = models.DispatchSessionStatus.completed
+        session.completed_at = now
 
-    avail = db.query(models.NurseAvailability).filter(
-        models.NurseAvailability.user_id == nurse_id
-    ).first()
-    if avail:
-        avail.is_available = False
-        avail.updated_at = now
-
+    db.add(
+        models.ShiftTimelineEvent(
+            shift_request_id=shift_id,
+            event_type=SHIFT_FILLED if assignments else SHIFT_EXPIRED,
+            actor_user_id=None,
+            city_id=shift.city_id,
+            payload={"reason": reason, "confirmed_count": len(assignments)},
+        )
+    )
     db.commit()
-    db.refresh(assignment)
-    return assignment
+
+
+def _finalize_assignment_sync(
+    db, shift_id: int, nurse_id: int, offer_id: int, now: datetime
+) -> models.LiveAssignment:
+    """Legacy alias — record accept without closing search."""
+    return record_nurse_accept_sync(db, shift_id, nurse_id, offer_id, now)
 
 
 def _update_reliability_on_event_sync(
@@ -706,8 +791,10 @@ async def _notify_wave(
     invalid_tokens: list[str] = []  # collected for cleanup after the loop
 
     from .offer_policy import seconds_until_shift_start
+    from .eligibility import nurse_accept_eligible
     respond_by_sec = seconds_until_shift_start(shift)
     for offer in offers:
+        accept_ok, dist_km, block_msg = nurse_accept_eligible(db, shift, offer.nurse_user_id)
         payload = {
             "type": "dispatch_offer",
             "offer_id": offer.id,
@@ -727,6 +814,9 @@ async def _notify_wave(
             "respond_by_sec": respond_by_sec,
             "expires_in_sec": respond_by_sec,
             "wave": offer.wave_number,
+            "accept_eligible": accept_ok,
+            "distance_km": dist_km,
+            "accept_blocked_message": block_msg or None,
         }
 
         ws_delivered = await ws_manager.send(offer.nurse_user_id, payload)
@@ -887,118 +977,91 @@ async def _do_fill(
     dispatch_start: datetime,
     shift,
 ) -> bool:
-    """
-    Finalise a nurse acceptance: assign the shift, cancel competing offers,
-    write the timeline, notify hospital + nurse.  Returns True on success.
+    """Notify hospital of new acceptance; return True only when search should end."""
+    import functools
 
-    Extracted so both the main wave loop and the watchlist loop share identical
-    fill semantics without code duplication.
-    """
     accepted_offer = await asyncio.get_running_loop().run_in_executor(
         _executor,
         functools.partial(
             lambda d, sid: d.query(models.DispatchOffer).filter(
                 models.DispatchOffer.session_id == sid,
                 models.DispatchOffer.status == models.OfferStatus.accepted,
-            ).first(),
-            db, session_id
-        )
+            ).order_by(models.DispatchOffer.responded_at.desc()).first(),
+            db,
+            session_id,
+        ),
     )
-    if not accepted_offer:
-        await asyncio.sleep(0.2)
-        accepted_offer = await asyncio.get_running_loop().run_in_executor(
-            _executor,
-            functools.partial(
-                lambda d, sid: d.query(models.DispatchOffer).filter(
-                    models.DispatchOffer.session_id == sid,
-                    models.DispatchOffer.status == models.OfferStatus.accepted,
-                ).first(),
-                db, session_id
-            )
-        )
     if not accepted_offer:
         return False
 
     now = datetime.utcnow()
-    fill_time_sec = int((now - dispatch_start).total_seconds())
-
-    assignment = await asyncio.get_running_loop().run_in_executor(
-        _executor, functools.partial(
-            _finalize_assignment_sync, db, shift_id,
-            accepted_offer.nurse_user_id, accepted_offer.id, now
-        )
+    confirmed_count = await asyncio.get_running_loop().run_in_executor(
+        _executor, functools.partial(_count_assignments_sync, db, shift_id)
     )
-
-    # Cancel remaining pending offers in this wave
-    await asyncio.get_running_loop().run_in_executor(
-        _executor, functools.partial(
-            lambda d, sid, wn, winner_id: [
-                setattr(o, 'status', models.OfferStatus.cancelled)
-                or setattr(o, 'responded_at', datetime.utcnow())
-                for o in d.query(models.DispatchOffer).filter(
-                    models.DispatchOffer.session_id == sid,
-                    models.DispatchOffer.wave_number == wn,
-                    models.DispatchOffer.status == models.OfferStatus.pending,
-                    models.DispatchOffer.nurse_user_id != winner_id,
-                ).all()
-            ] or d.commit(),
-            db, session_id, wave_num, accepted_offer.nurse_user_id
-        )
-    )
-
-    await asyncio.get_running_loop().run_in_executor(
-        _executor, functools.partial(
-            _write_timeline_event_sync, db, shift_id, SHIFT_FILLED, shift.city_id,
-            accepted_offer.nurse_user_id, {
-                "fill_time_sec": fill_time_sec,
-                "wave": wave_num,
-                "offer_id": accepted_offer.id,
-                "assignment_id": assignment.id,
-            }
-        )
-    )
-
-    await asyncio.get_running_loop().run_in_executor(
-        _executor, functools.partial(
-            _update_session_sync, db, session_id,
-            models.DispatchSessionStatus.completed
-        )
-    )
+    nurses_required = getattr(shift, "nurses_required", None) or 1
 
     nurse_user = await asyncio.get_running_loop().run_in_executor(
-        _executor, functools.partial(
+        _executor,
+        functools.partial(
             lambda d, uid: d.query(models.User).filter(models.User.id == uid).first(),
-            db, accepted_offer.nurse_user_id
-        )
+            db,
+            accepted_offer.nurse_user_id,
+        ),
     )
-    nurse_name = (nurse_user.name or f"User #{accepted_offer.nurse_user_id}") if nurse_user else "Nurse"
+    nurse_name = (nurse_user.name or f"Staff #{accepted_offer.nurse_user_id}") if nurse_user else "Nurse"
 
-    await _notify_hospital(shift.hospital_user_id, shift_id, "shift_filled", {
-        "assignment_id": assignment.id,
+    await _notify_hospital(shift.hospital_user_id, shift_id, "nurse_accepted", {
         "nurse_name": nurse_name,
-        "fill_time_sec": fill_time_sec,
+        "nurse_user_id": accepted_offer.nurse_user_id,
+        "confirmed_count": confirmed_count,
+        "nurses_required": nurses_required,
         "wave": wave_num,
-        "message": f"✅ {nurse_name} accepted — fill time: {fill_time_sec // 60}m {fill_time_sec % 60}s",
+        "message": (
+            f"{nurse_name} accepted ({confirmed_count} of {nurses_required} confirmed) "
+            "— still searching for more staff."
+        ),
     })
 
-    from ..ws_manager import ws_manager
-    await ws_manager.send(accepted_offer.nurse_user_id, {
-        "type": "assignment_confirmed",
-        "assignment_id": assignment.id,
-        "shift_id": shift_id,
-        "hospital_name": shift.hospital_name,
-        "shift_start": utc_iso(shift.shift_start),
-        "message": "Assignment confirmed! Get ready.",
+    event = dispatch_events.get(session_id)
+    if event is not None:
+        event.clear()
+
+    if await asyncio.get_running_loop().run_in_executor(
+        _executor, functools.partial(_is_search_closed_sync, db, shift_id)
+    ):
+        await asyncio.get_running_loop().run_in_executor(
+            _executor,
+            functools.partial(_finalize_search_closed_sync, db, shift_id, now, "auto"),
+        )
+        if confirmed_count > 0:
+            await _notify_hospital(shift.hospital_user_id, shift_id, "shift_search_stopped", {
+                "confirmed_count": confirmed_count,
+                "message": "Staff search closed.",
+            })
+            await _notify_hospital(shift.hospital_user_id, shift_id, "shift_filled", {
+                "nurse_name": nurse_name,
+                "confirmed_count": confirmed_count,
+                "message": "Staff finalized for this shift.",
+            })
+            _metrics["dispatches_filled"] += 1
+        logger.info("[dispatch] shift %d search closed (wave %d)", shift_id, wave_num)
+        return True
+
+    await _notify_hospital(shift.hospital_user_id, shift_id, "dispatch_wave_update", {
+        "status": "receiving",
+        "confirmed_count": confirmed_count,
+        "nurses_required": nurses_required,
+        "message": (
+            f"{confirmed_count} of {nurses_required} confirmed — still searching for more staff."
+        ),
     })
-
-    _metrics["dispatches_filled"] += 1
-    _metrics["total_fill_time_sec"] += fill_time_sec
-    _metrics["total_waves_used"] += wave_num
-
-    logger.info("[dispatch] shift %d FILLED in %.0fs (wave %d)", shift_id, fill_time_sec, wave_num)
-    sentry_sdk.set_measurement("dispatch.fill_time_sec", fill_time_sec)
-    sentry_sdk.set_tag("dispatch.outcome", "filled")
-    return True
+    logger.info(
+        "[dispatch] shift %d nurse accepted — search continues (%d/%d)",
+        shift_id,
+        confirmed_count,
+        nurses_required,
+    )
+    return False
 
 
 async def _run_dispatch_inner(db, shift_id: int) -> None:
@@ -1233,13 +1296,13 @@ async def _run_dispatch_inner(db, shift_id: int) -> None:
                     shift_id, wave_num, expired_count
                 )
 
-        # ── Watchlist loop ────────────────────────────────────────────────────
-        # When ALL waves completed without finding ANY nurses (already_offered==0),
-        # keep the dispatch alive — polling at watchlist_interval_sec — until the
-        # shift_start time.  This mirrors the Uber/Urban Company model: dispatch
-        # stays ACTIVE and the recruiter sees ongoing search progress until either
-        # a nurse accepts OR the shift window closes.
-        if not filled and len(already_offered) == 0:
+        # ── Ongoing search / watchlist ────────────────────────────────────────
+        # Keep notifying nurses until shift start, manual stop, or search closed —
+        # including after one or more nurses have already accepted.
+        search_still_open = not await asyncio.get_running_loop().run_in_executor(
+            _executor, functools.partial(_is_search_closed_sync, db, shift_id)
+        )
+        if not filled and search_still_open:
             watchlist_interval = cfg.get("watchlist_interval_sec", 120)
             max_radius = base_radius + ((max_waves - 1) * radius_step)
             watchlist_wave = max_waves + 1
@@ -1250,13 +1313,30 @@ async def _run_dispatch_inner(db, shift_id: int) -> None:
                 _ss.astimezone(timezone.utc).replace(tzinfo=None) if _ss.tzinfo else _ss
             )
 
+            confirmed_at_entry = await asyncio.get_running_loop().run_in_executor(
+                _executor, functools.partial(_count_assignments_sync, db, shift_id)
+            )
+            entry_msg = (
+                f"{confirmed_at_entry} nurse(s) confirmed — still searching for more staff…"
+                if confirmed_at_entry > 0
+                else "No nurses online right now — watching for available staff..."
+            )
             await _notify_hospital(shift.hospital_user_id, shift_id, "dispatch_wave_update", {
-                "status": "watching",
-                "message": "No nurses online right now — watching for available staff...",
+                "status": "watching" if confirmed_at_entry == 0 else "receiving",
+                "confirmed_count": confirmed_at_entry,
+                "message": entry_msg,
             })
-            logger.info("[dispatch] shift %d entering watchlist mode (interval=%ds)", shift_id, watchlist_interval)
+            logger.info(
+                "[dispatch] shift %d entering ongoing search (interval=%ds, confirmed=%d)",
+                shift_id, watchlist_interval, confirmed_at_entry,
+            )
 
             while not filled and datetime.utcnow() < shift_start_naive:
+                if await asyncio.get_running_loop().run_in_executor(
+                    _executor, functools.partial(_is_search_closed_sync, db, shift_id)
+                ):
+                    filled = True
+                    break
                 if session.id in _cancelled_sessions:
                     filled = True  # suppress terminal shift_expired below
                     break
@@ -1364,7 +1444,44 @@ async def _run_dispatch_inner(db, shift_id: int) -> None:
                     watchlist_wave += 1
 
         if not filled:
-            # All waves exhausted (and watchlist complete / shift window passed)
+            now = datetime.utcnow()
+            confirmed_count = await asyncio.get_running_loop().run_in_executor(
+                _executor, functools.partial(_count_assignments_sync, db, shift_id)
+            )
+            search_closed = await asyncio.get_running_loop().run_in_executor(
+                _executor, functools.partial(_is_search_closed_sync, db, shift_id)
+            )
+            _ss = shift.shift_start
+            shift_start_naive = (
+                _ss.astimezone(timezone.utc).replace(tzinfo=None) if _ss.tzinfo else _ss
+            )
+            if confirmed_count > 0 and not search_closed and now >= shift_start_naive:
+                await asyncio.get_running_loop().run_in_executor(
+                    _executor,
+                    functools.partial(_finalize_search_closed_sync, db, shift_id, now, "shift_start"),
+                )
+                await _notify_hospital(shift.hospital_user_id, shift_id, "shift_search_stopped", {
+                    "confirmed_count": confirmed_count,
+                    "message": "Shift started — staff finalized.",
+                })
+                await _notify_hospital(shift.hospital_user_id, shift_id, "shift_filled", {
+                    "confirmed_count": confirmed_count,
+                    "message": "Staff finalized for this shift.",
+                })
+                logger.info(
+                    "[dispatch] shift %d auto-closed at shift start (%d confirmed)",
+                    shift_id, confirmed_count,
+                )
+                return
+            if confirmed_count > 0 and not search_closed:
+                logger.info(
+                    "[dispatch] shift %d: %d confirmed — search stays open until close",
+                    shift_id,
+                    confirmed_count,
+                )
+                return
+
+            # All waves exhausted with no confirmed staff (or search already closed)
             await asyncio.get_running_loop().run_in_executor(
                 _executor, functools.partial(
                     _update_shift_status_sync, db, shift_id, models.ShiftRequestStatus.expired

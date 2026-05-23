@@ -9,7 +9,7 @@ import { useAuth } from '../context/AuthContext';
 import { formatShiftTime } from '../utils/shiftDateTime';
 import { pickActiveNurseShift } from '../utils/nurseActiveShift';
 import { URGENCY_LABEL, formatRoleLabel, humanizeStaffingError } from '../utils/staffingStatusCopy';
-import { filterJobSeekerOffers } from '../utils/shiftVisibility';
+import { filterJobSeekerOffers, SHIFT_ACCEPT_NEARBY_ONLY_MSG } from '../utils/shiftVisibility';
 
 const DISPATCH_ELIGIBLE_ROLES = new Set([
   'nurse', 'staff_nurse', 'icu_nurse', 'ot_nurse', 'emergency_nurse',
@@ -94,7 +94,9 @@ export default function Dashboard() {
     try {
       await api.post(`/dispatch/offers/${offerId}/accept`);
       setPendingOffers(prev => prev.filter(o => o.offer_id !== offerId));
+      window.dispatchEvent(new CustomEvent('mr-jobs-shifts-refresh'));
       await fetchActiveShift();
+      setTimeout(fetchActiveShift, 1200);
     } catch (err) {
       setOfferError(
         humanizeStaffingError(
@@ -190,6 +192,7 @@ export default function Dashboard() {
             <div className="flex flex-col gap-3">
               {pendingOffers.map((offer) => {
                 const urgMeta = URGENCY_LABEL[offer.urgency] || URGENCY_LABEL.standard;
+                const canAccept = offer.accept_eligible !== false;
                 return (
                   <div
                     key={offer.offer_id}
@@ -212,13 +215,18 @@ export default function Dashboard() {
                         <span className="text-xs text-amber-600">Open until shift starts</span>
                       </div>
                     </div>
+                    {!canAccept && (
+                      <p className="text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 mb-2">
+                        {offer.accept_blocked_message || SHIFT_ACCEPT_NEARBY_ONLY_MSG}
+                      </p>
+                    )}
                     <div className="flex gap-2">
                       <button
                         onClick={() => handleAcceptOffer(offer.offer_id)}
-                        disabled={acceptingId === offer.offer_id}
+                        disabled={acceptingId === offer.offer_id || !canAccept}
                         className="flex-1 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-semibold py-2.5 rounded-xl text-sm transition-colors"
                       >
-                        {acceptingId === offer.offer_id ? 'Accepting…' : 'Accept Shift'}
+                        {acceptingId === offer.offer_id ? 'Accepting…' : canAccept ? 'Accept Shift' : 'Nearby staff only'}
                       </button>
                       <button
                         onClick={() => handleDeclineOffer(offer.offer_id)}

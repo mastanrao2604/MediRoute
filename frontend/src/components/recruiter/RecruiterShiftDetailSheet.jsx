@@ -11,6 +11,8 @@ import {
   datetimeLocalToUtcIso,
   nowDatetimeLocalPlusMinutes,
 } from '../../utils/shiftDateTime';
+import AssignedNurseCard from './AssignedNurseCard';
+import ShiftApplicantsPanel from './ShiftApplicantsPanel';
 
 const URGENCY_OPTIONS = [
   { value: 'emergency', label: 'Right Now' },
@@ -27,7 +29,9 @@ export default function RecruiterShiftDetailSheet({
   onCancel,
   onArchive,
   onRedispatch,
+  onStopSearch,
   busy,
+  onViewNurseProfile,
 }) {
   const [shift, setShift] = useState(null);
   const [form, setForm] = useState(null);
@@ -64,7 +68,20 @@ export default function RecruiterShiftDetailSheet({
       .finally(() => setLoading(false));
   }, [shiftId, repostIntent]);
 
+  useEffect(() => {
+    if (!shiftId) return undefined;
+    const reload = () => {
+      api.get(`/shifts/${shiftId}`)
+        .then((res) => setShift(res.data?.shift))
+        .catch(() => {});
+    };
+    window.addEventListener('mr-recruiter-shifts-refresh', reload);
+    return () => window.removeEventListener('mr-recruiter-shifts-refresh', reload);
+  }, [shiftId]);
+
   const pastStart = isPastShiftStart(shift?.shift_start);
+  const searchActive = shift?.search_active !== false && !shift?.search_closed;
+  const isFilled = !searchActive && (shift?.status === 'filled' || Boolean(shift?.assignment));
   const editable = shift && (
     shift.status === 'open' ||
     shift.status === 'dispatching' ||
@@ -155,7 +172,18 @@ export default function RecruiterShiftDetailSheet({
                 <span className="text-xs font-semibold px-2 py-0.5 rounded-lg bg-slate-100 text-slate-700 capitalize">{shift.status}</span>
                 <p className="text-base font-semibold text-gray-900 mt-2">{shift.hospital_name}</p>
                 <p className="text-sm text-gray-500">{shift.role_required} · {formatShiftDateTime(shift.shift_start)}</p>
-                {shift.dispatch && shift.status === 'dispatching' && !pastStart && (
+                {(shift?.applicants?.length > 0 || shift?.confirmed_count > 0) && (
+                  <div className="mt-3">
+                    <ShiftApplicantsPanel
+                      shift={shift}
+                      onViewProfile={(nurse) => onViewNurseProfile?.(nurse, shift)}
+                    />
+                  </div>
+                )}
+                {isFilled && !shift?.applicants?.length && (
+                  <p className="text-xs text-green-800 font-semibold mt-2">Staff finalized</p>
+                )}
+                {searchActive && !pastStart && (
                   <p className="text-xs text-indigo-700 mt-1">
                     Still searching for available nurses
                   </p>
@@ -251,6 +279,16 @@ export default function RecruiterShiftDetailSheet({
                 </div>
               )}
               <div className="flex flex-col gap-2 mt-4 pt-4 border-t border-gray-100 pb-2">
+                {searchActive && !pastStart && onStopSearch && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => onStopSearch?.(shiftId)}
+                    className="w-full text-sm font-semibold py-3 rounded-xl bg-amber-50 text-amber-900 border border-amber-200"
+                  >
+                    Stop searching
+                  </button>
+                )}
                 {canCancel && (
                   <button type="button" disabled={busy} onClick={() => onCancel?.(shiftId)} className="w-full text-sm font-semibold py-3 rounded-xl bg-red-50 text-red-700 border border-red-100">
                     Cancel shift

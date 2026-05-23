@@ -6,7 +6,12 @@ import ShiftListingCard from '../components/ShiftListingCard';
 import { useAuth } from '../context/AuthContext';
 import { formatApiErrorDetail } from '../utils/apiErrorMessage';
 import { humanizeStaffingError } from '../utils/staffingStatusCopy';
-import { filterJobSeekerShifts, filterJobSeekerOffers } from '../utils/shiftVisibility';
+import {
+  filterJobSeekerShifts,
+  filterJobSeekerOffers,
+  shiftHasRespondableOffer,
+  shiftCanAccept,
+} from '../utils/shiftVisibility';
 import EmployeeShiftDetailSheet from '../components/EmployeeShiftDetailSheet';
 
 const ROLES = ['', 'nurse', 'staff_nurse', 'icu_nurse', 'ot_nurse', 'emergency_nurse', 'home_care_nurse', 'doctor', 'lab_tech', 'pharmacist', 'driver', 'front_office'];
@@ -25,11 +30,6 @@ export default function Jobs() {
   const [selectedShiftId, setSelectedShiftId] = useState(null);
   const [selectedShiftPreview, setSelectedShiftPreview] = useState(null);
   const [invitedShiftIds, setInvitedShiftIds] = useState(new Set());
-
-  const shiftHasRespondableOffer = useCallback((shift) => {
-    if (shift?.my_offer?.respondable) return true;
-    return false;
-  }, []);
 
   async function fetchJobs() {
     setLoading(true);
@@ -240,10 +240,9 @@ export default function Jobs() {
 
         {!loading && !error && hasShifts && isCandidate && (
           <>
-            <h2 className="text-lg font-semibold text-gray-900 mb-1">Available shifts near you</h2>
+            <h2 className="text-lg font-semibold text-gray-900 mb-1">Available shifts</h2>
             <p className="text-sm text-gray-500 mb-3">
-              Hospitals in your area are looking for staff. Tap a shift for details — accept when you see
-              &quot;Ready to accept&quot;.
+              Open shifts in your city appear here. You can accept when you are within about 50 km of the hospital.
             </p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8">
               {shifts.map((s) => (
@@ -255,7 +254,9 @@ export default function Jobs() {
                     setSelectedShiftPreview(shift);
                   }}
                   hasInvite={invitedShiftIds.has(s.id) || shiftHasRespondableOffer(s)}
-                  nearbyMatch={s.nearby_match !== false}
+                  confirmed={s.my_offer?.status === 'accepted' || Boolean(s.assignment)}
+                  nearbyMatch={s.accept_eligible !== false}
+                  acceptEligible={shiftHasRespondableOffer(s) ? shiftCanAccept(s) : s.accept_eligible !== false}
                 />
               ))}
             </div>

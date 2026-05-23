@@ -1,7 +1,6 @@
 /**
  * AvailabilityToggle — nurse availability for the Dashboard.
- * Going online requires a saved service pincode on the user profile (server).
- * Live GPS vs pincode-geocoded position is resolved in AvailabilityContext.
+ * Going online tries GPS first (AvailabilityContext); pincode fallback when GPS fails.
  */
 import { Link } from 'react-router-dom';
 import { useAvailability } from '../context/AvailabilityContext';
@@ -20,6 +19,8 @@ export default function AvailabilityToggle({ activeShift = null, onOpenActiveShi
     isEligible,
     locationSource,
     areaDisplayLabel,
+    refreshLocation,
+    locRefreshing,
   } = useAvailability();
 
   if (!isEligible || loading) return null;
@@ -69,7 +70,7 @@ export default function AvailabilityToggle({ activeShift = null, onOpenActiveShi
 
         <button
           onClick={() => toggle(!isAvailable)}
-          disabled={toggling || (!isAvailable && !hasServiceArea)}
+          disabled={toggling}
           aria-label={isAvailable ? 'Go offline' : 'Go online'}
           className={`shrink-0 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 ${
             isAvailable
@@ -88,16 +89,27 @@ export default function AvailabilityToggle({ activeShift = null, onOpenActiveShi
         </button>
       </div>
 
-      {!hasServiceArea && (
+      {!hasServiceArea && !isAvailable && (
         <div className="mt-3 rounded-xl bg-amber-50 border border-amber-200 px-3 py-2.5 text-xs text-amber-900 leading-snug space-y-1">
-          <p className="font-semibold">Set your service area to receive nearby shifts</p>
+          <p className="font-semibold">Tip: go online with GPS for best nearby matching</p>
           <p className="text-amber-800">
-            Save a 6-digit pincode once (manual or GPS) in Profile. We match you without showing coordinates.
+            Tap Go Online to use your current location, or save a pincode in Profile as backup.
           </p>
           <Link to="/profile" className="inline-block mt-1 text-indigo-700 font-semibold underline">
-            Complete service area →
+            Set service area in Profile →
           </Link>
         </div>
+      )}
+
+      {isAvailable && (
+        <button
+          type="button"
+          onClick={refreshLocation}
+          disabled={locRefreshing || toggling}
+          className="mt-3 w-full min-h-[40px] rounded-xl border border-green-200 bg-white text-green-800 text-xs font-semibold disabled:opacity-50"
+        >
+          {locRefreshing ? 'Updating your area…' : '📍 Update current area'}
+        </button>
       )}
 
       {noGpsPing && (

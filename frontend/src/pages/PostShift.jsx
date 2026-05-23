@@ -4,7 +4,8 @@ import api from '../api/axios';
 import MainLayout from '../layouts/MainLayout';
 import { useAuth } from '../context/AuthContext';
 import { mlog, mlogError } from '../utils/mobileLogger';
-import { geocodePincode, reverseGeocodeCoords } from '../utils/geocodePincode';
+import { captureCurrentArea, openAppSettings } from '../utils/deviceLocation';
+import { geocodePincode } from '../utils/geocodePincode';
 import { datetimeLocalToUtcIso, nowDatetimeLocalPlusMinutes } from '../utils/shiftDateTime';
 
 const ROLES = [
@@ -89,60 +90,50 @@ export default function PostShift() {
   /** Resolved from GPS via reverse geocode (6-digit pin when available). */
   const [gpsDerivedPincode, setGpsDerivedPincode] = useState('');
   const [gpsRevWarn, setGpsRevWarn] = useState('');
+  const [locErr, setLocErr] = useState('');
+  const [showLocSettings, setShowLocSettings] = useState(false);
 
   const [formError, setFormError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  // Try GPS on mount
   useEffect(() => {
     tryGPS();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount
   }, []);
 
-  useEffect(() => {
-    if (locMode !== 'gps_ok' || lat == null || lng == null) return undefined;
-    let cancelled = false;
-    setGpsDerivedPincode('');
-    setGpsRevWarn('');
-    (async () => {
-      try {
-        const rev = await reverseGeocodeCoords(lat, lng);
-        if (cancelled) return;
-        if (rev.pincode) setGpsDerivedPincode(rev.pincode);
-        if (rev.locality && rev.pincode) {
-          setAreaLabel(`${rev.locality} — ${rev.pincode}`);
-        } else if (rev.locality) {
-          setAreaLabel(rev.locality);
-        }
-      } catch {
-        if (!cancelled) {
-          setGpsRevWarn('Could not derive pincode from GPS. Use Change to enter pincode manually for best matching.');
-        }
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [locMode, lat, lng]);
-
-  function tryGPS() {
+  async function tryGPS() {
     setGpsDerivedPincode('');
     setGpsRevWarn('');
     setAreaLabel('');
+    setLocErr('');
+    setShowLocSettings(false);
     setLocMode('detecting');
-    if (!navigator.geolocation) { setLocMode('pincode_mode'); return; }
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setLat(pos.coords.latitude);
-        setLng(pos.coords.longitude);
-        setLocMode('gps_ok');
-        console.log('[PostShift] GPS ok:', pos.coords.latitude, pos.coords.longitude);
-      },
-      (err) => {
-        console.warn('[PostShift] GPS denied:', err.message);
-        setLocMode('pincode_mode');
-        // Focus pincode input on next tick
-        setTimeout(() => pincodeRef.current?.focus(), 100);
-      },
-      { timeout: 8000, maximumAge: 120000 }
-    );
+    const cap = await captureCurrentArea({ audience: 'recruiter', highAccuracy: true });
+    if (cap.ok) {
+      setLat(cap.lat);
+      setLng(cap.lng);
+      if (cap.pincode) setGpsDerivedPincode(cap.pincode);
+      if (cap.locality && cap.pincode) {
+        setAreaLabel(`${cap.locality} — ${cap.pincode}`);
+      } else if (cap.locality) {
+        setAreaLabel(cap.locality);
+      }
+      setLocMode('gps_ok');
+      mlog('location', 'post_shift_gps_ok', { locality: cap.locality?.slice(0, 24) });
+      return;
+    }
+    if (cap.lat != null && cap.lng != null) {
+      setLat(cap.lat);
+      setLng(cap.lng);
+      setLocMode('gps_ok');
+      setGpsRevWarn(cap.userMessage || 'Enter pincode manually for best matching.');
+      return;
+    }
+    setLocMode('pincode_mode');
+    setLocErr(cap.userMessage || 'Could not detect location.');
+    setShowLocSettings(cap.permissionState === 'permanent');
+    mlog('location', 'post_shift_gps_fail', { state: cap.permissionState });
+    setTimeout(() => pincodeRef.current?.focus(), 100);
   }
 
   async function handlePincodeConfirm() {
@@ -319,6 +310,11 @@ export default function PostShift() {
 
           {(locMode === 'pincode_mode' || locMode === 'geocode_err') && (
             <div className="flex flex-col gap-2">
+              {locErr && (
+                <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                  {locErr}
+                </p>
+              )}
               <div className="flex gap-2">
                 <input
                   ref={pincodeRef}
@@ -347,6 +343,15 @@ export default function PostShift() {
               >
                 📍 Use my current location instead
               </button>
+              {showLocSettings && (
+                <button
+                  type="button"
+                  onClick={() => openAppSettings()}
+                  className="text-xs text-indigo-700 font-semibold text-left"
+                >
+                  Open app settings to enable location
+                </button>
+              )}
               {geocodeErr && (
                 <p className="text-xs text-red-600">{geocodeErr}</p>
               )}

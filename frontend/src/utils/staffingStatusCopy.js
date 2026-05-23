@@ -7,16 +7,32 @@ export const SEARCH_PHASE_LABEL = {
   timed_out: 'Still searching — reaching more nurses…',
   watching: 'Still looking for available nurses…',
   watching_online: 'Nurses came online — notifying them now…',
+  receiving: 'Receiving applications — more nurses can still apply',
+  active: 'Staff search active',
 };
 
 /** Recruiter shift card / list status */
 export const SHIFT_CARD_STATUS = {
   open: 'Getting ready',
   dispatching: 'Finding staff',
-  filled: 'Staff confirmed',
+  filled: 'Staff finalized',
+  search_paused: 'Search paused',
+  receiving: 'Receiving applications',
   expired: 'Shift expired',
   cancelled: 'Cancelled',
 };
+
+/** Recruiter card — search still running with at least one confirm. */
+export function recruiterShiftCardStatus(shift, live) {
+  const confirmed = shift?.confirmed_count ?? (shift?.applicants?.length || 0);
+  const searchActive = shift?.search_active !== false && !shift?.search_closed;
+  if (shift?.search_closed && confirmed > 0) return 'search_paused';
+  if (searchActive && confirmed > 0) return 'receiving';
+  if (shift?.status === 'filled' && !searchActive) return 'filled';
+  if (shift?.status === 'dispatching' || shift?.status === 'open') return 'dispatching';
+  if (live?.type === 'nurse_accepted' && searchActive) return 'receiving';
+  return shift?.status || 'open';
+}
 
 /** Employee browse list — same labels as recruiter for consistency */
 export const SHIFT_BROWSE_STATUS = SHIFT_CARD_STATUS;
@@ -78,7 +94,8 @@ export function humanizeStaffingError(message) {
     [/shift is no longer/i, 'This shift is no longer available.'],
     [/access denied/i, 'This shift is no longer available.'],
     [/no longer available/i, 'This shift is no longer available.'],
-    [/another nurse accepted/i, 'Another nurse already accepted this shift.'],
+    [/prioritizing nearby staff/i, 'This shift is currently prioritizing nearby staff.'],
+    [/available only for nearby staff/i, 'This shift is currently available only for nearby staff.'],
     [/not available on the server/i, 'This feature is not available yet. Please update the app or try again later.'],
     [/dispatch is already active/i, 'Staff search is already running for this shift.'],
     [/please choose a new future shift time/i, 'Please choose a new future shift time to repost this requirement.'],

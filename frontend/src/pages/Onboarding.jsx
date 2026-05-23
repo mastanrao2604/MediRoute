@@ -3,7 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
 import { DISPATCH_ELIGIBLE_ROLES } from '../context/AvailabilityContext';
-import { savePincode, loadPincode, reverseGeocodeCoords, normalizeIndianPincode } from '../utils/geocodePincode';
+import { savePincode, loadPincode, normalizeIndianPincode } from '../utils/geocodePincode';
+import { captureCurrentArea, openAppSettings } from '../utils/deviceLocation';
 
 const ROLES = [
   { value: 'nurse',           label: 'Nurse' },
@@ -87,6 +88,7 @@ export default function Onboarding() {
   /** How service pincode was set — required with 6-digit pin for dispatch-eligible roles */
   const [locationSource,   setLocationSource]   = useState(() => '');
   const [capturingGeo, setCapturingGeo]         = useState(false);
+  const [showLocSettings, setShowLocSettings]   = useState(false);
 
   const [skills,           setSkills]           = useState('');
   const [jobType,          setJobType]          = useState('');
@@ -164,39 +166,30 @@ export default function Onboarding() {
   }
 
   // ── Service area via GPS — reverse-geocode → pincode (no lat/long shown to user) ──
-  function captureServiceAreaFromGPS() {
-    if (!navigator.geolocation) {
-      setError('Location is not supported on this device. Enter your pincode manually.');
-      return;
-    }
+  async function captureServiceAreaFromGPS() {
     setCapturingGeo(true);
     setError('');
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        try {
-          const rev = await reverseGeocodeCoords(pos.coords.latitude, pos.coords.longitude);
-          const pc = normalizeIndianPincode(rev.pincode);
-          if (!pc) {
-            setError('Could not read a postal code from your location. Enter your pincode manually.');
-            setCapturingGeo(false);
-            return;
-          }
-          setPincode(pc);
-          savePincode(pc);
-          setServiceLocality(rev.locality || '');
-          setLocationSource('gps');
-        } catch {
-          setError('Area lookup failed. Try again or enter your pincode manually.');
-        } finally {
-          setCapturingGeo(false);
-        }
-      },
-      () => {
-        setError('Location access denied — enter your 6-digit service pincode manually.');
-        setCapturingGeo(false);
-      },
-      { timeout: 15000, maximumAge: 120000, enableHighAccuracy: false },
-    );
+    setShowLocSettings(false);
+    const cap = await captureCurrentArea({
+      audience: 'job_seeker',
+      highAccuracy: true,
+      syncProfile: false,
+    });
+    if (cap.ok) {
+      const pc = normalizeIndianPincode(cap.pincode);
+      if (pc) {
+        setPincode(pc);
+        savePincode(pc);
+        setServiceLocality(cap.locality || '');
+        setLocationSource('gps');
+      } else {
+        setError('Could not read a postal code from your location. Enter your pincode manually.');
+      }
+    } else {
+      setError(cap.userMessage || 'Location access denied — enter your 6-digit service pincode manually.');
+      setShowLocSettings(cap.permissionState === 'permanent');
+    }
+    setCapturingGeo(false);
   }
 
   // ── Submit ────────────────────────────────────────────────────────────────
@@ -434,6 +427,15 @@ export default function Onboarding() {
                           >
                             {capturingGeo ? 'Getting location…' : '📍 Use my current location'}
                           </button>
+                          {showLocSettings && (
+                            <button
+                              type="button"
+                              onClick={() => openAppSettings()}
+                              className="flex-1 min-w-[8rem] py-2.5 px-3 rounded-xl text-sm font-semibold border border-gray-200 text-gray-700"
+                            >
+                              Open app settings
+                            </button>
+                          )}
                         </div>
                         <input
                           type="text"

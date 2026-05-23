@@ -59,6 +59,26 @@ export function loadLastKnownArea() {
   }
 }
 
+const NOMINATIM_HEADERS = {
+  'Accept-Language': 'en',
+  'User-Agent': 'MediRoute/1.0 (healthcare staffing; support@mediroute.in)',
+};
+
+async function nominatimFetch(url) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 14_000);
+  try {
+    const res = await fetch(url, { headers: NOMINATIM_HEADERS, signal: ctrl.signal });
+    if (!res.ok) throw new Error('Geocode network error');
+    return res.json();
+  } catch (e) {
+    if (e?.name === 'AbortError') throw new Error('Geocode timed out — check network and retry.');
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function geocodePincode(pincode) {
   const clean = String(pincode).replace(/\D/g, '');
   if (clean.length !== 6) throw new Error('Pincode must be 6 digits');
@@ -68,9 +88,7 @@ export async function geocodePincode(pincode) {
     `https://nominatim.openstreetmap.org/search` +
     `?postalcode=${clean}&country=IN&format=json&limit=1&addressdetails=1`;
 
-  const res = await fetch(url, { headers: { 'Accept-Language': 'en' } });
-  if (!res.ok) throw new Error('Geocode network error');
-  const data = await res.json();
+  const data = await nominatimFetch(url);
   if (!data.length) throw new Error('Pincode not found');
 
   const place = data[0];
@@ -105,9 +123,7 @@ export async function reverseGeocodeCoords(lat, lng) {
     `https://nominatim.openstreetmap.org/reverse` +
     `?lat=${la}&lon=${ln}&format=json&addressdetails=1`;
 
-  const res = await fetch(url, { headers: { 'Accept-Language': 'en' } });
-  if (!res.ok) throw new Error('Reverse geocode network error');
-  const place = await res.json();
+  const place = await nominatimFetch(url);
   const a = place.address || {};
   const rawPostcode = String(a.postcode || '').replace(/\D/g, '');
   let pincode = rawPostcode.length >= 6 ? rawPostcode.slice(0, 6) : null;

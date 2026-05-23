@@ -8,11 +8,11 @@ import { Capacitor } from '@capacitor/core';
 import { useNavigate } from 'react-router-dom';
 import { DISPATCH_ELIGIBLE_ROLES } from '../context/AvailabilityContext';
 import {
-  reverseGeocodeCoords,
   normalizeIndianPincode,
   savePincode,
   geocodePincode,
 } from '../utils/geocodePincode';
+import { captureCurrentArea, openAppSettings } from '../utils/deviceLocation';
 import { mlog, mlogError, isDebugLogMirrorEnabled } from '../utils/mobileLogger';
 
 /** Trace Profile navigation/fetch — debug console + native app.log via mlog when enabled. */
@@ -94,6 +94,7 @@ export default function Profile() {
   const [selectedFile, setSelectedFile] = useState(null);
   const fileInputRef = useRef(null);
   const [serviceCapturing, setServiceCapturing] = useState(false);
+  const [showLocSettings, setShowLocSettings] = useState(false);
 
   function needsServiceArea() {
     return user?.role && DISPATCH_ELIGIBLE_ROLES.has(user.role);
@@ -300,41 +301,42 @@ export default function Profile() {
   }
 
   /** Reverse-geocode current GPS → pincode (same behaviour as Onboarding). */
-  function captureServiceAreaFromGPS() {
-    if (!navigator.geolocation) {
-      setError('Location is not supported on this device. Enter your pincode manually.');
-      return;
-    }
+  async function captureServiceAreaFromGPS() {
     setServiceCapturing(true);
     setError('');
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        try {
-          const rev = await reverseGeocodeCoords(pos.coords.latitude, pos.coords.longitude);
-          const pc = normalizeIndianPincode(rev.pincode);
-          if (!pc) {
-            setError('Could not read a postal code from your location. Enter your pincode manually.');
-            return;
-          }
-          setForm((f) => ({
-            ...f,
-            service_pincode: pc,
-            service_locality: rev.locality || '',
-            location_source: 'gps',
-          }));
-          savePincode(pc);
-        } catch {
-          setError('Area lookup failed. Try again or enter your pincode manually.');
-        } finally {
-          setServiceCapturing(false);
-        }
-      },
-      () => {
-        setError('Location access denied — enter your 6-digit service pincode manually.');
-        setServiceCapturing(false);
-      },
-      { timeout: 15000, maximumAge: 120000, enableHighAccuracy: false },
-    );
+    setShowLocSettings(false);
+    const cap = await captureCurrentArea({
+      audience: 'job_seeker',
+      highAccuracy: true,
+      syncProfile: false,
+    });
+    if (cap.ok) {
+      const pc = normalizeIndianPincode(cap.pincode);
+      setForm((f) => ({
+        ...f,
+        service_pincode: pc || f.service_pincode,
+        service_locality: cap.locality || f.service_locality,
+        location_source: 'gps',
+      }));
+      if (pc) savePincode(pc);
+    } else if (cap.lat != null && cap.lng != null && cap.pincode) {
+      const pc = normalizeIndianPincode(cap.pincode);
+      if (pc) {
+        setForm((f) => ({
+          ...f,
+          service_pincode: pc,
+          service_locality: cap.locality || f.service_locality,
+          location_source: 'gps',
+        }));
+        savePincode(pc);
+      } else {
+        setError(cap.userMessage || 'Could not read a postal code from your location. Enter your pincode manually.');
+      }
+    } else {
+      setError(cap.userMessage || 'Location access denied — enter your 6-digit service pincode manually.');
+      setShowLocSettings(cap.permissionState === 'permanent');
+    }
+    setServiceCapturing(false);
   }
 
   // ── Account deletion ──────────────────────────────────────────────────────
@@ -712,6 +714,15 @@ export default function Profile() {
                   >
                     {serviceCapturing ? 'Refreshing…' : '📍 Refresh pincode from my location'}
                   </button>
+                  {showLocSettings && (
+                    <button
+                      type="button"
+                      onClick={() => openAppSettings()}
+                      className="w-full py-2 px-3 rounded-xl text-sm font-semibold border border-gray-200 text-gray-700"
+                    >
+                      Open app settings
+                    </button>
+                  )}
                   <div>
                     <label className="block text-xs font-medium text-gray-700 mb-1">6-digit pincode</label>
                     <input

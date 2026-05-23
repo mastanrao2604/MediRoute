@@ -475,6 +475,8 @@ class ShiftRequest(Base):
     notes = Column(Text, nullable=True)
     idempotency_key = Column(String, nullable=True, unique=True)
     dispatch_radius_km = Column(Float, nullable=False, default=10.0)
+    nurses_required = Column(Integer, nullable=False, default=1, server_default="1")
+    search_closed_at = Column(DateTime, nullable=True)
     filled_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -557,7 +559,7 @@ class LiveAssignment(Base):
 
     id = Column(Integer, primary_key=True)
     shift_request_id = Column(
-        Integer, ForeignKey("shift_requests.id"), nullable=False, unique=True
+        Integer, ForeignKey("shift_requests.id"), nullable=False
     )
     nurse_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     offer_id = Column(Integer, ForeignKey("dispatch_offers.id"), nullable=False)
@@ -573,6 +575,7 @@ class LiveAssignment(Base):
     __table_args__ = (
         Index("idx_assignment_nurse_status", "nurse_user_id", "status"),
         Index("idx_assignment_shift", "shift_request_id"),
+        Index("uq_assignment_shift_nurse", "shift_request_id", "nurse_user_id", unique=True),
     )
 
 

@@ -7,6 +7,8 @@ import { useAuth } from '../context/AuthContext';
 import { useDispatchEvents } from '../context/DispatchContext';
 import ShiftDispatchLive from '../components/recruiter/ShiftDispatchLive';
 import RecruiterShiftDetailSheet from '../components/recruiter/RecruiterShiftDetailSheet';
+import AssignedNurseProfileSheet from '../components/recruiter/AssignedNurseProfileSheet';
+import ShiftApplicantsPanel from '../components/recruiter/ShiftApplicantsPanel';
 import { mlog } from '../utils/mobileLogger';
 import { formatApiErrorDetail } from '../utils/apiErrorMessage';
 import { SHIFT_CARD_STATUS, SEARCH_PHASE_LABEL, isPastShiftStart } from '../utils/staffingStatusCopy';
@@ -14,26 +16,39 @@ import { formatShiftDateTime } from '../utils/shiftDateTime';
 
 const STAFF_SHIFT_STATUS_PILL = {
   dispatching: 'bg-blue-50 text-blue-800 border border-blue-100',
+  receiving: 'bg-green-50 text-green-800 border border-green-100',
   open: 'bg-slate-50 text-slate-700 border border-slate-100',
-  filled: 'bg-green-50 text-green-800 border border-green-100',
+  filled: 'bg-emerald-50 text-emerald-900 border border-emerald-100',
+  search_paused: 'bg-emerald-50 text-emerald-900 border border-emerald-100',
   expired: 'bg-amber-50 text-amber-900 border border-amber-100',
   cancelled: 'bg-gray-100 text-gray-600 border border-gray-200',
 };
 
 function effectiveShiftStatus(shift, live) {
   const db = shift?.status;
+  const searchActive = shift?.search_active !== false && !shift?.search_closed;
+  const confirmed = shift?.confirmed_count ?? 0;
 
-  // Active API status wins over stale terminal WebSocket events (e.g. after Post again).
-  if (db === 'dispatching') return 'dispatching';
+  if (db === 'cancelled' || live?.type === 'shift_cancelled') return 'cancelled';
+  if (db === 'expired' || live?.type === 'shift_expired') return 'expired';
+  if (!searchActive && (db === 'filled' || live?.type === 'shift_filled' || live?.type === 'shift_search_stopped')) {
+    return 'filled';
+  }
+  if (searchActive && confirmed > 0) return 'receiving';
+  if (db === 'dispatching' || live?.type === 'dispatch_started' || live?.type === 'dispatch_wave_update' || live?.type === 'nurse_accepted') {
+    return 'dispatching';
+  }
   if (db === 'open') {
     return isPastShiftStart(shift?.shift_start) ? 'expired' : 'open';
   }
-
-  if (live?.type === 'dispatch_started' || live?.type === 'dispatch_wave_update') return 'dispatching';
-  if (live?.type === 'shift_cancelled') return 'cancelled';
-  if (live?.type === 'shift_filled') return 'filled';
-  if (live?.type === 'shift_expired') return 'expired';
   return db;
+}
+
+function isStaffSearchLive(shift, live) {
+  if (shift?.search_closed || shift?.search_active === false) return false;
+  if (isPastShiftStart(shift?.shift_start)) return false;
+  const st = effectiveShiftStatus(shift, live);
+  return st === 'dispatching' || st === 'receiving' || st === 'open';
 }
 
 export default function RecruiterDashboard() {
@@ -51,6 +66,8 @@ export default function RecruiterDashboard() {
   const [detailShiftId, setDetailShiftId] = useState(null);
   const [repostShiftId, setRepostShiftId] = useState(null);
   const [highlightShiftId, setHighlightShiftId] = useState(null);
+  const [profileNurse, setProfileNurse] = useState(null);
+  const [profileShiftLabel, setProfileShiftLabel] = useState('');
 
   const loadShifts = useCallback(() => (
     api.get('/shifts/')
@@ -72,6 +89,12 @@ export default function RecruiterDashboard() {
   }, [loadShifts]);
 
   useEffect(() => {
+    const onRefresh = () => { loadShifts(); };
+    window.addEventListener('mr-recruiter-shifts-refresh', onRefresh);
+    return () => window.removeEventListener('mr-recruiter-shifts-refresh', onRefresh);
+  }, [loadShifts]);
+
+  useEffect(() => {
     const createdId = location.state?.shiftId;
     if (location.state?.shiftCreated && createdId) {
       setHighlightShiftId(createdId);
@@ -81,11 +104,7 @@ export default function RecruiterDashboard() {
   }, [location.state, location.pathname, navigate]);
 
   const hasDispatching = useMemo(
-    () => shifts.some((s) => {
-      const live = getShiftStatus(s.id);
-      const st = effectiveShiftStatus(s, live);
-      return st === 'dispatching' || st === 'open';
-    }),
+    () => shifts.some((s) => isStaffSearchLive(s, getShiftStatus(s.id))),
     [shifts, getShiftStatus],
   );
 
@@ -104,6 +123,20 @@ export default function RecruiterDashboard() {
     } catch (e) {
       const d = e?.response?.data?.detail;
       setShiftsError(typeof d === 'string' ? d : 'Could not cancel shift.');
+    } finally {
+      setShiftBusyId(null);
+    }
+  }
+
+  async function stopStaffSearch(shiftId) {
+    if (!window.confirm('Stop searching for more nurses? Confirmed staff stay booked.')) return;
+    setShiftBusyId(shiftId);
+    try {
+      await api.post(`/shifts/${shiftId}/stop-search`);
+      await loadShifts();
+    } catch (e) {
+      const d = e?.response?.data?.detail;
+      setShiftsError(typeof d === 'string' ? d : 'Could not stop staff search.');
     } finally {
       setShiftBusyId(null);
     }
@@ -257,11 +290,15 @@ export default function RecruiterDashboard() {
                 const canArchive =
                   s.status === 'expired' || s.status === 'cancelled' || s.status === 'filled'
                   || effective === 'expired' || effective === 'cancelled';
-                const pill = STAFF_SHIFT_STATUS_PILL[effective] || STAFF_SHIFT_STATUS_PILL.open;
-                const isLive = effective === 'dispatching' || effective === 'open';
+                const cardStatus = recruiterShiftCardStatus(s, live) || effective;
+                const pill = STAFF_SHIFT_STATUS_PILL[cardStatus] || STAFF_SHIFT_STATUS_PILL.open;
+                const isLive = isStaffSearchLive(s, live);
+                const canStopSearch = isLive;
                 const highlighted = highlightShiftId === s.id;
+                const hasApplicants = (s.applicants?.length || 0) > 0;
 
-                const statusShort = SHIFT_CARD_STATUS[effective]
+                const statusShort = SHIFT_CARD_STATUS[cardStatus]
+                  || SHIFT_CARD_STATUS[effective]
                   || effective.charAt(0).toUpperCase() + effective.slice(1);
 
                 return (
@@ -299,18 +336,44 @@ export default function RecruiterDashboard() {
                       />
                     )}
 
+                    {(hasApplicants || live?.type === 'nurse_accepted') && (
+                      <ShiftApplicantsPanel
+                        shift={s}
+                        onViewProfile={(nurse) => {
+                          setProfileNurse(nurse);
+                          setProfileShiftLabel(`${s.hospital_name} · ${formatShiftDateTime(s.shift_start)}`);
+                        }}
+                      />
+                    )}
+
+                    {live?.type === 'nurse_accepted' && isLive && (
+                      <p className="text-xs text-green-800 font-medium">
+                        {live.message || 'More nurses can still apply until you stop search.'}
+                      </p>
+                    )}
+
+                    {!isLive && effective === 'filled' && (
+                      <p className="text-xs text-green-800 font-semibold">Staff finalized</p>
+                    )}
+
                     {effective === 'expired' && (
                       <p className="text-xs text-amber-800 font-medium">
                         {live?.message || 'Shift expired — no nurse confirmed in time.'}
                       </p>
                     )}
 
-                    {live?.type === 'shift_filled' && (
-                      <p className="text-xs text-green-700 font-medium">{live.message || 'Nurse confirmed for this shift.'}</p>
-                    )}
-
-                    {(canCancel || canRedispatch || canArchive) && isVerified && (
+                    {(canCancel || canRedispatch || canArchive || canStopSearch) && isVerified && (
                       <div className="flex gap-2 shrink-0 flex-wrap justify-end pt-1 border-t border-gray-100/80">
+                        {canStopSearch && (
+                          <button
+                            type="button"
+                            disabled={shiftBusyId === s.id}
+                            onClick={(e) => { e.stopPropagation(); stopStaffSearch(s.id); }}
+                            className="text-xs font-semibold px-3 py-2 rounded-xl bg-amber-50 text-amber-900 border border-amber-200 hover:bg-amber-100 disabled:opacity-50"
+                          >
+                            Stop searching
+                          </button>
+                        )}
                         {canCancel && (
                           <button
                             type="button"
@@ -432,6 +495,24 @@ export default function RecruiterDashboard() {
           onCancel={async (id) => { await cancelStaffingShift(id); setDetailShiftId(null); setRepostShiftId(null); }}
           onArchive={archiveStaffingShift}
           onRedispatch={redispatchStaffingShift}
+          onStopSearch={stopStaffSearch}
+          onViewNurseProfile={(nurse, shiftRow) => {
+            setProfileNurse(nurse);
+            setProfileShiftLabel(
+              `${shiftRow.hospital_name} · ${formatShiftDateTime(shiftRow.shift_start)}`,
+            );
+          }}
+        />
+      )}
+
+      {profileNurse && (
+        <AssignedNurseProfileSheet
+          nurse={profileNurse}
+          shiftLabel={profileShiftLabel}
+          onClose={() => {
+            setProfileNurse(null);
+            setProfileShiftLabel('');
+          }}
         />
       )}
     </>
@@ -453,6 +534,16 @@ const EVENT_META = {
     label: 'Still searching for staff…',
     dot: 'bg-indigo-500', text: 'text-indigo-700', bg: 'bg-indigo-50',
     active: true,
+  },
+  nurse_accepted: {
+    label: 'Receiving applications',
+    dot: 'bg-green-500', text: 'text-green-700', bg: 'bg-green-50',
+    active: true,
+  },
+  shift_search_stopped: {
+    label: 'Search paused',
+    dot: 'bg-emerald-500', text: 'text-emerald-800', bg: 'bg-emerald-50',
+    active: false,
   },
   shift_filled: {
     label: 'Staff confirmed',
@@ -552,8 +643,14 @@ function DispatchActivityPanel({ getRecentEvents, getDispatchStartTime }) {
           if (!displayMsg && ev.type === 'shift_expired') {
             displayMsg = 'No nurse accepted before the shift start time. Use Post again to retry.';
           }
+          if (!displayMsg && ev.type === 'nurse_accepted') {
+            displayMsg = ev.message || 'A nurse accepted — search still active.';
+          }
+          if (!displayMsg && ev.type === 'shift_search_stopped') {
+            displayMsg = ev.message || 'Staff search paused.';
+          }
           if (!displayMsg && ev.type === 'shift_filled') {
-            displayMsg = 'A nurse confirmed for this shift.';
+            displayMsg = ev.message || 'Staff finalized for this shift.';
           }
           if (!displayMsg && ev.type === 'shift_cancelled') {
             displayMsg = 'This shift was cancelled — nurses will not receive further alerts.';

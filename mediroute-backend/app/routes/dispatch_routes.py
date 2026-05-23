@@ -7,6 +7,7 @@ Endpoints:
   POST /dispatch/offers/{offer_id}/decline    — nurse declines dispatch offer
   GET  /dispatch/offers/pending               — nurse gets pending offer (reconnect recovery)
 """
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -19,21 +20,29 @@ from ..dependencies import get_current_user
 from ..utils.security import decode_access_token
 from .. import models
 from ..ws_manager import ws_manager
-from ..dispatch.engine import dispatch_events, _metrics
+from ..dispatch.engine import dispatch_events, _metrics, record_nurse_accept_sync
 from ..dispatch.events import OFFER_ACCEPTED, OFFER_DECLINED, OFFER_TIMED_OUT
 from ..utils.datetime_util import utc_iso
+from ..dispatch.eligibility import nurse_accept_eligible
 from ..dispatch.offer_policy import (
     RESPONDABLE_OFFER_STATUSES,
     offer_respondable,
     seconds_until_shift_start,
     shift_accepting_staff,
+    shift_search_open,
     shift_start_utc_naive,
 )
 
 logger = logging.getLogger(__name__)
 
 
-def _offer_payload(offer: models.DispatchOffer, shift: models.ShiftRequest, now: datetime) -> dict:
+def _offer_payload(
+    offer: models.DispatchOffer,
+    shift: models.ShiftRequest,
+    now: datetime,
+    db: Session,
+) -> dict:
+    accept_ok, dist_km, block_msg = nurse_accept_eligible(db, shift, offer.nurse_user_id)
     return {
         "offer_id": offer.id,
         "shift_id": shift.id,
@@ -44,6 +53,9 @@ def _offer_payload(offer: models.DispatchOffer, shift: models.ShiftRequest, now:
         "pay_rate": shift.pay_rate,
         "offer_status": offer.status.value,
         "respond_by_sec": seconds_until_shift_start(shift, now),
+        "accept_eligible": accept_ok,
+        "distance_km": dist_km,
+        "accept_blocked_message": block_msg or None,
     }
 
 router = APIRouter(tags=["Dispatch"])
@@ -143,17 +155,17 @@ def accept_offer(
             models.DispatchOffer.nurse_user_id == current_user.id,
         ).first()
         if existing and existing.status == models.OfferStatus.accepted:
-            raise HTTPException(status_code=409, detail="This shift has already been filled.")
+            raise HTTPException(status_code=409, detail="You are already confirmed for this shift.")
         raise HTTPException(status_code=404, detail="Offer not found or no longer available.")
 
     active_shift = db.query(models.ShiftRequest).filter(
         models.ShiftRequest.id == offer.shift_request_id,
     ).first()
-    if not active_shift or not shift_accepting_staff(active_shift):
+    if not active_shift or not shift_search_open(active_shift):
         db.rollback()
         raise HTTPException(
             status_code=410,
-            detail="This shift has already started or is no longer available.",
+            detail="This shift has already started or staff search was closed.",
         )
 
     if shift_start_utc_naive(active_shift.shift_start) <= datetime.utcnow():
@@ -162,10 +174,16 @@ def accept_offer(
             detail="This shift has already started.",
         )
 
-    # FUTURE: AssignmentConflictValidator (§24.5) — check for overlapping shifts
-    # For now: basic check — nurse doesn't have another active assignment
+    same_shift = db.query(models.LiveAssignment).filter(
+        models.LiveAssignment.shift_request_id == offer.shift_request_id,
+        models.LiveAssignment.nurse_user_id == current_user.id,
+    ).first()
+    if same_shift:
+        raise HTTPException(status_code=409, detail="You are already confirmed for this shift.")
+
     active_assignment = db.query(models.LiveAssignment).filter(
         models.LiveAssignment.nurse_user_id == current_user.id,
+        models.LiveAssignment.shift_request_id != offer.shift_request_id,
         models.LiveAssignment.status.in_([
             models.AssignmentStatus.confirmed,
             models.AssignmentStatus.checked_in,
@@ -177,15 +195,37 @@ def accept_offer(
             detail="You already have an active assignment. Complete it before accepting new offers.",
         )
 
+    accept_ok, dist_km, block_msg = nurse_accept_eligible(db, active_shift, current_user.id)
+    if not accept_ok:
+        logger.info(
+            "[dispatch] accept blocked nurse=%d shift=%d dist_km=%s",
+            current_user.id, active_shift.id, dist_km,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail=block_msg or "This shift is currently available only for nearby staff.",
+        )
+
     now = datetime.utcnow()
     offer.status = models.OfferStatus.accepted
     offer.responded_at = now
     offer.expires_at = shift_start_utc_naive(active_shift.shift_start)
 
-    # Timeline event
     shift = db.query(models.ShiftRequest).filter(
         models.ShiftRequest.id == offer.shift_request_id
     ).first()
+    try:
+        assignment = record_nurse_accept_sync(
+            db,
+            offer.shift_request_id,
+            current_user.id,
+            offer_id,
+            now,
+            commit=False,
+        )
+    except ValueError:
+        raise HTTPException(status_code=410, detail="Staff search is closed for this shift.")
+
     event = models.ShiftTimelineEvent(
         shift_request_id=offer.shift_request_id,
         event_type=OFFER_ACCEPTED,
@@ -211,6 +251,42 @@ def accept_offer(
 
     _metrics["offers_accepted"] += 1  # keep dispatch metrics in sync
 
+    confirmed_count = (
+        db.query(models.LiveAssignment)
+        .filter(models.LiveAssignment.shift_request_id == offer.shift_request_id)
+        .count()
+    )
+    nurses_required = getattr(shift, "nurses_required", None) or 1
+    nurse_name = current_user.name or f"Staff #{current_user.id}"
+
+    async def _notify_accept() -> None:
+        await ws_manager.send(current_user.id, {
+            "type": "assignment_confirmed",
+            "assignment_id": assignment.id,
+            "shift_id": offer.shift_request_id,
+            "hospital_name": shift.hospital_name if shift else "",
+            "shift_start": utc_iso(shift.shift_start) if shift else None,
+            "message": "Shift confirmed — get ready for your shift.",
+        })
+        await ws_manager.send(shift.hospital_user_id, {
+            "type": "nurse_accepted",
+            "shift_id": offer.shift_request_id,
+            "nurse_name": nurse_name,
+            "nurse_user_id": current_user.id,
+            "confirmed_count": confirmed_count,
+            "nurses_required": nurses_required,
+            "message": (
+                f"{nurse_name} accepted ({confirmed_count} of {nurses_required} confirmed) "
+                "— still searching for more staff."
+            ),
+        })
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_notify_accept())
+    except RuntimeError:
+        pass
+
     # Signal dispatch engine (asyncio.Event.set())
     event_signal = dispatch_events.get(offer.session_id)
     if event_signal:
@@ -230,7 +306,8 @@ def accept_offer(
         "accepted": True,
         "offer_id": offer_id,
         "shift_id": offer.shift_request_id,
-        "message": "Assignment pending confirmation.",
+        "assignment_id": assignment.id,
+        "message": "Shift confirmed — the hospital can still add more staff until search closes.",
     }
 
 
@@ -335,6 +412,6 @@ def get_pending_offers(
         if shift.id in seen_shift_ids:
             continue
         seen_shift_ids.add(shift.id)
-        payload.append(_offer_payload(offer, shift, now))
+        payload.append(_offer_payload(offer, shift, now, db))
 
     return {"offers": payload}

@@ -308,11 +308,14 @@ function DispatchManager() {
         setMinimizedOffer(null);
         if (DISPATCH_ELIGIBLE_ROLES.has(user?.role)) {
           window.dispatchEvent(new CustomEvent('mr-nurse-active-shift-refresh'));
+          window.dispatchEvent(new CustomEvent('mr-jobs-shifts-refresh'));
         }
         break;
 
       case 'dispatch_started':
       case 'dispatch_wave_update':
+      case 'nurse_accepted':
+      case 'shift_search_stopped':
       case 'shift_filled':
       case 'shift_expired':
       case 'shift_cancelled':
@@ -320,6 +323,12 @@ function DispatchManager() {
         mlog('dispatch', `ws_${msg.type}`, tracePayload());
         // Publish to DispatchContext — RecruiterDashboard reads from there
         publish(msg);
+        if (
+          user?.role === 'recruiter'
+          && (msg.type === 'shift_filled' || msg.type === 'nurse_accepted' || msg.type === 'shift_search_stopped')
+        ) {
+          window.dispatchEvent(new CustomEvent('mr-recruiter-shifts-refresh'));
+        }
         if (DISPATCH_ELIGIBLE_ROLES.has(user?.role)) {
           if (msg.type === 'shift_cancelled' || msg.type === 'shift_expired' || msg.type === 'shift_filled') {
             window.dispatchEvent(new CustomEvent('mr-nurse-active-shift-refresh'));

@@ -31,8 +31,9 @@ from ..dispatch.events import (
 )
 from ..ws_manager import ws_manager
 from ..utils.datetime_util import to_utc_naive, utc_iso
-from ..dispatch.eligibility import nurse_nearby_shift, normalize_pincode
-from ..dispatch.offer_policy import offer_respondable
+from ..dispatch.eligibility import nurse_accept_eligible, nurse_shift_visible, normalize_pincode
+from ..dispatch.offer_policy import offer_respondable, shift_search_open
+from ..dispatch.engine import _finalize_search_closed_sync
 from ..routes.availability import DISPATCH_ELIGIBLE_ROLES
 from .. import crud
 
@@ -59,6 +60,7 @@ class ShiftCreateRequest(BaseModel):
     city_id: Optional[str] = "HYD"
     idempotency_key: Optional[str] = None
     dispatch_radius_km: Optional[float] = 10.0
+    nurses_required: Optional[int] = 1
 
     @field_validator("role_required")
     @classmethod
@@ -184,7 +186,30 @@ def _expire_shift_if_past_start_unfilled(db: Session, shift: models.ShiftRequest
         .first()
     )
     if assigned:
-        return False
+        if not getattr(shift, "search_closed_at", None):
+            now = datetime.utcnow()
+            shift.search_closed_at = now
+            _stop_all_dispatch_for_shift(db, shift)
+            shift.status = models.ShiftRequestStatus.filled
+            shift.filled_at = now
+            db.commit()
+
+            async def _notify_started() -> None:
+                await ws_manager.send(
+                    shift.hospital_user_id,
+                    {
+                        "type": "shift_search_stopped",
+                        "shift_id": shift.id,
+                        "message": "Shift started — staff finalized.",
+                    },
+                )
+
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(_notify_started())
+            except RuntimeError:
+                pass
+        return True
 
     now = datetime.utcnow()
     pending_rows = (
@@ -307,6 +332,86 @@ def _recruiter_archived_shift_ids(db: Session, recruiter_user_id: int) -> set:
     return {r[0] for r in rows}
 
 
+def _attach_recruiter_staffing(d: dict, shift: models.ShiftRequest, db: Session) -> dict:
+    """Applicants + staffing progress for recruiter UI."""
+    assignments = (
+        db.query(models.LiveAssignment)
+        .filter(models.LiveAssignment.shift_request_id == shift.id)
+        .order_by(models.LiveAssignment.confirmed_at.asc())
+        .all()
+    )
+    applicants = []
+    for a in assignments:
+        card = _assigned_nurse_summary(db, a.nurse_user_id)
+        card["status"] = "confirmed"
+        card["assignment_id"] = a.id
+        applicants.append(card)
+
+    pending_offers = (
+        db.query(models.DispatchOffer)
+        .filter(
+            models.DispatchOffer.shift_request_id == shift.id,
+            models.DispatchOffer.status == models.OfferStatus.pending,
+        )
+        .order_by(models.DispatchOffer.offered_at.asc())
+        .all()
+    )
+    confirmed_ids = {a.nurse_user_id for a in assignments}
+    for offer in pending_offers:
+        if offer.nurse_user_id in confirmed_ids:
+            continue
+        card = _assigned_nurse_summary(db, offer.nurse_user_id)
+        card["status"] = "waiting"
+        card["offer_id"] = offer.id
+        applicants.append(card)
+
+    pending_responses = sum(
+        1 for o in pending_offers if o.nurse_user_id not in confirmed_ids
+    )
+    nurses_required = getattr(shift, "nurses_required", None) or 1
+    d["applicants"] = applicants
+    d["confirmed_count"] = len(applicants)
+    d["nurses_required"] = nurses_required
+    d["pending_responses"] = pending_responses
+    d["search_active"] = shift_search_open(shift)
+    if assignments and not d.get("assignment"):
+        a0 = assignments[0]
+        d["assignment"] = {
+            "id": a0.id,
+            "nurse_user_id": a0.nurse_user_id,
+            "status": a0.status.value,
+            "confirmed_at": a0.confirmed_at.isoformat() if a0.confirmed_at else None,
+            "check_in_at": a0.check_in_at.isoformat() if a0.check_in_at else None,
+            "check_out_at": a0.check_out_at.isoformat() if a0.check_out_at else None,
+        }
+        d["assigned_nurse"] = _assigned_nurse_summary(db, a0.nurse_user_id)
+    return d
+
+
+def _assigned_nurse_summary(db: Session, nurse_user_id: int) -> dict:
+    """Staff card for recruiter — contact + profile fields only."""
+    user = db.query(models.User).filter(models.User.id == nurse_user_id).first()
+    profile = crud.get_profile(db, nurse_user_id)
+    rs = (
+        db.query(models.ReliabilityScore)
+        .filter(models.ReliabilityScore.user_id == nurse_user_id)
+        .first()
+    )
+    name = (user.name if user and user.name else None) or f"Staff #{nurse_user_id}"
+    return {
+        "user_id": nurse_user_id,
+        "name": name,
+        "phone": user.phone if user else None,
+        "role": user.role.value if user else None,
+        "experience_years": profile.experience_years if profile else None,
+        "skills": profile.skills if profile else None,
+        "education": profile.education if profile else None,
+        "service_locality": profile.service_locality if profile else None,
+        "rating": round(float(rs.score), 1) if rs and rs.score is not None else None,
+        "completed_shifts": int(rs.completed_shifts) if rs else 0,
+    }
+
+
 def _shift_to_dict(shift: models.ShiftRequest, assignment: Optional[models.LiveAssignment] = None) -> dict:
     d = {
         "id": shift.id,
@@ -325,12 +430,16 @@ def _shift_to_dict(shift: models.ShiftRequest, assignment: Optional[models.LiveA
         "hospital_pincode": getattr(shift, "hospital_pincode", None),
         "hospital_locality": getattr(shift, "hospital_locality", None),
         "dispatch_radius_km": shift.dispatch_radius_km,
+        "nurses_required": getattr(shift, "nurses_required", None) or 1,
+        "search_closed": bool(getattr(shift, "search_closed_at", None)),
+        "search_closed_at": utc_iso(getattr(shift, "search_closed_at", None)),
         "filled_at": utc_iso(shift.filled_at),
         "created_at": utc_iso(shift.created_at),
     }
     if assignment:
         d["assignment"] = {
             "id": assignment.id,
+            "nurse_user_id": assignment.nurse_user_id,
             "status": assignment.status.value,
             "confirmed_at": assignment.confirmed_at.isoformat() if assignment.confirmed_at else None,
             "check_in_at": assignment.check_in_at.isoformat() if assignment.check_in_at else None,
@@ -348,9 +457,13 @@ def _attach_nurse_shift_context(
     nurse_pincode: Optional[str],
     db: Session,
 ) -> dict:
-    """Add nearby_match + my_offer for employee browse/detail."""
-    nearby = nurse_nearby_shift(shift, nurse_role, nurse_city_id, nurse_pincode)
-    d["nearby_match"] = nearby
+    """Add nearby_match + my_offer + accept eligibility for employee browse/detail."""
+    accept_ok, dist_km, block_msg = nurse_accept_eligible(db, shift, nurse_user_id)
+    d["accept_eligible"] = accept_ok
+    d["distance_km"] = dist_km
+    d["nearby_match"] = accept_ok
+    if block_msg and not accept_ok:
+        d["accept_blocked_message"] = block_msg
     offer = (
         db.query(models.DispatchOffer)
         .filter(
@@ -365,6 +478,8 @@ def _attach_nurse_shift_context(
             "offer_id": offer.id,
             "status": offer.status.value,
             "respondable": offer_respondable(offer, shift),
+            "accept_eligible": accept_ok,
+            "distance_km": dist_km,
         }
     return d
 
@@ -449,6 +564,7 @@ async def create_shift(
         notes=req.notes,
         idempotency_key=idempotency_key,
         dispatch_radius_km=req.dispatch_radius_km or 10.0,
+        nurses_required=max(1, int(req.nurses_required or 1)),
     )
     db.add(shift)
     db.commit()
@@ -499,7 +615,18 @@ def list_shifts(
         for s in visible:
             if _expire_shift_if_past_start_unfilled(db, s):
                 db.refresh(s)
-        return {"shifts": [_shift_to_dict(s) for s in visible]}
+        payload = []
+        for s in visible:
+            primary = (
+                db.query(models.LiveAssignment)
+                .filter(models.LiveAssignment.shift_request_id == s.id)
+                .order_by(models.LiveAssignment.confirmed_at.asc())
+                .first()
+            )
+            d = _shift_to_dict(s, primary)
+            _attach_recruiter_staffing(d, s, db)
+            payload.append(d)
+        return {"shifts": payload}
     else:
         # Nurse: return assignments with shift details
         assignments = (
@@ -527,7 +654,7 @@ def browse_open_shifts(
     """
     Open instant shifts for the Jobs listing (open + actively finding staff).
 
-    Nurses: only shifts matching their role, city, and nearby pincode/area.
+    Nurses: shifts in their role + city (Phase 1: all visible; accept within 50 km).
     Includes my_offer when the hospital has already notified them.
     """
     now = datetime.utcnow()
@@ -553,7 +680,11 @@ def browse_open_shifts(
             models.ShiftRequest.role_required == effective_role,
         )
         shifts = q.order_by(models.ShiftRequest.shift_start.asc()).offset(skip).limit(limit * 3).all()
-        eligible = [s for s in shifts if nurse_nearby_shift(s, current_user.role, effective_city, nurse_pc)]
+        # Phase 1: show all city+role shifts. Phase 2 TODO: filter by notification radius.
+        eligible = [
+            s for s in shifts
+            if nurse_shift_visible(s, current_user.role, effective_city)
+        ]
         eligible = eligible[skip : skip + limit]
         payload = []
         for s in eligible:
@@ -565,6 +696,17 @@ def browse_open_shifts(
             ):
                 continue
             if _shift_start_utc_naive(s.shift_start) <= now:
+                continue
+            if db.query(models.LiveAssignment).filter(
+                models.LiveAssignment.shift_request_id == s.id,
+                models.LiveAssignment.nurse_user_id == current_user.id,
+            ).first():
+                continue
+            if db.query(models.DispatchOffer).filter(
+                models.DispatchOffer.shift_request_id == s.id,
+                models.DispatchOffer.nurse_user_id == current_user.id,
+                models.DispatchOffer.status == models.OfferStatus.accepted,
+            ).first():
                 continue
             d = _shift_to_dict(s)
             _attach_nurse_shift_context(
@@ -649,6 +791,7 @@ def get_shift(
     ).first()
 
     result = _shift_to_dict(shift, assignment)
+    _attach_recruiter_staffing(result, shift, db)
     if session:
         result["dispatch"] = {
             "session_id": session.id,
@@ -787,6 +930,58 @@ def archive_shift(
         db.commit()
 
     return {"success": True, "shift_id": shift_id}
+
+
+@router.post("/{shift_id}/stop-search")
+async def stop_shift_search(
+    shift_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Recruiter manually closes staff search; confirmed nurses remain booked."""
+    if current_user.role != models.UserRole.recruiter:
+        raise HTTPException(status_code=403, detail="Only recruiters can stop staff search.")
+
+    shift = db.query(models.ShiftRequest).filter(
+        models.ShiftRequest.id == shift_id,
+        models.ShiftRequest.hospital_user_id == current_user.id,
+    ).first()
+    if not shift:
+        raise HTTPException(status_code=404, detail="Shift not found.")
+    if getattr(shift, "search_closed_at", None):
+        confirmed = (
+            db.query(models.LiveAssignment)
+            .filter(models.LiveAssignment.shift_request_id == shift_id)
+            .count()
+        )
+        return {"stopped": True, "confirmed_count": confirmed}
+
+    _stop_all_dispatch_for_shift(db, shift)
+    now = datetime.utcnow()
+    _finalize_search_closed_sync(db, shift_id, now, "manual")
+    db.refresh(shift)
+
+    confirmed = (
+        db.query(models.LiveAssignment)
+        .filter(models.LiveAssignment.shift_request_id == shift_id)
+        .count()
+    )
+    await ws_manager.send(shift.hospital_user_id, {
+        "type": "shift_search_stopped",
+        "shift_id": shift_id,
+        "confirmed_count": confirmed,
+        "message": "Staff search paused — no new applications.",
+    })
+    if confirmed > 0:
+        await ws_manager.send(shift.hospital_user_id, {
+            "type": "shift_filled",
+            "shift_id": shift_id,
+            "confirmed_count": confirmed,
+            "message": f"{confirmed} nurse(s) confirmed for this shift.",
+        })
+
+    logger.info("[shifts] shift %d search stopped by recruiter %d", shift_id, current_user.id)
+    return {"stopped": True, "confirmed_count": confirmed}
 
 
 @router.post("/{shift_id}/cancel")

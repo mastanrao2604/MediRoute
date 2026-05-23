@@ -34,12 +34,17 @@ function countdownToShiftStart(iso) {
 export default function ShiftDispatchLive({ shift, live, dispatchStartTime }) {
   const [, setTick] = useState(0);
   const pastStart = isPastShiftStart(shift?.shift_start);
+  const searchActive = shift?.search_active !== false && !shift?.search_closed;
+  const confirmed = shift?.confirmed_count ?? shift?.applicants?.filter((a) => a.status === 'confirmed')?.length ?? 0;
   const isActive =
     !pastStart &&
+    searchActive &&
     (shift?.status === 'dispatching' ||
       shift?.status === 'open' ||
       live?.type === 'dispatch_started' ||
-      live?.type === 'dispatch_wave_update');
+      live?.type === 'dispatch_wave_update' ||
+      live?.type === 'nurse_accepted' ||
+      (confirmed > 0 && searchActive));
 
   useEffect(() => {
     if (!isActive) return undefined;
@@ -52,7 +57,7 @@ export default function ShiftDispatchLive({ shift, live, dispatchStartTime }) {
   const phaseLabel =
     live?.message ||
     (live?.status && SEARCH_PHASE_LABEL[live.status]) ||
-    'Finding nearby nurses…';
+    (confirmed > 0 ? SEARCH_PHASE_LABEL.receiving : 'Finding nearby nurses…');
 
   const elapsed = elapsedSince(dispatchStartTime);
   const untilStart = countdownToShiftStart(shift?.shift_start);
@@ -73,7 +78,9 @@ export default function ShiftDispatchLive({ shift, live, dispatchStartTime }) {
       </div>
       <div className="flex items-center gap-2 mt-1.5 pl-4">
         <span className="w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin shrink-0" />
-        <span className="text-xs text-indigo-700">Staff search in progress</span>
+        <span className="text-xs text-indigo-700">
+          {confirmed > 0 ? 'Staff search active' : 'Finding nearby staff'}
+        </span>
       </div>
       <div className="flex flex-wrap gap-1.5 mt-1.5 pl-4">
         {nurseInfo && (

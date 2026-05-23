@@ -22,6 +22,14 @@ def offer_expires_at(shift: models.ShiftRequest) -> datetime:
     return shift_start_utc_naive(shift.shift_start)
 
 
+def shift_search_open(shift: models.ShiftRequest, now: Optional[datetime] = None) -> bool:
+    """True while nurses may still accept and the engine may send offers."""
+    now = now or datetime.utcnow()
+    if getattr(shift, "search_closed_at", None):
+        return False
+    return shift_accepting_staff(shift, now)
+
+
 def shift_accepting_staff(shift: models.ShiftRequest, now: Optional[datetime] = None) -> bool:
     now = now or datetime.utcnow()
     if shift.status not in (
@@ -35,7 +43,7 @@ def shift_accepting_staff(shift: models.ShiftRequest, now: Optional[datetime] = 
 def offer_respondable(offer: models.DispatchOffer, shift: models.ShiftRequest) -> bool:
     if offer.status not in RESPONDABLE_OFFER_STATUSES:
         return False
-    return shift_accepting_staff(shift)
+    return shift_search_open(shift)
 
 
 def seconds_until_shift_start(shift: models.ShiftRequest, now: Optional[datetime] = None) -> int:
