@@ -304,13 +304,15 @@ export default function Profile() {
   async function captureServiceAreaFromGPS() {
     setServiceCapturing(true);
     setError('');
+    setSuccess('');
     setShowLocSettings(false);
+    mlog('lifecycle', 'prof_gps_refresh_start', {});
     const cap = await captureCurrentArea({
       audience: 'job_seeker',
       highAccuracy: true,
-      syncProfile: false,
+      syncProfile: true,
     });
-    if (cap.ok) {
+    if (cap.ok || (cap.lat != null && cap.lng != null && (cap.locality || cap.pincode))) {
       const pc = normalizeIndianPincode(cap.pincode);
       setForm((f) => ({
         ...f,
@@ -319,22 +321,22 @@ export default function Profile() {
         location_source: 'gps',
       }));
       if (pc) savePincode(pc);
-    } else if (cap.lat != null && cap.lng != null && cap.pincode) {
-      const pc = normalizeIndianPincode(cap.pincode);
-      if (pc) {
-        setForm((f) => ({
-          ...f,
-          service_pincode: pc,
-          service_locality: cap.locality || f.service_locality,
-          location_source: 'gps',
-        }));
-        savePincode(pc);
+      if (pc || cap.locality) {
+        setSuccess(
+          pc
+            ? `Service area updated: ${pc}${cap.locality ? ` — ${cap.locality}` : ''}`
+            : `Area updated: ${cap.locality}. Add pincode if offers are missed.`,
+        );
+        setTimeout(() => setSuccess(''), 4000);
+        mlog('lifecycle', 'prof_gps_refresh_ok', { has_pin: Boolean(pc), has_locality: Boolean(cap.locality) });
       } else {
         setError(cap.userMessage || 'Could not read a postal code from your location. Enter your pincode manually.');
+        mlog('lifecycle', 'prof_gps_refresh_partial', {});
       }
     } else {
       setError(cap.userMessage || 'Location access denied — enter your 6-digit service pincode manually.');
       setShowLocSettings(cap.permissionState === 'permanent');
+      mlog('lifecycle', 'prof_gps_refresh_fail', { code: cap.error?.code });
     }
     setServiceCapturing(false);
   }

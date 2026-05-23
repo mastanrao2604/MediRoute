@@ -221,6 +221,8 @@ app.include_router(shifts_router)
 app.include_router(ws_router)        # WebSocket: /ws/{user_id}
 app.include_router(offer_router)     # /dispatch/offers/...
 app.include_router(ops_router)       # /admin/ops/...
+from .routes import geo as geo_router  # noqa: E402
+app.include_router(geo_router.router)
 
 
 # ─── SPA static assets ────────────────────────────────────────────────────────

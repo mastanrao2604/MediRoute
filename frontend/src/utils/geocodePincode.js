@@ -1,9 +1,10 @@
 /**
- * Nominatim pincode geocoding — shared by AvailabilityContext and PostShift.
- *
- * Returns { lat, lng, displayName } or throws on failure.
- * Cached in memory for the session (same pincode → no repeat network call).
+ * Pincode / reverse geocoding — shared by AvailabilityContext, Profile, PostShift.
+ * On native Android/iOS uses backend /geo/* proxy (CapacitorHttp breaks direct Nominatim).
+ * Web uses Nominatim directly.
  */
+import { Capacitor } from '@capacitor/core';
+import { mlog, mlogError } from './mobileLogger';
 
 const _cache = {};
 const LOCALITY_MAP_KEY = 'mr_pin_locality_map';
@@ -79,10 +80,39 @@ async function nominatimFetch(url) {
   }
 }
 
+async function backendGeoGet(path, params = {}) {
+  const api = (await import('../api/axios')).default;
+  try {
+    const res = await api.get(path, { params, timeout: 16_000 });
+    mlog('location', 'backend_geo_ok', { path });
+    return res.data;
+  } catch (e) {
+    mlogError('location', 'backend_geo_fail', e, { path });
+    const detail = e?.response?.data?.detail;
+    if (typeof detail === 'string') throw new Error(detail);
+    if (e?.code === 'ECONNABORTED') throw new Error('Geocode timed out — check network and retry.');
+    throw new Error('Could not resolve location. Try again or enter pincode manually.');
+  }
+}
+
+const useBackendGeo = () => Capacitor.isNativePlatform();
+
 export async function geocodePincode(pincode) {
   const clean = String(pincode).replace(/\D/g, '');
   if (clean.length !== 6) throw new Error('Pincode must be 6 digits');
   if (_cache[clean]) return _cache[clean];
+
+  if (useBackendGeo()) {
+    const data = await backendGeoGet(`/geo/pincode/${clean}`);
+    const result = {
+      lat: parseFloat(data.lat),
+      lng: parseFloat(data.lng),
+      displayName: data.locality || data.display_name || '',
+    };
+    _cache[clean] = result;
+    if (result.displayName) persistPincodeLocality(clean, result.displayName);
+    return result;
+  }
 
   const url =
     `https://nominatim.openstreetmap.org/search` +
@@ -119,22 +149,33 @@ export async function reverseGeocodeCoords(lat, lng) {
   const key = `${la.toFixed(4)},${ln.toFixed(4)}`;
   if (_revCache[key]) return _revCache[key];
 
-  const url =
-    `https://nominatim.openstreetmap.org/reverse` +
-    `?lat=${la}&lon=${ln}&format=json&addressdetails=1`;
+  let pincode = null;
+  let locality;
+  let displayName;
 
-  const place = await nominatimFetch(url);
-  const a = place.address || {};
-  const rawPostcode = String(a.postcode || '').replace(/\D/g, '');
-  let pincode = rawPostcode.length >= 6 ? rawPostcode.slice(0, 6) : null;
-  if (pincode && pincode.length !== 6) pincode = null;
+  if (useBackendGeo()) {
+    const data = await backendGeoGet('/geo/reverse', { lat: la, lng: ln });
+    pincode = normalizeIndianPincode(data.pincode);
+    locality = (data.locality || '').trim() || undefined;
+    displayName = data.display_name;
+  } else {
+    const url =
+      `https://nominatim.openstreetmap.org/reverse` +
+      `?lat=${la}&lon=${ln}&format=json&addressdetails=1`;
 
-  const locality = formatLocalityFromAddress(a, place.display_name);
+    const place = await nominatimFetch(url);
+    const a = place.address || {};
+    const rawPostcode = String(a.postcode || '').replace(/\D/g, '');
+    pincode = rawPostcode.length >= 6 ? rawPostcode.slice(0, 6) : null;
+    if (pincode && pincode.length !== 6) pincode = null;
+    locality = formatLocalityFromAddress(a, place.display_name) || undefined;
+    displayName = place.display_name;
+  }
 
   const out = {
     pincode,
-    locality: locality || undefined,
-    displayName: place.display_name,
+    locality,
+    displayName,
   };
   _revCache[key] = out;
   if (out.locality || out.pincode) {

@@ -43,17 +43,33 @@ async function getGeolocationPlugin() {
   }
 }
 
+function nativeLocationGranted(st) {
+  const fine = st?.location;
+  const coarse = st?.coarseLocation;
+  return fine === 'granted' || coarse === 'granted';
+}
+
+function nativeLocationDenied(st) {
+  const fine = st?.location;
+  const coarse = st?.coarseLocation;
+  return fine === 'denied' && coarse === 'denied';
+}
+
 /** @returns {'granted'|'denied'|'prompt'|'permanent'} */
 export async function checkLocationPermission() {
   const Geo = await getGeolocationPlugin();
   if (Geo) {
     try {
       const st = await Geo.checkPermissions();
-      const loc = st?.location || st?.coarseLocation || 'prompt';
-      if (loc === 'granted') return 'granted';
-      if (loc === 'denied') return 'permanent';
+      mlog('location', 'native_perm_check', {
+        location: st?.location,
+        coarse: st?.coarseLocation,
+      });
+      if (nativeLocationGranted(st)) return 'granted';
+      if (nativeLocationDenied(st)) return 'permanent';
       return 'prompt';
-    } catch {
+    } catch (e) {
+      mlogError('location', 'native_perm_check_fail', e);
       return 'prompt';
     }
   }
@@ -74,10 +90,12 @@ export async function requestLocationPermission() {
   if (Geo) {
     try {
       const st = await Geo.requestPermissions();
-      const loc = st?.location || st?.coarseLocation;
-      mlog('location', 'native_permission', { loc });
-      if (loc === 'granted') return 'granted';
-      if (loc === 'denied') return 'permanent';
+      mlog('location', 'native_permission', {
+        location: st?.location,
+        coarse: st?.coarseLocation,
+      });
+      if (nativeLocationGranted(st)) return 'granted';
+      if (nativeLocationDenied(st)) return 'permanent';
       return 'denied';
     } catch (e) {
       mlogError('location', 'native_permission_fail', e);
@@ -109,32 +127,39 @@ export async function getDevicePosition({
   }
 
   if (requestPermissionFirst) {
-    const perm = await checkLocationPermission();
-    if (perm === 'prompt' || perm === 'denied') {
+    let perm = await checkLocationPermission();
+    if (perm !== 'granted') {
       const req = await requestLocationPermission();
-      if (req !== 'granted' && perm !== 'granted') {
+      if (req === 'granted') {
+        perm = 'granted';
+      } else {
         throw {
           code: req === 'permanent' ? 'permanent' : 'denied',
           message: 'Location permission not granted.',
         };
       }
     }
-    if (perm === 'permanent') {
-      const req = await requestLocationPermission();
-      if (req !== 'granted') {
-        throw { code: 'permanent', message: 'Location permission blocked.' };
-      }
-    }
   }
 
   const Geo = await getGeolocationPlugin();
   if (Geo) {
-    try {
-      const pos = await Geo.getCurrentPosition({
-        enableHighAccuracy: highAccuracy,
+    const tryGet = (accurate) =>
+      Geo.getCurrentPosition({
+        enableHighAccuracy: accurate,
         timeout: timeoutMs,
         maximumAge: maxAgeMs,
       });
+
+    try {
+      let pos;
+      try {
+        pos = await tryGet(highAccuracy);
+      } catch (firstErr) {
+        mlog('location', 'native_gps_retry_low_accuracy', {
+          msg: String(firstErr?.message || firstErr || ''),
+        });
+        pos = await tryGet(false);
+      }
       mlog('location', 'native_gps_ok', {
         acc: pos.coords.accuracy,
       });
@@ -231,6 +256,7 @@ export async function captureCurrentArea({
   syncProfile = false,
 } = {}) {
   const copy = LOCATION_AUDIENCE[audience] || LOCATION_AUDIENCE.job_seeker;
+  mlog('location', 'capture_start', { audience, syncProfile });
   try {
     const { lat, lng } = await getDevicePosition({
       highAccuracy,
@@ -283,6 +309,10 @@ export async function captureCurrentArea({
       };
     }
 
+    if (!pc && locality) {
+      mlog('location', 'capture_ok_locality_only', {});
+    }
+    mlog('location', 'capture_ok', { has_pin: Boolean(pc), has_locality: Boolean(locality) });
     return {
       ok: true,
       lat,
@@ -295,6 +325,7 @@ export async function captureCurrentArea({
       permissionBody: copy.permissionBody,
     };
   } catch (e) {
+    mlog('location', 'capture_fail', { code: e?.code, msg: e?.message });
     const userMessage = locationErrorMessage(e, audience);
     return {
       ok: false,
