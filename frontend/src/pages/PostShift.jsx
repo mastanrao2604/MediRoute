@@ -113,10 +113,12 @@ export default function PostShift() {
       setLat(cap.lat);
       setLng(cap.lng);
       if (cap.pincode) setGpsDerivedPincode(cap.pincode);
-      if (cap.locality && cap.pincode) {
-        setAreaLabel(`${cap.locality} — ${cap.pincode}`);
-      } else if (cap.locality) {
-        setAreaLabel(cap.locality);
+      if (cap.locality) {
+        setAreaLabel(
+          cap.pincode ? `${cap.locality} • ${cap.pincode}` : cap.locality,
+        );
+      } else if (cap.displayLabel) {
+        setAreaLabel(cap.displayLabel);
       }
       setLocMode('gps_ok');
       mlog('location', 'post_shift_gps_ok', { locality: cap.locality?.slice(0, 24) });

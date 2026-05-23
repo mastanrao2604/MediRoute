@@ -31,7 +31,7 @@ import {
   loadLastKnownArea,
 } from '../utils/geocodePincode';
 import { getDevicePosition, captureCurrentArea } from '../utils/deviceLocation';
-import { humanizeCityId } from '../utils/areaLabel';
+import { formatAreaDisplaySync, humanizeCityId } from '../utils/areaLabel';
 import { mlog, mlogError } from '../utils/mobileLogger';
 
 const HEARTBEAT_INTERVAL_MS = 90_000;
@@ -299,11 +299,11 @@ export function AvailabilityProvider({ children, user }) {
     isEligible,
     locationSource,
     sessionAreaLabel,
-    areaDisplayLabel:
-      sessionAreaLabel ||
-      user?.service_locality ||
-      humanizeCityId(cityId) ||
-      '',
+    areaDisplayLabel: formatAreaDisplaySync({
+      locality: sessionAreaLabel || user?.service_locality,
+      pincode: user?.service_pincode,
+      cityId: cityId,
+    }),
     refreshLocation,
     locRefreshing,
   };

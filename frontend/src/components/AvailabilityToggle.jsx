@@ -26,9 +26,9 @@ export default function AvailabilityToggle({ activeShift = null, onOpenActiveShi
   if (!isEligible || loading) return null;
 
   const serverPc = normalizeIndianPincode(user?.service_pincode || '');
-  const hasServiceArea = serverPc !== null;
+  const hasServiceArea = serverPc !== null || Boolean(areaDisplayLabel);
 
-  const areaLine = areaDisplayLabel || (serverPc ? `Pin ${serverPc}` : '');
+  const areaLine = areaDisplayLabel || '';
 
   const locLabel = !isAvailable
     ? null
@@ -39,7 +39,7 @@ export default function AvailabilityToggle({ activeShift = null, onOpenActiveShi
       : locationSource === 'pincode'
         ? areaLine
           ? `📍 ${areaLine}`
-          : `📍 Pin ${serverPc || ''}`
+          : '📍 Your saved area'
         : areaLine
           ? `📍 ${areaLine}`
           : '⚠️ Turn on location for best nearby matching';

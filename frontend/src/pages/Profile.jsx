@@ -13,6 +13,7 @@ import {
   geocodePincode,
 } from '../utils/geocodePincode';
 import { captureCurrentArea, openAppSettings } from '../utils/deviceLocation';
+import { formatAreaDisplaySync } from '../utils/areaLabel';
 import { mlog, mlogError, isDebugLogMirrorEnabled } from '../utils/mobileLogger';
 
 /** Trace Profile navigation/fetch — debug console + native app.log via mlog when enabled. */
@@ -626,10 +627,17 @@ export default function Profile() {
                 <ProfileField label="Skills"              value={profile.skills           ?? '—'} />
                 {profile.education        && <ProfileField label="Education" value={profile.education} />}
                 {profile.current_location && <ProfileField label="Location"  value={profile.current_location} />}
-                {needsServiceArea() && profile.service_pincode && (
+                {needsServiceArea() && (profile.service_pincode || profile.service_locality) && (
                   <ProfileField
-                    label="Service pincode"
-                    value={`${profile.service_pincode}${profile.service_locality ? ` — ${profile.service_locality}` : ''}${profile.location_source ? ` (${profile.location_source})` : ''}`}
+                    label="Service area"
+                    value={
+                      formatAreaDisplaySync({
+                        locality: profile.service_locality,
+                        pincode: profile.service_pincode,
+                        cityId: 'HYD',
+                        includePincode: true,
+                      }) || '—'
+                    }
                   />
                 )}
               </div>

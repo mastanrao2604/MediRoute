@@ -23,18 +23,32 @@ export function humanizeCityId(cityId) {
   return CITY_ID_LABELS[key] || '';
 }
 
-/** Immediate label (no network). */
-export function formatAreaDisplaySync({ locality, pincode, cityId } = {}) {
-  const loc = (locality || '').trim();
-  if (loc) return loc;
+/**
+ * User-facing area label — locality first, never raw pincode as primary.
+ * Pincode stays internal unless includePincode is true (compact secondary).
+ */
+export function formatAreaDisplaySync({
+  locality,
+  pincode,
+  cityId,
+  includePincode = false,
+} = {}) {
   const pc = normalizeIndianPincode(pincode);
-  if (pc) {
-    const cached = getPersistedLocality(pc);
-    if (cached) return cached;
+  const stored = (locality || '').trim();
+  const cached = pc ? getPersistedLocality(pc) : '';
+  const last = loadLastKnownArea();
+  const lastMatch = pc && last?.pincode === pc ? (last.locality || '').trim() : '';
+
+  let primary = stored || cached || lastMatch || '';
+  if (!primary) {
+    primary = humanizeCityId(cityId) || (pc ? 'Hyderabad' : '');
   }
-  const city = humanizeCityId(cityId);
-  if (city && !pc) return city;
-  return '';
+  if (!primary) return '';
+
+  if (includePincode && pc) {
+    return `${primary} • ${pc}`;
+  }
+  return primary;
 }
 
 /** Resolve best area label (GPS → stored locality → pincode geocode → last known). */
@@ -77,6 +91,12 @@ export async function resolveAreaLabel({ locality, pincode, lat, lng, cityId } =
 
   const last = loadLastKnownArea();
   if (last?.locality) return last.locality;
+
+  if (pc) {
+    const cached = getPersistedLocality(pc);
+    if (cached) return cached;
+    return humanizeCityId(cityId) || 'Hyderabad';
+  }
 
   return humanizeCityId(cityId) || '';
 }

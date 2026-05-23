@@ -17,7 +17,7 @@ import {
   urgencyLabel,
 } from '../utils/staffingStatusCopy';
 import { useAreaLabel } from '../hooks/useAreaLabel';
-import { shiftAreaSource } from '../utils/areaLabel';
+import { formatAreaDisplaySync, shiftAreaSource } from '../utils/areaLabel';
 import {
   shiftCanAccept,
   SHIFT_ACCEPT_NEARBY_ONLY_MSG,
@@ -271,7 +271,9 @@ export default function EmployeeShiftDetailSheet({
                   <div>
                     <dt className="text-xs font-medium text-gray-400 uppercase tracking-wide">Area</dt>
                     <dd className="text-gray-900 mt-0.5">
-                      {areaLabel || (shift.hospital_pincode ? `Pin ${shift.hospital_pincode}` : '—')}
+                      {areaLabel ||
+                        formatAreaDisplaySync(shiftAreaSource(shift)) ||
+                        '—'}
                     </dd>
                   </div>
                 )}

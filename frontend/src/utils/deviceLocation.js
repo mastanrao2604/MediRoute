@@ -16,6 +16,7 @@ import {
   saveLastKnownArea,
   gracefulAreaFallback,
 } from './geocodePincode';
+import { formatAreaDisplaySync } from './areaLabel';
 
 export const LOCATION_AUDIENCE = {
   job_seeker: {
@@ -373,7 +374,11 @@ export async function captureCurrentArea({
       lng,
       pincode: pc,
       locality,
-      displayLabel: locality || (pc ? `Pin ${pc}` : ''),
+      displayLabel: formatAreaDisplaySync({
+        locality,
+        pincode: pc,
+        cityId: 'HYD',
+      }),
       permissionState: 'granted',
       permissionTitle: copy.permissionTitle,
       permissionBody: copy.permissionBody,
