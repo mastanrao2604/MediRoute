@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import * as Sentry from '@sentry/react'
 import { Capacitor } from '@capacitor/core'
 import './debugLogBootstrap.js'
+import { warmUpLocationPlugin } from './utils/deviceLocation.js'
 
 // PWA service workers break Capacitor WebView XHR to Render (ERR_NETWORK). Unregister on native.
 if (Capacitor.isNativePlatform() && typeof navigator !== 'undefined' && navigator.serviceWorker) {
@@ -51,6 +52,10 @@ if (import.meta.env.VITE_SENTRY_DSN) {
 // but some OEM WebViews (Samsung, Xiaomi, Oppo, etc.) return 0 even when the
 // bar is present. We detect this and set --sab-extra as a CSS variable
 // fallback used by the bottom nav and main content padding.
+if (Capacitor.isNativePlatform()) {
+  warmUpLocationPlugin();
+}
+
 if (Capacitor.getPlatform() === 'android') {
   const probe = document.createElement('div');
   probe.style.cssText =

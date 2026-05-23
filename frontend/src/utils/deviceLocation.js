@@ -1,8 +1,13 @@
 /**
  * Unified GPS + permission flow (Web + Capacitor Android).
  * Used by job seeker availability/profile and recruiter Post Shift.
+ *
+ * Android note: separate checkPermissions/requestPermissions can hang on some
+ * devices (Moto G84). We call getCurrentPosition directly and use WebView GPS
+ * as fallback with hard timeouts.
  */
 import { Capacitor } from '@capacitor/core';
+import { Geolocation } from '@capacitor/geolocation';
 import { mlog, mlogError } from './mobileLogger';
 import {
   reverseGeocodeCoords,
@@ -31,78 +36,23 @@ export const LOCATION_AUDIENCE = {
 };
 
 const DEFAULT_TIMEOUT_MS = 18_000;
+const PERM_PROBE_TIMEOUT_MS = 6_000;
 
-async function getGeolocationPlugin() {
-  if (!Capacitor.isNativePlatform()) return null;
-  try {
-    const { Geolocation } = await import('@capacitor/geolocation');
-    return Geolocation;
-  } catch (e) {
-    mlogError('location', 'geolocation_plugin_missing', e);
-    return null;
-  }
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(
+      () => reject({ code: 'timeout', message: `${label} timed out after ${Math.round(ms / 1000)}s` }),
+      ms,
+    );
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 function nativeLocationGranted(st) {
   const fine = st?.location;
   const coarse = st?.coarseLocation;
   return fine === 'granted' || coarse === 'granted';
-}
-
-function nativeLocationDenied(st) {
-  const fine = st?.location;
-  const coarse = st?.coarseLocation;
-  return fine === 'denied' && coarse === 'denied';
-}
-
-/** @returns {'granted'|'denied'|'prompt'|'permanent'} */
-export async function checkLocationPermission() {
-  const Geo = await getGeolocationPlugin();
-  if (Geo) {
-    try {
-      const st = await Geo.checkPermissions();
-      mlog('location', 'native_perm_check', {
-        location: st?.location,
-        coarse: st?.coarseLocation,
-      });
-      if (nativeLocationGranted(st)) return 'granted';
-      if (nativeLocationDenied(st)) return 'permanent';
-      return 'prompt';
-    } catch (e) {
-      mlogError('location', 'native_perm_check_fail', e);
-      return 'prompt';
-    }
-  }
-  if (!navigator.permissions?.query) return 'prompt';
-  try {
-    const r = await navigator.permissions.query({ name: 'geolocation' });
-    if (r.state === 'granted') return 'granted';
-    if (r.state === 'denied') return 'permanent';
-    return 'prompt';
-  } catch {
-    return 'prompt';
-  }
-}
-
-/** @returns {'granted'|'denied'|'permanent'} */
-export async function requestLocationPermission() {
-  const Geo = await getGeolocationPlugin();
-  if (Geo) {
-    try {
-      const st = await Geo.requestPermissions();
-      mlog('location', 'native_permission', {
-        location: st?.location,
-        coarse: st?.coarseLocation,
-      });
-      if (nativeLocationGranted(st)) return 'granted';
-      if (nativeLocationDenied(st)) return 'permanent';
-      return 'denied';
-    } catch (e) {
-      mlogError('location', 'native_permission_fail', e);
-      return 'denied';
-    }
-  }
-  return 'prompt';
 }
 
 function mapBrowserGeoError(err) {
@@ -113,78 +63,15 @@ function mapBrowserGeoError(err) {
   return 'denied';
 }
 
-/**
- * Fetch coordinates. Throws { code, message } on failure.
- */
-export async function getDevicePosition({
-  highAccuracy = true,
-  timeoutMs = DEFAULT_TIMEOUT_MS,
-  maxAgeMs = 0,
-  requestPermissionFirst = true,
-} = {}) {
-  if (!Capacitor.isNativePlatform() && !navigator.geolocation) {
-    throw { code: 'unsupported', message: 'Location is not supported on this device.' };
-  }
-
-  if (requestPermissionFirst) {
-    let perm = await checkLocationPermission();
-    if (perm !== 'granted') {
-      const req = await requestLocationPermission();
-      if (req === 'granted') {
-        perm = 'granted';
-      } else {
-        throw {
-          code: req === 'permanent' ? 'permanent' : 'denied',
-          message: 'Location permission not granted.',
-        };
-      }
-    }
-  }
-
-  const Geo = await getGeolocationPlugin();
-  if (Geo) {
-    const tryGet = (accurate) =>
-      Geo.getCurrentPosition({
-        enableHighAccuracy: accurate,
-        timeout: timeoutMs,
-        maximumAge: maxAgeMs,
-      });
-
-    try {
-      let pos;
-      try {
-        pos = await tryGet(highAccuracy);
-      } catch (firstErr) {
-        mlog('location', 'native_gps_retry_low_accuracy', {
-          msg: String(firstErr?.message || firstErr || ''),
-        });
-        pos = await tryGet(false);
-      }
-      mlog('location', 'native_gps_ok', {
-        acc: pos.coords.accuracy,
-      });
-      return {
-        lat: pos.coords.latitude,
-        lng: pos.coords.longitude,
-        accuracy: pos.coords.accuracy,
-      };
-    } catch (e) {
-      mlogError('location', 'native_gps_fail', e);
-      const msg = String(e?.message || e || '');
-      if (/denied|permission/i.test(msg)) {
-        throw { code: 'permanent', message: msg };
-      }
-      if (/timeout/i.test(msg)) {
-        throw { code: 'timeout', message: 'Location timed out. Try again in an open area.' };
-      }
-      throw { code: 'denied', message: msg || 'Could not read GPS.' };
-    }
-  }
-
+function getBrowserPosition({ highAccuracy, timeoutMs, maxAgeMs }) {
   return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) {
+      reject({ code: 'unsupported', message: 'Location is not supported on this device.' });
+      return;
+    }
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        mlog('location', 'web_gps_ok', {});
+        mlog('location', 'webview_gps_ok', { acc: pos.coords.accuracy });
         resolve({
           lat: pos.coords.latitude,
           lng: pos.coords.longitude,
@@ -193,7 +80,7 @@ export async function getDevicePosition({
       },
       (err) => {
         const code = mapBrowserGeoError(err);
-        mlog('location', 'web_gps_fail', { code, msg: err?.message });
+        mlog('location', 'webview_gps_fail', { code, msg: err?.message });
         reject({
           code,
           message:
@@ -211,14 +98,180 @@ export async function getDevicePosition({
   });
 }
 
+async function getCapacitorPosition({ highAccuracy, timeoutMs, maxAgeMs }) {
+  const tryGet = (accurate) =>
+    Geolocation.getCurrentPosition({
+      enableHighAccuracy: accurate,
+      timeout: timeoutMs,
+      maximumAge: maxAgeMs,
+    });
+
+  try {
+    const pos = await tryGet(highAccuracy);
+    mlog('location', 'native_gps_ok', { acc: pos.coords.accuracy });
+    return {
+      lat: pos.coords.latitude,
+      lng: pos.coords.longitude,
+      accuracy: pos.coords.accuracy,
+    };
+  } catch (firstErr) {
+    if (!highAccuracy) throw firstErr;
+    mlog('location', 'native_gps_retry_low_accuracy', {
+      msg: String(firstErr?.message || firstErr || ''),
+    });
+    const pos = await tryGet(false);
+    mlog('location', 'native_gps_ok', { acc: pos.coords.accuracy, low: true });
+    return {
+      lat: pos.coords.latitude,
+      lng: pos.coords.longitude,
+      accuracy: pos.coords.accuracy,
+    };
+  }
+}
+
+/** Warm up plugin; failures are ignored. */
+export async function warmUpLocationPlugin() {
+  if (!Capacitor.isNativePlatform()) return;
+  try {
+    await withTimeout(
+      Geolocation.checkPermissions(),
+      PERM_PROBE_TIMEOUT_MS,
+      'perm_warmup',
+    );
+    mlog('location', 'plugin_warmup_ok', {});
+  } catch (e) {
+    mlog('location', 'plugin_warmup_skip', { msg: e?.message || String(e) });
+  }
+}
+
+/** @returns {'granted'|'denied'|'prompt'|'permanent'} */
+export async function checkLocationPermission() {
+  if (Capacitor.isNativePlatform()) {
+    try {
+      const st = await withTimeout(
+        Geolocation.checkPermissions(),
+        PERM_PROBE_TIMEOUT_MS,
+        'perm_check',
+      );
+      mlog('location', 'native_perm_check', {
+        location: st?.location,
+        coarse: st?.coarseLocation,
+      });
+      if (nativeLocationGranted(st)) return 'granted';
+      if (st?.location === 'denied' && st?.coarseLocation === 'denied') return 'permanent';
+      return 'prompt';
+    } catch (e) {
+      mlog('location', 'native_perm_check_timeout', { msg: e?.message });
+      return 'prompt';
+    }
+  }
+  if (!navigator.permissions?.query) return 'prompt';
+  try {
+    const r = await navigator.permissions.query({ name: 'geolocation' });
+    if (r.state === 'granted') return 'granted';
+    if (r.state === 'denied') return 'permanent';
+    return 'prompt';
+  } catch {
+    return 'prompt';
+  }
+}
+
+/** @returns {'granted'|'denied'|'permanent'} */
+export async function requestLocationPermission() {
+  if (Capacitor.isNativePlatform()) {
+    try {
+      const st = await withTimeout(
+        Geolocation.requestPermissions(),
+        45_000,
+        'perm_request',
+      );
+      mlog('location', 'native_permission', {
+        location: st?.location,
+        coarse: st?.coarseLocation,
+      });
+      if (nativeLocationGranted(st)) return 'granted';
+      if (st?.location === 'denied' && st?.coarseLocation === 'denied') return 'permanent';
+      return 'denied';
+    } catch (e) {
+      mlog('location', 'native_permission_timeout', { msg: e?.message });
+      return 'denied';
+    }
+  }
+  return 'prompt';
+}
+
+/**
+ * Fetch coordinates. Throws { code, message } on failure.
+ * On native: Capacitor GPS first, then WebView geolocation fallback.
+ */
+export async function getDevicePosition({
+  highAccuracy = true,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  maxAgeMs = 0,
+  requestPermissionFirst = false,
+} = {}) {
+  if (!Capacitor.isNativePlatform() && !navigator.geolocation) {
+    throw { code: 'unsupported', message: 'Location is not supported on this device.' };
+  }
+
+  mlog('location', 'gps_begin', { native: Capacitor.isNativePlatform() });
+
+  if (requestPermissionFirst) {
+    const perm = await checkLocationPermission();
+    if (perm === 'granted') {
+      /* continue */
+    } else if (perm === 'permanent') {
+      const req = await requestLocationPermission();
+      if (req !== 'granted') {
+        throw { code: 'permanent', message: 'Location permission blocked.' };
+      }
+    } else {
+      const req = await requestLocationPermission();
+      if (req !== 'granted') {
+        throw {
+          code: req === 'permanent' ? 'permanent' : 'denied',
+          message: 'Location permission not granted.',
+        };
+      }
+    }
+  }
+
+  const opts = { highAccuracy, timeoutMs, maxAgeMs };
+  const capMs = timeoutMs + 4_000;
+  const webMs = timeoutMs + 4_000;
+
+  if (Capacitor.isNativePlatform()) {
+    try {
+      return await withTimeout(getCapacitorPosition(opts), capMs, 'capacitor_gps');
+    } catch (e) {
+      mlogError('location', 'capacitor_gps_fail', e);
+      mlog('location', 'gps_fallback_webview', {});
+      try {
+        return await withTimeout(getBrowserPosition(opts), webMs, 'webview_gps');
+      } catch (webErr) {
+        mlogError('location', 'webview_gps_fail', webErr);
+        throw webErr?.code ? webErr : e;
+      }
+    }
+  }
+
+  return withTimeout(getBrowserPosition(opts), webMs, 'web_gps');
+}
+
 export function locationErrorMessage(err, audience = 'job_seeker') {
   const copy = LOCATION_AUDIENCE[audience] || LOCATION_AUDIENCE.job_seeker;
   const code = err?.code;
   if (code === 'permanent') return copy.permanent;
-  if (code === 'timeout') return 'Location took too long. Check GPS is on and try again.';
+  if (code === 'timeout') {
+    return 'Location took too long. Allow location permission, turn on GPS, and try again.';
+  }
   if (code === 'unsupported') return 'Location is not supported. Enter pincode manually.';
-  if (code === 'reverse_failed') return 'Could not resolve your area name. Coordinates saved — enter pincode if needed.';
-  if (code === 'no_pincode') return 'GPS worked but pincode was not found. Enter your 6-digit pincode manually.';
+  if (code === 'reverse_failed') {
+    return 'Could not resolve your area name. Coordinates saved — enter pincode if needed.';
+  }
+  if (code === 'no_pincode') {
+    return 'GPS worked but pincode was not found. Enter your 6-digit pincode manually.';
+  }
   if (code === 'denied') return copy.denied;
   return err?.message || copy.denied;
 }
@@ -246,9 +299,10 @@ export async function openAppSettings() {
   return false;
 }
 
+const CAPTURE_BUDGET_MS = 42_000;
+
 /**
  * Full capture: permission → GPS → reverse geocode.
- * @returns {{ ok: boolean, lat?, lng?, pincode?, locality?, permissionState?, error?, userMessage? }}
  */
 export async function captureCurrentArea({
   audience = 'job_seeker',
@@ -257,10 +311,11 @@ export async function captureCurrentArea({
 } = {}) {
   const copy = LOCATION_AUDIENCE[audience] || LOCATION_AUDIENCE.job_seeker;
   mlog('location', 'capture_start', { audience, syncProfile });
-  try {
+
+  const run = async () => {
     const { lat, lng } = await getDevicePosition({
       highAccuracy,
-      requestPermissionFirst: true,
+      requestPermissionFirst: false,
     });
 
     let rev;
@@ -324,6 +379,10 @@ export async function captureCurrentArea({
       permissionTitle: copy.permissionTitle,
       permissionBody: copy.permissionBody,
     };
+  };
+
+  try {
+    return await withTimeout(run(), CAPTURE_BUDGET_MS, 'capture');
   } catch (e) {
     mlog('location', 'capture_fail', { code: e?.code, msg: e?.message });
     const userMessage = locationErrorMessage(e, audience);

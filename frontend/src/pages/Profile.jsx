@@ -307,11 +307,21 @@ export default function Profile() {
     setSuccess('');
     setShowLocSettings(false);
     mlog('lifecycle', 'prof_gps_refresh_start', {});
-    const cap = await captureCurrentArea({
-      audience: 'job_seeker',
-      highAccuracy: true,
-      syncProfile: true,
-    });
+    let cap;
+    try {
+      cap = await captureCurrentArea({
+        audience: 'job_seeker',
+        highAccuracy: true,
+        syncProfile: true,
+      });
+    } catch (e) {
+      mlogError('lifecycle', 'prof_gps_refresh_throw', e);
+      cap = {
+        ok: false,
+        userMessage: 'Location failed unexpectedly. Try again or enter pincode manually.',
+        permissionState: 'denied',
+      };
+    }
     if (cap.ok || (cap.lat != null && cap.lng != null && (cap.locality || cap.pincode))) {
       const pc = normalizeIndianPincode(cap.pincode);
       setForm((f) => ({
