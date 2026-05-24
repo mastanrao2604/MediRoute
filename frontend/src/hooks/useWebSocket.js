@@ -31,6 +31,9 @@ export function useWebSocket(user, token, onMessage, onAuthError) {
   const backoffRef = useRef(1);
   const mountedRef = useRef(true);
   const connectRef = useRef(null); // Task 16: ref to latest connect fn (stale closure fix)
+  const connIdRef = useRef(null);
+  const lastClosedAtRef = useRef(null);
+  const hadConnectedRef = useRef(false);
   const [connected, setConnected] = useState(false);
 
   // Rapid-failure detection: if the WS closes within RAPID_FAIL_WINDOW_MS of
@@ -53,13 +56,20 @@ export function useWebSocket(user, token, onMessage, onAuthError) {
       const res = await api.get('/dispatch/offers/pending');
       const offers = res.data?.offers || [];
       if (offers.length > 0) {
-        mlog('websocket', 'pending_offers_recovered', { count: offers.length });
+        const sids = [...new Set(offers.map((o) => o.shift_id).filter((id) => id != null))];
+        mlog('websocket', 'pending_offers_recovered', {
+          cid: connIdRef.current,
+          count: offers.length,
+          sids: sids.slice(0, 10),
+        });
       }
       for (const offer of offers) {
         onMessage({ type: 'dispatch_offer', ...offer });
       }
+      window.dispatchEvent(new CustomEvent('mr-nurse-active-shift-refresh'));
     } catch (err) {
       mlogError('websocket', 'pending_offers_fetch_failed', err);
+      window.dispatchEvent(new CustomEvent('mr-nurse-active-shift-refresh'));
     }
   }, [onMessage]);
 
@@ -73,8 +83,11 @@ export function useWebSocket(user, token, onMessage, onAuthError) {
     }
 
     connectAttemptTime.current = Date.now();
+    if (!connIdRef.current) {
+      connIdRef.current = Math.random().toString(36).slice(2, 8);
+    }
     const url = `${WS_BASE}/ws/${user.id}?token=${encodeURIComponent(token)}`;
-    mlog('websocket', 'connecting', { user_id: user.id });
+    mlog('websocket', 'connecting', { user_id: user.id, cid: connIdRef.current, reconn: hadConnectedRef.current });
     const ws = new WebSocket(url);
     wsRef.current = ws;
 
@@ -83,7 +96,13 @@ export function useWebSocket(user, token, onMessage, onAuthError) {
       backoffRef.current = 1; // reset backoff on success
       rapidFailCount.current = 0; // successful connection — reset failure counter
       setConnected(true);
-      mlog('websocket', 'connected');
+      const gapMs = lastClosedAtRef.current ? Date.now() - lastClosedAtRef.current : null;
+      mlog('websocket', hadConnectedRef.current ? 'reconnected' : 'connected', {
+        cid: connIdRef.current,
+        gap_ms: gapMs,
+      });
+      hadConnectedRef.current = true;
+      lastClosedAtRef.current = null;
 
       // Start keepalive ping
       clearInterval(pingTimer.current);
@@ -111,7 +130,12 @@ export function useWebSocket(user, token, onMessage, onAuthError) {
     ws.onclose = (event) => {
       clearInterval(pingTimer.current);
       setConnected(false);
-      mlog('websocket', 'closed', { code: event.code, clean: event.wasClean });
+      lastClosedAtRef.current = Date.now();
+      mlog('websocket', 'closed', {
+        cid: connIdRef.current,
+        code: event.code,
+        clean: event.wasClean,
+      });
       if (!mountedRef.current) return;
 
       // 4001 = explicit auth failure from server — don't reconnect
@@ -152,7 +176,11 @@ export function useWebSocket(user, token, onMessage, onAuthError) {
       const jitter = 0.8 + Math.random() * 0.4;
       const delay = Math.min(backoffRef.current, MAX_BACKOFF_SEC) * 1000 * jitter;
       const nextBackoff = Math.min(backoffRef.current * 2, MAX_BACKOFF_SEC);
-      mlog('websocket', 'reconnect_scheduled', { delay_ms: Math.round(delay), next_backoff_sec: nextBackoff });
+      mlog('websocket', 'reconnect_scheduled', {
+        cid: connIdRef.current,
+        delay_ms: Math.round(delay),
+        next_backoff_sec: nextBackoff,
+      });
       backoffRef.current = nextBackoff;
       reconnectTimer.current = setTimeout(() => connectRef.current?.(), delay);
     };
@@ -172,6 +200,7 @@ export function useWebSocket(user, token, onMessage, onAuthError) {
     }
     return () => {
       mountedRef.current = false;
+      mlog('websocket', 'teardown', { cid: connIdRef.current });
       clearTimers();
       if (wsRef.current) {
         wsRef.current.onclose = null;
@@ -196,7 +225,7 @@ export function useWebSocket(user, token, onMessage, onAuthError) {
             || ws.readyState === WebSocket.CLOSED
             || ws.readyState === WebSocket.CLOSING;
           if (isDead && mountedRef.current) {
-            mlog('websocket', 'resume_reconnect');
+            mlog('websocket', 'resume_reconnect', { cid: connIdRef.current });
             // Cancel any pending backoff timer and reconnect immediately
             clearTimeout(reconnectTimer.current);
             backoffRef.current = 1;

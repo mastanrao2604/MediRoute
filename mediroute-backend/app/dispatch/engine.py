@@ -46,6 +46,13 @@ from .offer_policy import shift_search_open, shift_start_utc_naive
 
 logger = logging.getLogger(__name__)
 
+# Pilot: one confirmed nurse per shift until multi-staff lifecycle is complete.
+PILOT_NURSES_REQUIRED = 1
+
+
+def _effective_nurses_required(_shift) -> int:
+    return PILOT_NURSES_REQUIRED
+
 # ── Structured dispatch log helper (Task 10) ──────────────────────────────────
 def _dispatch_log(level: str, event_type: str, **kwargs) -> None:
     """
@@ -63,6 +70,11 @@ def _dispatch_log(level: str, event_type: str, **kwargs) -> None:
         logger.debug(msg)
     else:
         logger.info(msg)
+
+
+def _lifecycle_log(ev: str, **fields) -> None:
+    """Compact shift/assignment lifecycle trace — sid/aid/uid/stage correlation keys."""
+    _dispatch_log("info", "shift.lifecycle", ev=ev, **fields)
 
 
 # ── Lightweight in-process metrics (Task 14) ──────────────────────────────────
@@ -583,7 +595,8 @@ def _count_recruiter_confirmed_sync(db, shift_id: int) -> int:
     )
 
 
-def _is_search_closed_sync(db, shift_id: int) -> bool:
+def _is_search_manually_closed_sync(db, shift_id: int) -> bool:
+    """Recruiter stopped search or shift is terminal — not merely past shift start."""
     shift = db.query(models.ShiftRequest).filter(
         models.ShiftRequest.id == shift_id
     ).first()
@@ -591,14 +604,158 @@ def _is_search_closed_sync(db, shift_id: int) -> bool:
         return True
     if getattr(shift, "search_closed_at", None):
         return True
-    if shift.status in (
+    return shift.status in (
         models.ShiftRequestStatus.cancelled,
         models.ShiftRequestStatus.expired,
+        models.ShiftRequestStatus.filled,
+    )
+
+
+def _is_search_closed_sync(db, shift_id: int) -> bool:
+    """True when nurses can no longer accept (includes past shift start)."""
+    shift = db.query(models.ShiftRequest).filter(
+        models.ShiftRequest.id == shift_id
+    ).first()
+    if not shift:
+        return True
+    if _is_search_manually_closed_sync(db, shift_id):
+        return True
+    return shift_start_utc_naive(shift.shift_start) <= datetime.utcnow()
+
+
+def _expire_shift_past_start_unfilled_sync(db, shift: models.ShiftRequest) -> bool:
+    """
+    Past shift start: mark filled only with recruiter-confirmed staff; otherwise expire
+    and cancel unconfirmed applications. Idempotent for terminal shifts.
+  """
+    if shift.status not in (
+        models.ShiftRequestStatus.open,
+        models.ShiftRequestStatus.dispatching,
     ):
+        return False
+    if shift_start_utc_naive(shift.shift_start) > datetime.utcnow():
+        return False
+
+    recruiter_confirmed = (
+        db.query(models.LiveAssignment.id)
+        .filter(
+            models.LiveAssignment.shift_request_id == shift.id,
+            models.LiveAssignment.recruiter_confirmed_at.isnot(None),
+            models.LiveAssignment.status.in_([
+                models.AssignmentStatus.confirmed,
+                models.AssignmentStatus.checked_in,
+            ]),
+        )
+        .first()
+    )
+    if recruiter_confirmed:
+        if not getattr(shift, "search_closed_at", None):
+            now = datetime.utcnow()
+            shift.search_closed_at = now
+        _finalize_search_closed_sync(db, shift.id, datetime.utcnow(), "shift_start")
+
+        from ..ws_manager import ws_manager
+
+        async def _notify_filled() -> None:
+            await ws_manager.send(
+                shift.hospital_user_id,
+                {
+                    "type": "shift_search_stopped",
+                    "shift_id": shift.id,
+                    "message": "Shift started — staff confirmed.",
+                },
+            )
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_notify_filled())
+        except RuntimeError:
+            pass
         return True
-    if shift_start_utc_naive(shift.shift_start) <= datetime.utcnow():
-        return True
-    return False
+
+    now = datetime.utcnow()
+    unconfirmed = (
+        db.query(models.LiveAssignment)
+        .filter(
+            models.LiveAssignment.shift_request_id == shift.id,
+            models.LiveAssignment.recruiter_confirmed_at.is_(None),
+            models.LiveAssignment.status.in_([
+                models.AssignmentStatus.applied,
+                models.AssignmentStatus.confirmed,
+            ]),
+        )
+        .all()
+    )
+    for row in unconfirmed:
+        row.status = models.AssignmentStatus.cancelled
+
+    pending_rows = (
+        db.query(models.DispatchOffer)
+        .filter(
+            models.DispatchOffer.shift_request_id == shift.id,
+            models.DispatchOffer.status == models.OfferStatus.pending,
+        )
+        .all()
+    )
+    nurse_user_ids = {row.nurse_user_id for row in pending_rows}
+    nurse_user_ids.update(a.nurse_user_id for a in unconfirmed)
+    for row in pending_rows:
+        row.status = models.OfferStatus.timed_out
+        row.responded_at = now
+
+    sessions = (
+        db.query(models.DispatchSession)
+        .filter(
+            models.DispatchSession.shift_request_id == shift.id,
+            models.DispatchSession.status == models.DispatchSessionStatus.active,
+        )
+        .all()
+    )
+    for session in sessions:
+        cancel_dispatch_session(session.id)
+        session.status = models.DispatchSessionStatus.failed
+        session.completed_at = now
+
+    shift.status = models.ShiftRequestStatus.expired
+    db.add(
+        models.ShiftTimelineEvent(
+            shift_request_id=shift.id,
+            event_type=SHIFT_EXPIRED,
+            actor_user_id=None,
+            city_id=shift.city_id,
+            payload={"reason": "past_shift_start_no_recruiter_confirm"},
+        )
+    )
+    db.commit()
+
+    from ..ws_manager import ws_manager
+
+    async def _notify_expired() -> None:
+        await ws_manager.send(
+            shift.hospital_user_id,
+            {
+                "type": "shift_expired",
+                "shift_id": shift.id,
+                "message": "No staff confirmed before the shift start time.",
+            },
+        )
+        if nurse_user_ids:
+            revoked = {
+                "type": "offer_revoked",
+                "shift_id": shift.id,
+                "message": "This shift expired and is no longer available.",
+            }
+            await asyncio.gather(
+                *[ws_manager.send(uid, revoked) for uid in nurse_user_ids],
+                return_exceptions=True,
+            )
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_notify_expired())
+    except RuntimeError:
+        pass
+    return True
 
 
 def record_nurse_accept_sync(
@@ -701,7 +858,7 @@ def _finalize_search_closed_sync(
     db.add(
         models.ShiftTimelineEvent(
             shift_request_id=shift_id,
-            event_type=SHIFT_FILLED if assignments else SHIFT_EXPIRED,
+            event_type=SHIFT_FILLED if finalized else SHIFT_EXPIRED,
             actor_user_id=None,
             city_id=shift.city_id,
             payload={"reason": reason, "confirmed_count": len(finalized)},
@@ -785,7 +942,94 @@ def _get_shift_with_hospital_sync(db, shift_id: int):
     return shift, hospital
 
 
-# ── Async helpers ─────────────────────────────────────────────────────────────
+def _push_nurse_message_fcm_sync(db, user_id: int, payload: dict) -> None:
+    """
+    FCM fallback for nurse lifecycle messages (background / killed app).
+    WS may still show connected while Android has suspended the app.
+    """
+    from ..utils.fcm import send_push_notification, send_assignment_confirmed
+
+    tokens = _get_device_tokens_sync(db, [user_id])
+    token = tokens.get(user_id)
+    if not token:
+        return
+
+    ntype = payload.get("type")
+    shift_id = payload.get("shift_id")
+    ok = False
+    err = None
+
+    if ntype == "assignment_confirmed" and shift_id is not None:
+        ok, err = send_assignment_confirmed(
+            token,
+            int(shift_id),
+            str(payload.get("hospital_name") or "Hospital"),
+            str(payload.get("shift_start") or ""),
+        )
+    elif ntype == "shift_cancelled" and shift_id is not None:
+        ok, err = send_push_notification(
+            fcm_token=token,
+            title="Shift cancelled",
+            body=str(payload.get("message") or "The hospital cancelled this shift."),
+            data={
+                "type": "shift_cancelled",
+                "shift_id": int(shift_id),
+                "message": str(payload.get("message") or ""),
+            },
+            android_priority="high",
+        )
+    elif ntype == "offer_revoked" and shift_id is not None:
+        ok, err = send_push_notification(
+            fcm_token=token,
+            title="Shift update",
+            body=str(payload.get("message") or "This shift is no longer available."),
+            data={
+                "type": "offer_revoked",
+                "shift_id": int(shift_id),
+                "message": str(payload.get("message") or ""),
+            },
+            android_priority="high",
+        )
+    elif ntype == "application_submitted" and shift_id is not None:
+        ok, err = send_push_notification(
+            fcm_token=token,
+            title="Application submitted",
+            body=str(payload.get("message") or "The hospital is reviewing your application."),
+            data={
+                "type": "application_submitted",
+                "shift_id": int(shift_id),
+                "assignment_id": str(payload.get("assignment_id") or ""),
+            },
+            android_priority="high",
+        )
+    else:
+        return
+
+    if err == "invalid_token":
+        _delete_device_token_sync(db, token)
+    elif ok:
+        logger.info("[dispatch] FCM %s delivered to user %d", ntype, user_id)
+
+
+async def deliver_nurse_message(db, user_id: int, payload: dict) -> None:
+    """WebSocket + FCM for nurse staffing events (client dedupes duplicate delivery)."""
+    from ..ws_manager import ws_manager
+
+    _lifecycle_log(
+        "ws_nurse_out",
+        sid=payload.get("shift_id"),
+        uid=user_id,
+        typ=payload.get("type"),
+        stage=payload.get("lifecycle_stage"),
+        aid=payload.get("assignment_id"),
+        oid=payload.get("offer_id"),
+    )
+    await ws_manager.send(user_id, payload)
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(
+        _executor, partial(_push_nurse_message_fcm_sync, db, user_id, payload)
+    )
+
 
 async def _run_sync(fn, *args):
     """Run a sync function in the thread pool executor. Never blocks event loop."""
@@ -851,31 +1095,29 @@ async def _notify_wave(
         if ws_delivered:
             ws_count += 1
 
-        # FCM fallback: nurse not connected via WS (background / killed / offline)
-        elif fcm:
-            token = fcm.get(offer.nurse_user_id)
-            if token:
-                # Run in executor — Firebase Admin SDK is blocking HTTP; must not touch event loop
-                ok, err_cat = await loop.run_in_executor(
-                    _executor,
-                    partial(
-                        send_dispatch_offer,
-                        fcm_token=token,
-                        offer_id=offer.id,
-                        shift_id=shift.id,
-                        hospital_name=shift.hospital_name,
-                        role=shift.role_required.value,
-                        urgency=shift.urgency.value,
-                        expires_in_sec=wave_timeout_sec,
-                        pay_rate=shift.pay_rate,
-                    ),
-                )
-                if ok:
-                    fcm_count += 1
-                else:
-                    fcm_fail += 1
-                    if err_cat == "invalid_token":
-                        invalid_tokens.append(token)
+        # Always send FCM — WS can miss when the app is backgrounded with a stale socket
+        token = fcm.get(offer.nurse_user_id) if fcm else None
+        if token:
+            ok, err_cat = await loop.run_in_executor(
+                _executor,
+                partial(
+                    send_dispatch_offer,
+                    fcm_token=token,
+                    offer_id=offer.id,
+                    shift_id=shift.id,
+                    hospital_name=shift.hospital_name,
+                    role=shift.role_required.value,
+                    urgency=shift.urgency.value,
+                    expires_in_sec=respond_by_sec,
+                    pay_rate=shift.pay_rate,
+                ),
+            )
+            if ok:
+                fcm_count += 1
+            else:
+                fcm_fail += 1
+                if err_cat == "invalid_token":
+                    invalid_tokens.append(token)
 
     # Clean up invalid FCM tokens in executor (doesn't block dispatch)
     for bad_token in invalid_tokens:
@@ -925,15 +1167,19 @@ async def _notify_hospital(
     msg = {"type": message_type, "shift_id": shift_id, **payload}
     is_online = ws_manager.is_connected(hospital_user_id)
     delivered = await ws_manager.send(hospital_user_id, msg)
-    if delivered:
-        logger.info(
-            "[dispatch][ws] ✓ hospital_user=%d shift=%d type=%s — delivered",
-            hospital_user_id, shift_id, message_type
-        )
-    else:
+    _lifecycle_log(
+        "ws_recruiter_out",
+        sid=shift_id,
+        uid=hospital_user_id,
+        typ=message_type,
+        delivered=delivered,
+        online=is_online,
+        stage=payload.get("lifecycle_stage"),
+    )
+    if not delivered:
         logger.warning(
-            "[dispatch][ws] ✗ hospital_user=%d shift=%d type=%s — NOT delivered (ws_online=%s)",
-            hospital_user_id, shift_id, message_type, is_online
+            "[dispatch][ws] recruiter uid=%d sid=%d typ=%s not delivered (online=%s)",
+            hospital_user_id, shift_id, message_type, is_online,
         )
 
 
@@ -1026,7 +1272,7 @@ async def _do_fill(
     applied_count = await asyncio.get_running_loop().run_in_executor(
         _executor, functools.partial(_count_assignments_sync, db, shift_id)
     )
-    nurses_required = getattr(shift, "nurses_required", None) or 1
+    nurses_required = _effective_nurses_required(shift)
 
     nurse_user = await asyncio.get_running_loop().run_in_executor(
         _executor,
@@ -1049,6 +1295,15 @@ async def _do_fill(
             f"{'' if applied_count == 1 else 's'}) — review and confirm."
         ),
     })
+    _lifecycle_log(
+        "nurse_applied",
+        sid=shift_id,
+        uid=accepted_offer.nurse_user_id,
+        oid=accepted_offer.id,
+        stage="applied",
+        applied=applied_count,
+        wave=wave_num,
+    )
 
     event = dispatch_events.get(session_id)
     if event is not None:
@@ -1343,29 +1598,48 @@ async def _run_dispatch_inner(db, shift_id: int) -> None:
                 _ss.astimezone(timezone.utc).replace(tzinfo=None) if _ss.tzinfo else _ss
             )
 
-            confirmed_at_entry = await asyncio.get_running_loop().run_in_executor(
+            applied_at_entry = await asyncio.get_running_loop().run_in_executor(
                 _executor, functools.partial(_count_assignments_sync, db, shift_id)
             )
-            entry_msg = (
-                f"{confirmed_at_entry} nurse(s) confirmed — still searching for more staff…"
-                if confirmed_at_entry > 0
-                else "No nurses online right now — watching for available staff..."
+            confirmed_at_entry = await asyncio.get_running_loop().run_in_executor(
+                _executor, functools.partial(_count_recruiter_confirmed_sync, db, shift_id)
             )
-            await _notify_hospital(shift.hospital_user_id, shift_id, "dispatch_wave_update", {
-                "status": "watching" if confirmed_at_entry == 0 else "receiving",
-                "confirmed_count": confirmed_at_entry,
-                "message": entry_msg,
-            })
-            logger.info(
-                "[dispatch] shift %d entering ongoing search (interval=%ds, confirmed=%d)",
-                shift_id, watchlist_interval, confirmed_at_entry,
-            )
+            if confirmed_at_entry >= PILOT_NURSES_REQUIRED:
+                _lifecycle_log(
+                    "pilot_cap_met",
+                    sid=shift_id,
+                    confirmed=confirmed_at_entry,
+                )
+                logger.info(
+                    "[dispatch] shift %d pilot single-nurse cap met (%d confirmed) — skip watchlist",
+                    shift_id, confirmed_at_entry,
+                )
+                filled = True
+            else:
+                entry_msg = (
+                    f"{applied_at_entry} application(s) pending review — watching for more staff…"
+                    if applied_at_entry > 0
+                    else "No nurses online right now — watching for available staff..."
+                )
+                await _notify_hospital(shift.hospital_user_id, shift_id, "dispatch_wave_update", {
+                    "status": "watching" if applied_at_entry == 0 else "receiving",
+                    "applied_count": applied_at_entry,
+                    "confirmed_count": confirmed_at_entry,
+                    "nurses_required": PILOT_NURSES_REQUIRED,
+                    "message": entry_msg,
+                })
+                logger.info(
+                    "[dispatch] shift %d entering ongoing search (interval=%ds, applied=%d, confirmed=%d)",
+                    shift_id, watchlist_interval, applied_at_entry, confirmed_at_entry,
+                )
 
-            while not filled and datetime.utcnow() < shift_start_naive:
+            while not filled and confirmed_at_entry < PILOT_NURSES_REQUIRED and datetime.utcnow() < shift_start_naive:
                 if await asyncio.get_running_loop().run_in_executor(
-                    _executor, functools.partial(_is_search_closed_sync, db, shift_id)
+                    _executor, functools.partial(_is_search_manually_closed_sync, db, shift_id)
                 ):
                     filled = True
+                    break
+                if datetime.utcnow() >= shift_start_naive:
                     break
                 if session.id in _cancelled_sessions:
                     filled = True  # suppress terminal shift_expired below
@@ -1475,38 +1749,39 @@ async def _run_dispatch_inner(db, shift_id: int) -> None:
 
         if not filled:
             now = datetime.utcnow()
-            recruiter_confirmed = await asyncio.get_running_loop().run_in_executor(
-                _executor, functools.partial(_count_recruiter_confirmed_sync, db, shift_id)
-            )
-            search_closed = await asyncio.get_running_loop().run_in_executor(
-                _executor, functools.partial(_is_search_closed_sync, db, shift_id)
-            )
             _ss = shift.shift_start
             shift_start_naive = (
                 _ss.astimezone(timezone.utc).replace(tzinfo=None) if _ss.tzinfo else _ss
             )
-            if recruiter_confirmed > 0 and not search_closed and now >= shift_start_naive:
-                await asyncio.get_running_loop().run_in_executor(
+            recruiter_confirmed = await asyncio.get_running_loop().run_in_executor(
+                _executor, functools.partial(_count_recruiter_confirmed_sync, db, shift_id)
+            )
+
+            if now >= shift_start_naive:
+                terminal = await asyncio.get_running_loop().run_in_executor(
                     _executor,
-                    functools.partial(_finalize_search_closed_sync, db, shift_id, now, "shift_start"),
+                    functools.partial(_expire_shift_past_start_unfilled_sync, db, shift),
                 )
-                await _notify_hospital(shift.hospital_user_id, shift_id, "shift_search_stopped", {
-                    "confirmed_count": recruiter_confirmed,
-                    "message": "Shift started — staff assigned.",
-                })
-                await _notify_hospital(shift.hospital_user_id, shift_id, "shift_filled", {
-                    "confirmed_count": recruiter_confirmed,
-                    "message": "Staff assigned for this shift.",
-                })
-                logger.info(
-                    "[dispatch] shift %d auto-closed at shift start (%d recruiter-confirmed)",
-                    shift_id, recruiter_confirmed,
-                )
+                if terminal:
+                    if recruiter_confirmed > 0:
+                        _metrics["dispatches_filled"] += 1
+                        logger.info(
+                            "[dispatch] shift %d filled at shift start (%d recruiter-confirmed)",
+                            shift_id, recruiter_confirmed,
+                        )
+                    else:
+                        _metrics["dispatches_expired"] += 1
+                        sentry_sdk.set_tag("dispatch.outcome", "expired")
+                        logger.warning(
+                            "[dispatch] shift %d EXPIRED at shift start (no recruiter confirm)",
+                            shift_id,
+                        )
                 return
+
             applied_count = await asyncio.get_running_loop().run_in_executor(
                 _executor, functools.partial(_count_assignments_sync, db, shift_id)
             )
-            if applied_count > 0 and not search_closed:
+            if applied_count > 0:
                 logger.info(
                     "[dispatch] shift %d: %d applications pending recruiter confirm",
                     shift_id,
@@ -1514,7 +1789,7 @@ async def _run_dispatch_inner(db, shift_id: int) -> None:
                 )
                 return
 
-            # All waves exhausted with no confirmed staff (or search already closed)
+            # Waves exhausted before shift start with no applications at all
             await asyncio.get_running_loop().run_in_executor(
                 _executor, functools.partial(
                     _update_shift_status_sync, db, shift_id, models.ShiftRequestStatus.expired
@@ -1532,21 +1807,20 @@ async def _run_dispatch_inner(db, shift_id: int) -> None:
                     None, {
                         "waves_tried": len(wave_sizes),
                         "nurses_offered": len(already_offered),
+                        "reason": "waves_exhausted_no_applications",
                     }
                 )
             )
-            # Differentiate: "no nurses at all" vs "nurses found but none accepted"
-            if len(already_offered) == 0:
-                expired_msg = "Shift window passed with no nurses online. Re-post to try again."
-            else:
-                expired_msg = "No nurse accepted before the shift window closed."
+            expired_msg = (
+                "Shift window passed with no nurses online. Re-post to try again."
+                if len(already_offered) == 0
+                else "No staff confirmed before the shift window closed."
+            )
             await _notify_hospital(shift.hospital_user_id, shift_id, "shift_expired", {
                 "message": expired_msg,
                 "nurses_notified": len(already_offered),
             })
-            # Task 14: Metrics — dispatch expired
             _metrics["dispatches_expired"] += 1
-
             sentry_sdk.set_tag("dispatch.outcome", "expired")
             logger.warning("[dispatch] shift %d EXPIRED after %d waves", shift_id, max_waves)
 

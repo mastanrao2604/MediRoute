@@ -4,14 +4,14 @@ import { AuthProvider } from './context/AuthContext';
 import { useAuth } from './context/AuthContext';
 import { AvailabilityProvider } from './context/AvailabilityContext';
 import { DispatchProvider, useDispatchEvents } from './context/DispatchContext';
-import { lazy, Suspense, Component, useEffect, useState, useCallback } from 'react';
+import { lazy, Suspense, Component, useEffect, useState, useCallback, useRef } from 'react';
 import * as Sentry from '@sentry/react';
 import ProtectedRoute from './components/ProtectedRoute';
 import InstallPrompt from './components/InstallPrompt';
 import UpdatePrompt from './components/UpdatePrompt';
 import { getPostLoginRoute } from './utils/authNav';
 import { useWebSocket } from './hooks/useWebSocket';
-import { mlog } from './utils/mobileLogger';
+import { mlog, mlogShift } from './utils/mobileLogger';
 import { Capacitor } from '@capacitor/core';
 import { usePushNotifications } from './hooks/usePushNotifications';
 import DispatchOfferModal from './components/DispatchOfferModal';
@@ -244,9 +244,9 @@ const DISPATCH_ELIGIBLE_ROLES = new Set([
 function DispatchManager() {
   const { user, token, revalidate } = useAuth();
   const [currentOffer, setCurrentOffer] = useState(null);
-  // minimizedOffer: offer was dismissed (×) but NOT declined — banner shown so nurse can reopen
   const [minimizedOffer, setMinimizedOffer] = useState(null);
   const { publish } = useDispatchEvents();
+  const recentMsgRef = useRef(new Map());
 
   // WS reconnect banner: only shown after 4s of confirmed disconnection
   // (avoids flashing on normal app start before first connection)
@@ -265,14 +265,48 @@ function DispatchManager() {
     setMinimizedOffer(null);
   }, [minimizedOffer]);
 
+  const clearShiftOfferUi = useCallback((shiftId) => {
+    if (shiftId == null) return;
+    const sid = Number(shiftId);
+    setCurrentOffer((prev) => (Number(prev?.shift_id) === sid ? null : prev));
+    setMinimizedOffer((prev) => (Number(prev?.shift_id) === sid ? null : prev));
+  }, []);
+
+  const notifyNurseStaffingChange = useCallback((msg, { notice = false } = {}) => {
+    if (!DISPATCH_ELIGIBLE_ROLES.has(user?.role)) return;
+    window.dispatchEvent(new CustomEvent('mr-nurse-active-shift-refresh'));
+    window.dispatchEvent(new CustomEvent('mr-jobs-shifts-refresh'));
+    const removeFromBrowse = new Set([
+      'shift_cancelled',
+      'shift_expired',
+      'offer_revoked',
+    ]);
+    if (msg?.shift_id != null && removeFromBrowse.has(msg.type)) {
+      window.dispatchEvent(
+        new CustomEvent('mr-jobs-shift-removed', { detail: { shiftId: Number(msg.shift_id) } }),
+      );
+    }
+    if (notice && msg?.message) {
+      window.dispatchEvent(
+        new CustomEvent('mr-staffing-notice', { detail: { message: msg.message } }),
+      );
+    }
+  }, [user?.role]);
+
   const handleMessage = useCallback((msg) => {
-    const tracePayload = () => ({
-      offer_id: msg.offer_id != null ? Number(msg.offer_id) : undefined,
-      shift_id: msg.shift_id != null ? Number(msg.shift_id) : undefined,
-    });
+    const wsRole = user?.role === 'recruiter' ? 'recruiter' : 'nurse';
+    const wsExtra = () => ({ role: wsRole });
+    const dedupeKey = `${msg.type}:${msg.shift_id ?? ''}:${msg.offer_id ?? ''}`;
+    const now = Date.now();
+    const last = recentMsgRef.current.get(dedupeKey);
+    if (last && now - last < 5000 && msg.type !== 'dispatch_wave_update') {
+      return;
+    }
+    recentMsgRef.current.set(dedupeKey, now);
+
     switch (msg.type) {
       case 'dispatch_offer':
-        mlog('dispatch', 'ws_offer', tracePayload());
+        mlogShift('dispatch', 'ws_offer', msg, wsExtra());
         // Deduplicate same offer_id (double WS delivery or WS+FCM)
         // Attach receivedAt so remaining time can be calculated on reopen
         setMinimizedOffer(null); // new offer supersedes any minimized one
@@ -288,38 +322,34 @@ function DispatchManager() {
         break;
 
       case 'offer_revoked': {
-        mlog('dispatch', 'ws_offer_revoked', { shift_id: Number(msg.shift_id) });
-        const sid = Number(msg.shift_id);
-        setCurrentOffer(prev =>
-          (Number(prev?.shift_id) === sid ? null : prev),
-        );
-        setMinimizedOffer(prev =>
-          (Number(prev?.shift_id) === sid ? null : prev),
-        );
-        if (DISPATCH_ELIGIBLE_ROLES.has(user?.role)) {
-          window.dispatchEvent(new CustomEvent('mr-jobs-shifts-refresh'));
-        }
+        mlogShift('dispatch', 'ws_offer_revoked', msg, wsExtra());
+        clearShiftOfferUi(msg.shift_id);
+        notifyNurseStaffingChange(msg, { notice: true });
         break;
       }
 
       case 'application_submitted':
-        mlog('dispatch', 'ws_application_submitted', tracePayload());
+        mlogShift('dispatch', 'ws_application_submitted', msg, { ...wsExtra(), stage: 'applied' });
         setCurrentOffer(null);
         setMinimizedOffer(null);
-        if (DISPATCH_ELIGIBLE_ROLES.has(user?.role)) {
-          window.dispatchEvent(new CustomEvent('mr-nurse-active-shift-refresh'));
-          window.dispatchEvent(new CustomEvent('mr-jobs-shifts-refresh'));
-        }
+        notifyNurseStaffingChange(msg, { notice: Boolean(msg.message) });
         break;
 
       case 'assignment_confirmed':
-        mlog('dispatch', 'ws_assignment_confirmed', tracePayload());
+        mlogShift('dispatch', 'ws_assignment_confirmed', msg, { ...wsExtra(), stage: 'recruiter_confirmed' });
         setCurrentOffer(null);
         setMinimizedOffer(null);
-        if (DISPATCH_ELIGIBLE_ROLES.has(user?.role)) {
-          window.dispatchEvent(new CustomEvent('mr-nurse-active-shift-refresh'));
-          window.dispatchEvent(new CustomEvent('mr-jobs-shifts-refresh'));
-        }
+        notifyNurseStaffingChange(msg, { notice: Boolean(msg.message) });
+        break;
+
+      case 'assignment_checked_in':
+      case 'nurse_checked_in':
+        mlogShift('dispatch', `ws_${msg.type}`, msg, { ...wsExtra(), stage: msg.lifecycle_stage || 'checked_in' });
+        break;
+
+      case 'assignment_checked_out':
+      case 'nurse_checked_out':
+        mlogShift('dispatch', `ws_${msg.type}`, msg, { ...wsExtra(), stage: msg.lifecycle_stage || 'completed' });
         break;
 
       case 'dispatch_started':
@@ -331,7 +361,7 @@ function DispatchManager() {
       case 'shift_expired':
       case 'shift_cancelled':
       case 'dispatch_error':
-        mlog('dispatch', `ws_${msg.type}`, tracePayload());
+        mlogShift('dispatch', `ws_${msg.type}`, msg, wsExtra());
         // Publish to DispatchContext — RecruiterDashboard reads from there
         publish(msg);
         if (
@@ -340,33 +370,29 @@ function DispatchManager() {
         ) {
           window.dispatchEvent(new CustomEvent('mr-recruiter-shifts-refresh'));
         }
-        if (DISPATCH_ELIGIBLE_ROLES.has(user?.role)) {
-          if (
-            msg.type === 'shift_cancelled'
-            || msg.type === 'shift_expired'
-            || msg.type === 'shift_filled'
-            || msg.type === 'offer_revoked'
-          ) {
-            window.dispatchEvent(new CustomEvent('mr-nurse-active-shift-refresh'));
-            window.dispatchEvent(new CustomEvent('mr-jobs-shifts-refresh'));
-            if (msg.shift_id != null) {
-              window.dispatchEvent(
-                new CustomEvent('mr-jobs-shift-removed', { detail: { shiftId: Number(msg.shift_id) } }),
-              );
+        if (msg.type === 'shift_expired' || msg.type === 'shift_cancelled') {
+          clearShiftOfferUi(msg.shift_id);
+          if (DISPATCH_ELIGIBLE_ROLES.has(user?.role)) {
+            notifyNurseStaffingChange(msg, {
+              notice: Boolean(msg.message),
+            });
+            if (msg.type === 'shift_cancelled') {
+              mlogShift('dispatch', 'ws_shift_cancelled_nurse', msg, { ...wsExtra(), stage: 'cancelled' });
+            }
+            if (msg.type === 'shift_expired') {
+              mlogShift('dispatch', 'ws_shift_expired_nurse', msg, { ...wsExtra(), stage: 'expired' });
             }
           }
-        }
-        if (msg.type === 'shift_expired' || msg.type === 'shift_cancelled') {
-          const sid = Number(msg.shift_id);
-          setCurrentOffer((prev) => (Number(prev?.shift_id) === sid ? null : prev));
-          setMinimizedOffer((prev) => (Number(prev?.shift_id) === sid ? null : prev));
         }
         break;
 
       default:
+        if (msg?.type) {
+          mlogShift('dispatch', 'ws_unknown', msg, wsExtra());
+        }
         break;
     }
-  }, [user?.role, publish]);
+  }, [user?.role, publish, clearShiftOfferUi, notifyNurseStaffingChange]);
 
   const shouldConnect = !!token && !!user;
   const { isConnected } = useWebSocket(shouldConnect ? user : null, token, handleMessage, revalidate);
@@ -378,7 +404,10 @@ function DispatchManager() {
   useEffect(() => {
     if (!shouldConnect) { setShowReconnectBanner(false); return; }
     if (isConnected) { setShowReconnectBanner(false); return; }
-    const t = setTimeout(() => setShowReconnectBanner(true), 4000);
+    const t = setTimeout(() => {
+      setShowReconnectBanner(true);
+      mlog('websocket', 'reconnect_banner_shown');
+    }, 4000);
     return () => clearTimeout(t);
   }, [isConnected, shouldConnect]);
 

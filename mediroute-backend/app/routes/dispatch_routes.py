@@ -20,7 +20,7 @@ from ..dependencies import get_current_user
 from ..utils.security import decode_access_token
 from .. import models
 from ..ws_manager import ws_manager
-from ..dispatch.engine import dispatch_events, _metrics, record_nurse_accept_sync
+from ..dispatch.engine import dispatch_events, _metrics, record_nurse_accept_sync, deliver_nurse_message
 from ..dispatch.events import OFFER_ACCEPTED, OFFER_DECLINED, OFFER_TIMED_OUT
 from ..utils.datetime_util import utc_iso
 from ..dispatch.eligibility import nurse_accept_eligible
@@ -155,14 +155,31 @@ def accept_offer(
             models.DispatchOffer.nurse_user_id == current_user.id,
         ).first()
         if existing and existing.status == models.OfferStatus.accepted:
-            raise HTTPException(status_code=409, detail="You are already confirmed for this shift.")
+            raise HTTPException(status_code=409, detail="You have already applied for this shift.")
         raise HTTPException(status_code=404, detail="Offer not found or no longer available.")
 
     active_shift = db.query(models.ShiftRequest).filter(
         models.ShiftRequest.id == offer.shift_request_id,
     ).first()
-    if not active_shift or not shift_search_open(active_shift):
-        db.rollback()
+    if not active_shift:
+        raise HTTPException(status_code=404, detail="Shift not found.")
+
+    from ..routes.shifts import _expire_shift_if_past_start_unfilled
+
+    if _expire_shift_if_past_start_unfilled(db, active_shift):
+        db.refresh(active_shift)
+        db.refresh(offer)
+
+    if active_shift.status in (
+        models.ShiftRequestStatus.cancelled,
+        models.ShiftRequestStatus.expired,
+        models.ShiftRequestStatus.filled,
+    ):
+        raise HTTPException(
+            status_code=410,
+            detail="This shift is no longer available.",
+        )
+    if not shift_search_open(active_shift):
         raise HTTPException(
             status_code=410,
             detail="This shift has already started or staff search was closed.",
@@ -177,18 +194,20 @@ def accept_offer(
     same_shift = db.query(models.LiveAssignment).filter(
         models.LiveAssignment.shift_request_id == offer.shift_request_id,
         models.LiveAssignment.nurse_user_id == current_user.id,
-    ).first()
-    if same_shift:
-        raise HTTPException(status_code=409, detail="You are already confirmed for this shift.")
-
-    active_assignment = db.query(models.LiveAssignment).filter(
-        models.LiveAssignment.nurse_user_id == current_user.id,
-        models.LiveAssignment.shift_request_id != offer.shift_request_id,
-        models.LiveAssignment.status.in_([
-            models.AssignmentStatus.confirmed,
-            models.AssignmentStatus.checked_in,
+        models.LiveAssignment.status.notin_([
+            models.AssignmentStatus.cancelled,
+            models.AssignmentStatus.completed,
+            models.AssignmentStatus.no_show,
         ]),
     ).first()
+    if same_shift:
+        raise HTTPException(status_code=409, detail="You have already applied for this shift.")
+
+    from ..dispatch.offer_policy import nurse_blocks_other_acceptances
+
+    active_assignment = nurse_blocks_other_acceptances(
+        db, current_user.id, exclude_shift_id=offer.shift_request_id
+    )
     if active_assignment:
         raise HTTPException(
             status_code=409,
@@ -226,6 +245,9 @@ def accept_offer(
     except ValueError:
         raise HTTPException(status_code=410, detail="Staff search is closed for this shift.")
 
+    assignment.status = models.AssignmentStatus.applied
+    assignment.recruiter_confirmed_at = None
+
     event = models.ShiftTimelineEvent(
         shift_request_id=offer.shift_request_id,
         event_type=OFFER_ACCEPTED,
@@ -255,34 +277,42 @@ def accept_offer(
 
     applied_count = (
         db.query(models.LiveAssignment)
-        .filter(models.LiveAssignment.shift_request_id == offer.shift_request_id)
+        .filter(
+            models.LiveAssignment.shift_request_id == offer.shift_request_id,
+            models.LiveAssignment.recruiter_confirmed_at.is_(None),
+        )
         .count()
     )
     nurses_required = getattr(shift, "nurses_required", None) or 1
     nurse_name = current_user.name or f"Staff #{current_user.id}"
 
     async def _notify_accept() -> None:
-        await ws_manager.send(current_user.id, {
-            "type": "application_submitted",
-            "assignment_id": assignment.id,
-            "shift_id": offer.shift_request_id,
-            "hospital_name": shift.hospital_name if shift else "",
-            "shift_start": utc_iso(shift.shift_start) if shift else None,
-            "application_status": "applied",
-            "message": "Application submitted — the hospital is reviewing your profile.",
-        })
-        await ws_manager.send(shift.hospital_user_id, {
-            "type": "nurse_applied",
-            "shift_id": offer.shift_request_id,
-            "nurse_name": nurse_name,
-            "nurse_user_id": current_user.id,
-            "applied_count": applied_count,
-            "nurses_required": nurses_required,
-            "message": (
-                f"{nurse_name} applied ({applied_count} applicant"
-                f"{'' if applied_count == 1 else 's'}) — review and confirm."
-            ),
-        })
+        db_notify = SessionLocal()
+        try:
+            await deliver_nurse_message(db_notify, current_user.id, {
+                "type": "application_submitted",
+                "assignment_id": assignment.id,
+                "shift_id": offer.shift_request_id,
+                "hospital_name": shift.hospital_name if shift else "",
+                "shift_start": utc_iso(shift.shift_start) if shift else None,
+                "application_status": "applied",
+                "lifecycle_stage": "applied",
+                "message": "Application submitted — the hospital is reviewing your profile.",
+            })
+            await ws_manager.send(shift.hospital_user_id, {
+                "type": "nurse_applied",
+                "shift_id": offer.shift_request_id,
+                "nurse_name": nurse_name,
+                "nurse_user_id": current_user.id,
+                "applied_count": applied_count,
+                "nurses_required": nurses_required,
+                "message": (
+                    f"{nurse_name} applied ({applied_count} applicant"
+                    f"{'' if applied_count == 1 else 's'}) — review and confirm."
+                ),
+            })
+        finally:
+            db_notify.close()
 
     try:
         loop = asyncio.get_running_loop()
@@ -312,6 +342,7 @@ def accept_offer(
         "assignment_id": assignment.id,
         "message": "Application submitted — waiting for the hospital to confirm.",
         "application_status": "applied",
+        "lifecycle_stage": "applied",
     }
 
 
@@ -413,6 +444,12 @@ def get_pending_offers(
         if _expire_shift_if_past_start_unfilled(db, shift):
             db.refresh(shift)
             db.refresh(offer)
+        if shift.status in (
+            models.ShiftRequestStatus.cancelled,
+            models.ShiftRequestStatus.expired,
+            models.ShiftRequestStatus.filled,
+        ):
+            continue
         if not offer_respondable(offer, shift):
             continue
         if shift.id in seen_shift_ids:

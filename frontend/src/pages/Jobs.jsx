@@ -5,7 +5,11 @@ import JobCard from '../components/JobCard';
 import ShiftListingCard from '../components/ShiftListingCard';
 import { useAuth } from '../context/AuthContext';
 import { formatApiErrorDetail } from '../utils/apiErrorMessage';
-import { humanizeStaffingError } from '../utils/staffingStatusCopy';
+import {
+  humanizeStaffingError,
+  isApplicationFinalized,
+  isApplicationPending,
+} from '../utils/staffingStatusCopy';
 import {
   filterJobSeekerShifts,
   filterJobSeekerOffers,
@@ -113,6 +117,12 @@ export default function Jobs() {
     window.addEventListener('mr-nurse-active-shift-refresh', refresh);
     window.addEventListener('mr-jobs-shifts-refresh', refresh);
     window.addEventListener('mr-jobs-shift-removed', onRemoved);
+    const onStaffingNotice = (e) => {
+      const msg = e.detail?.message;
+      if (msg) showToast(msg);
+      refresh();
+    };
+    window.addEventListener('mr-staffing-notice', onStaffingNotice);
     const onVisible = () => {
       if (document.visibilityState === 'visible') refresh();
     };
@@ -121,6 +131,7 @@ export default function Jobs() {
       window.removeEventListener('mr-nurse-active-shift-refresh', refresh);
       window.removeEventListener('mr-jobs-shifts-refresh', refresh);
       window.removeEventListener('mr-jobs-shift-removed', onRemoved);
+      window.removeEventListener('mr-staffing-notice', onStaffingNotice);
       document.removeEventListener('visibilitychange', onVisible);
     };
   }, [user?.role, removeShiftFromList]);
@@ -254,7 +265,8 @@ export default function Jobs() {
                     setSelectedShiftPreview(shift);
                   }}
                   hasInvite={invitedShiftIds.has(s.id) || shiftHasRespondableOffer(s)}
-                  confirmed={s.my_offer?.status === 'accepted' || Boolean(s.assignment)}
+                  confirmed={isApplicationFinalized(s)}
+                  applicationPending={isApplicationPending(s)}
                   nearbyMatch={s.accept_eligible !== false}
                   acceptEligible={shiftHasRespondableOffer(s) ? shiftCanAccept(s) : s.accept_eligible !== false}
                 />

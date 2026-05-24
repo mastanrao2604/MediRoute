@@ -33,20 +33,59 @@ function effectiveShiftStatus(shift, live) {
   const db = shift?.status;
   const searchActive = shift?.search_active !== false && !shift?.search_closed;
   const confirmed = shift?.confirmed_count ?? 0;
+  const applied = shift?.applied_count ?? 0;
 
   if (db === 'cancelled' || live?.type === 'shift_cancelled') return 'cancelled';
   if (db === 'expired' || live?.type === 'shift_expired') return 'expired';
-  if (!searchActive && (db === 'filled' || live?.type === 'shift_filled' || live?.type === 'shift_search_stopped')) {
+  if (!searchActive && confirmed > 0 && (db === 'filled' || live?.type === 'shift_filled')) {
     return 'filled';
   }
-  if (searchActive && confirmed > 0) return 'receiving';
+  if (!searchActive && applied > 0 && confirmed === 0) return 'receiving';
   if (db === 'dispatching' || live?.type === 'dispatch_started' || live?.type === 'dispatch_wave_update' || live?.type === 'nurse_accepted' || live?.type === 'nurse_applied') {
     return 'dispatching';
   }
+  if (searchActive && (applied > 0 || confirmed > 0)) return 'receiving';
   if (db === 'open') {
     return isPastShiftStart(shift?.shift_start) ? 'expired' : 'open';
   }
   return db;
+}
+
+function applicantCanConfirm(applicant, shift) {
+  if (!applicant || !shift) return false;
+  if ((shift.confirmed_count ?? 0) >= 1) return false;
+  if (shift.search_active === false || shift.search_closed) return false;
+  const stage = applicant.lifecycle_stage;
+  if (stage === 'applied' || stage === 'under_review') return true;
+  return applicant.status === 'applied';
+}
+
+function shiftOnsiteStatusLine(shift) {
+  const apps = shift?.applicants || [];
+  const completed = apps.find(
+    (a) => a.lifecycle_stage === 'completed' || a.assignment_status === 'completed',
+  );
+  const onSite = apps.find(
+    (a) => a.lifecycle_stage === 'checked_in' || a.assignment_status === 'checked_in',
+  );
+  const confirmed = apps.find(
+    (a) => a.lifecycle_stage === 'recruiter_confirmed'
+      || (a.status === 'confirmed' && !onSite && !completed),
+  );
+  if (completed) {
+    const when = completed.check_out_at
+      ? formatShiftDateTime(completed.check_out_at, { dateStyle: 'short', timeStyle: 'short' })
+      : null;
+    return when ? `${completed.name} · completed ${when}` : `${completed.name} · shift completed`;
+  }
+  if (onSite) {
+    const when = onSite.check_in_at
+      ? formatShiftDateTime(onSite.check_in_at, { dateStyle: 'short', timeStyle: 'short' })
+      : null;
+    return when ? `${onSite.name} · on shift since ${when}` : `${onSite.name} · checked in on site`;
+  }
+  if (confirmed) return `${confirmed.name} · confirmed — awaiting check-in`;
+  return null;
 }
 
 function isStaffSearchLive(shift, live) {
@@ -98,7 +137,16 @@ export default function RecruiterDashboard() {
   useEffect(() => {
     const onRefresh = () => { loadShifts(); };
     window.addEventListener('mr-recruiter-shifts-refresh', onRefresh);
-    return () => window.removeEventListener('mr-recruiter-shifts-refresh', onRefresh);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') loadShifts();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    const poll = setInterval(loadShifts, 30000);
+    return () => {
+      window.removeEventListener('mr-recruiter-shifts-refresh', onRefresh);
+      document.removeEventListener('visibilitychange', onVisible);
+      clearInterval(poll);
+    };
   }, [loadShifts]);
 
   useEffect(() => {
@@ -123,9 +171,13 @@ export default function RecruiterDashboard() {
 
   async function cancelStaffingShift(shiftId) {
     if (!window.confirm('Cancel this shift? Nurses will stop receiving offers immediately.')) return;
+    const reason = window.prompt(
+      'Optional: reason for cancellation (shown to nurses who applied)',
+    );
     setShiftBusyId(shiftId);
     try {
-      await api.post(`/shifts/${shiftId}/cancel`);
+      const body = reason && reason.trim() ? { reason: reason.trim() } : undefined;
+      await api.post(`/shifts/${shiftId}/cancel`, body);
       await loadShifts();
     } catch (e) {
       const d = e?.response?.data?.detail;
@@ -136,7 +188,12 @@ export default function RecruiterDashboard() {
   }
 
   async function confirmStaff(shiftId, nurseUserId) {
-    if (!window.confirm('Confirm this nurse and close applications for this shift?')) return;
+    const shiftRow = shifts.find((s) => s.id === shiftId);
+    if ((shiftRow?.confirmed_count ?? 0) >= 1) {
+      setShiftsError('This shift already has confirmed staff. Pilot supports one nurse per shift.');
+      return;
+    }
+    if (!window.confirm('Confirm this nurse for the shift? Applications will close (one nurse per shift during pilot).')) return;
     setConfirmingNurseId(nurseUserId);
     setShiftBusyId(shiftId);
     try {
@@ -155,7 +212,7 @@ export default function RecruiterDashboard() {
   }
 
   async function stopStaffSearch(shiftId) {
-    if (!window.confirm('Stop searching for more nurses? Confirmed staff stay booked.')) return;
+    if (!window.confirm('Stop accepting new applications? Confirm one nurse to finalize staffing.')) return;
     setShiftBusyId(shiftId);
     try {
       await api.post(`/shifts/${shiftId}/stop-search`);
@@ -319,13 +376,14 @@ export default function RecruiterDashboard() {
                 const cardStatus = recruiterShiftCardStatus(s, live) || effective;
                 const pill = STAFF_SHIFT_STATUS_PILL[cardStatus] || STAFF_SHIFT_STATUS_PILL.open;
                 const isLive = isStaffSearchLive(s, live);
-                const canStopSearch = isLive;
+                const canStopSearch = isLive && (s.confirmed_count ?? 0) < 1;
                 const highlighted = highlightShiftId === s.id;
                 const hasApplicants = (s.applicants?.length || 0) > 0;
 
                 const statusShort = SHIFT_CARD_STATUS[cardStatus]
                   || SHIFT_CARD_STATUS[effective]
                   || effective.charAt(0).toUpperCase() + effective.slice(1);
+                const onsiteLine = shiftOnsiteStatusLine(s);
 
                 return (
                   <div
@@ -352,6 +410,9 @@ export default function RecruiterDashboard() {
                       <p className="text-xs text-gray-500">
                         {s.role_required} · {formatShiftDateTime(s.shift_start)}
                       </p>
+                      {onsiteLine && (
+                        <p className="text-xs text-emerald-800 font-medium mt-1">{onsiteLine}</p>
+                      )}
                     </button>
 
                     {isLive && (
@@ -375,19 +436,21 @@ export default function RecruiterDashboard() {
                       />
                     )}
 
-                    {live?.type === 'nurse_accepted' && isLive && (
+                    {live?.type === 'nurse_accepted' && isLive && (s.confirmed_count ?? 0) < 1 && (
                       <p className="text-xs text-green-800 font-medium">
-                        {live.message || 'More nurses can still apply until you stop search.'}
+                        {live.message || 'Review applications and confirm one nurse for this shift.'}
                       </p>
                     )}
 
                     {!isLive && effective === 'filled' && (
-                      <p className="text-xs text-green-800 font-semibold">Staff finalized</p>
+                      <p className="text-xs text-green-800 font-semibold">
+                        {shiftOnsiteStatusLine(s) || 'Staff confirmed'}
+                      </p>
                     )}
 
                     {effective === 'expired' && (
                       <p className="text-xs text-amber-800 font-medium">
-                        {live?.message || 'Shift expired — no nurse confirmed in time.'}
+                        {live?.message || 'Shift expired — no staff confirmed in time.'}
                       </p>
                     )}
 
@@ -543,9 +606,10 @@ export default function RecruiterDashboard() {
           shiftLabel={profileShiftLabel}
           canConfirm={
             profileShiftId != null
-            && shifts.find((s) => s.id === profileShiftId)?.search_active !== false
-            && !shifts.find((s) => s.id === profileShiftId)?.search_closed
-            && profileNurse.status === 'applied'
+            && applicantCanConfirm(
+              profileNurse,
+              shifts.find((s) => s.id === profileShiftId),
+            )
           }
           confirmBusy={confirmingNurseId === profileNurse.user_id}
           onConfirmStaff={(nurse) => confirmStaff(profileShiftId, nurse.user_id)}
@@ -604,6 +668,16 @@ const EVENT_META = {
   shift_cancelled: {
     label: 'Shift cancelled',
     dot: 'bg-gray-400', text: 'text-gray-700', bg: 'bg-gray-50',
+    active: false,
+  },
+  nurse_checked_in: {
+    label: 'Staff on site',
+    dot: 'bg-green-500', text: 'text-green-700', bg: 'bg-green-50',
+    active: false,
+  },
+  nurse_checked_out: {
+    label: 'Shift completed',
+    dot: 'bg-slate-500', text: 'text-slate-700', bg: 'bg-slate-50',
     active: false,
   },
   dispatch_error: {

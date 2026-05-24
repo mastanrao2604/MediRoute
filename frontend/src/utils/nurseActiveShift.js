@@ -5,6 +5,7 @@ import {
   urgencyLabel,
   isApplicationFinalized,
   isApplicationPending,
+  isShiftCancelledForNurse,
   APPLICATION_STATUS_LABEL,
 } from './staffingStatusCopy';
 import { formatAreaDisplaySync, shiftAreaSource } from './areaLabel';
@@ -13,10 +14,17 @@ const ACTIVE_ASSIGNMENT = new Set(['confirmed', 'checked_in']);
 const TERMINAL_ASSIGNMENT = new Set(['cancelled', 'completed', 'no_show']);
 const TERMINAL_SHIFT = new Set(['cancelled', 'expired']);
 
+/** Recent shifts cancelled by the hospital (history). */
+export function pickCancelledNurseShifts(shifts, limit = 5) {
+  if (!Array.isArray(shifts)) return [];
+  return shifts.filter(isShiftCancelledForNurse).slice(0, limit);
+}
+
 /** Pick the nurse's current operational shift (most recent active assignment). */
 export function pickActiveNurseShift(shifts) {
   if (!Array.isArray(shifts)) return null;
   for (const shift of shifts) {
+    if (isShiftCancelledForNurse(shift)) continue;
     const a = shift?.assignment;
     if (!a || TERMINAL_ASSIGNMENT.has(a.status)) continue;
     if (TERMINAL_SHIFT.has(shift.status)) continue;

@@ -7,8 +7,20 @@ import AvailabilityToggle from '../components/AvailabilityToggle';
 import EmployeeShiftDetailSheet from '../components/EmployeeShiftDetailSheet';
 import { useAuth } from '../context/AuthContext';
 import { formatShiftTime } from '../utils/shiftDateTime';
-import { pickActiveNurseShift } from '../utils/nurseActiveShift';
-import { URGENCY_LABEL, formatRoleLabel, humanizeStaffingError } from '../utils/staffingStatusCopy';
+import {
+  pickActiveNurseShift,
+  pickCancelledNurseShifts,
+  activeShiftSummaryLine,
+} from '../utils/nurseActiveShift';
+import {
+  URGENCY_LABEL,
+  formatRoleLabel,
+  humanizeStaffingError,
+  cancelledShiftStatusLabel,
+  isApplicationPending,
+  isApplicationFinalized,
+  nurseLifecycleLabel,
+} from '../utils/staffingStatusCopy';
 import { filterJobSeekerOffers, SHIFT_ACCEPT_NEARBY_ONLY_MSG } from '../utils/shiftVisibility';
 
 const DISPATCH_ELIGIBLE_ROLES = new Set([
@@ -29,6 +41,9 @@ export default function Dashboard() {
   const [acceptingId,   setAcceptingId]     = useState(null);
   const [offerError,    setOfferError]      = useState('');
   const [activeShift, setActiveShift]       = useState(null);
+  const [cancelledShifts, setCancelledShifts] = useState([]);
+  const [completedShifts, setCompletedShifts] = useState([]);
+  const [staffingNotice, setStaffingNotice] = useState('');
   const [assignedDetailId, setAssignedDetailId] = useState(null);
 
   const isDispatchEligible = DISPATCH_ELIGIBLE_ROLES.has(user?.role);
@@ -37,7 +52,21 @@ export default function Dashboard() {
     if (!isDispatchEligible) return;
     try {
       const res = await api.get('/shifts/');
-      setActiveShift(pickActiveNurseShift(res.data?.shifts));
+      const list = res.data?.shifts || [];
+      const active = pickActiveNurseShift(list);
+      setActiveShift(active);
+      setCancelledShifts(pickCancelledNurseShifts(list));
+      setCompletedShifts(
+        list.filter(
+          (s) => s.assignment?.status === 'completed' || s.assignment?.lifecycle_stage === 'completed',
+        ).slice(0, 5),
+      );
+      setAssignedDetailId((id) => {
+        if (id == null) return null;
+        if (active?.id === id) return id;
+        if (list.some((s) => s.id === id)) return id;
+        return null;
+      });
     } catch {
       /* non-critical */
     }
@@ -76,13 +105,35 @@ export default function Dashboard() {
       fetchPendingOffers();
     };
     window.addEventListener('mr-nurse-active-shift-refresh', refresh);
+    const onStaffingNotice = (e) => {
+      const msg = e.detail?.message;
+      if (msg) {
+        setStaffingNotice(msg);
+        setTimeout(() => setStaffingNotice(''), 8000);
+      }
+      refresh();
+    };
+    window.addEventListener('mr-staffing-notice', onStaffingNotice);
     const onVisible = () => {
       if (document.visibilityState === 'visible') refresh();
     };
     document.addEventListener('visibilitychange', onVisible);
-    const interval = setInterval(fetchActiveShift, 60000);
+    const interval = setInterval(refresh, 60000);
+    const onShiftRemoved = (e) => {
+      const sid = e.detail?.shiftId;
+      if (sid == null) return;
+      setAssignedDetailId((id) => (id === sid ? null : id));
+      setActiveShift((s) => (s?.id === sid ? null : s));
+      setPendingOffers((prev) => prev.filter(
+        (o) => Number(o.shift_id ?? o.shiftId) !== Number(sid),
+      ));
+      refresh();
+    };
+    window.addEventListener('mr-jobs-shift-removed', onShiftRemoved);
     return () => {
       window.removeEventListener('mr-nurse-active-shift-refresh', refresh);
+      window.removeEventListener('mr-staffing-notice', onStaffingNotice);
+      window.removeEventListener('mr-jobs-shift-removed', onShiftRemoved);
       document.removeEventListener('visibilitychange', onVisible);
       clearInterval(interval);
     };
@@ -154,12 +205,101 @@ export default function Dashboard() {
         </div>
 
         {/* Availability toggle — only for dispatch-eligible healthcare workers */}
+        {staffingNotice && (
+          <div className="mb-4 rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-900">
+            {staffingNotice}
+          </div>
+        )}
+
         {DISPATCH_ELIGIBLE_ROLES.has(user?.role) && (
           <div className="mb-4">
             <AvailabilityToggle
               activeShift={activeShift}
               onOpenActiveShift={(shift) => setAssignedDetailId(shift.id)}
             />
+          </div>
+        )}
+
+        {isDispatchEligible && activeShift && (
+          <div
+            className={`mb-4 rounded-xl border px-4 py-3 text-sm ${
+              isApplicationPending(activeShift)
+                ? 'bg-blue-50 border-blue-200 text-blue-900'
+                : isApplicationFinalized(activeShift)
+                  ? 'bg-green-50 border-green-200 text-green-900'
+                  : 'bg-gray-50 border-gray-200 text-gray-800'
+            }`}
+          >
+            <p className="font-semibold">{activeShift.hospital_name}</p>
+            <p className="mt-0.5">{nurseLifecycleLabel(activeShift)}</p>
+            {(activeShift.assignment?.status === 'confirmed'
+              || activeShift.assignment?.lifecycle_stage === 'recruiter_confirmed') && (
+              <button
+                type="button"
+                onClick={() => setAssignedDetailId(activeShift.id)}
+                className="mt-2 text-xs font-semibold text-green-800 underline"
+              >
+                Check in when you arrive →
+              </button>
+            )}
+            {(activeShift.assignment?.status === 'checked_in'
+              || activeShift.assignment?.lifecycle_stage === 'checked_in') && (
+              <button
+                type="button"
+                onClick={() => setAssignedDetailId(activeShift.id)}
+                className="mt-2 text-xs font-semibold text-green-800 underline"
+              >
+                Check out when shift ends →
+              </button>
+            )}
+          </div>
+        )}
+
+        {isDispatchEligible && completedShifts.length > 0 && (
+          <div className="mb-6">
+            <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide mb-2">
+              Completed shifts
+            </h2>
+            <div className="flex flex-col gap-2">
+              {completedShifts.map((s) => (
+                <button
+                  key={`completed-${s.id}`}
+                  type="button"
+                  onClick={() => setAssignedDetailId(s.id)}
+                  className="text-left rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-3 hover:bg-slate-50"
+                >
+                  <p className="text-sm font-semibold text-gray-900">
+                    {s.hospital_name} · {formatRoleLabel(s.role_required)}
+                  </p>
+                  <p className="text-xs text-slate-700 mt-0.5">Completed</p>
+                  <p className="text-xs text-gray-500 mt-0.5">{activeShiftSummaryLine(s)}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {isDispatchEligible && cancelledShifts.length > 0 && (
+          <div className="mb-6">
+            <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide mb-2">
+              Cancelled shifts
+            </h2>
+            <div className="flex flex-col gap-2">
+              {cancelledShifts.map((s) => (
+                <button
+                  key={`cancelled-${s.id}`}
+                  type="button"
+                  onClick={() => setAssignedDetailId(s.id)}
+                  className="text-left rounded-xl border border-red-100 bg-red-50/60 px-4 py-3 hover:bg-red-50"
+                >
+                  <p className="text-sm font-semibold text-gray-900">
+                    {s.hospital_name} · {formatRoleLabel(s.role_required)}
+                  </p>
+                  <p className="text-xs text-red-800 mt-0.5">{cancelledShiftStatusLabel(s)}</p>
+                  <p className="text-xs text-gray-500 mt-0.5">{activeShiftSummaryLine(s)}</p>
+                </button>
+              ))}
+            </div>
           </div>
         )}
 

@@ -1,41 +1,108 @@
 /**
  * usePushNotifications — FCM token registration + notification routing (Capacitor Android).
  *
- * Responsibilities:
- *  1. Request Android notification permission (POST_NOTIFICATIONS, Android 13+)
- *  2. Create high-priority "dispatch" notification channel (Android 8+, IMPORTANCE_HIGH)
- *  3. Register for FCM, upload token to backend via PUT /device/token
- *  4. Handle token refresh (tokens can rotate — always re-register)
- *  5. Foreground push delivery: route dispatch_offer data to onDispatchOffer
- *     (WS is primary for foreground; this covers the edge case where WS was
- *      momentarily disconnected when the offer arrived)
- *  6. Notification tap routing for background + killed-app:
- *     Fetches current offer from GET /dispatch/offers/pending to:
- *      a) verify the offer is still pending (not expired/taken)
- *      b) get accurate expires_in_sec from the server
- *
- * Deduplication:
- *  Handled by DispatchManager in App.jsx — setCurrentOffer checks prev?.offer_id.
- *  This hook does NOT deduplicate; it simply passes the offer to onDispatchOffer.
- *
- * No-op when:
- *  - Not running in Capacitor native (browser / PWA build)
- *  - User not authenticated
- *  - Notification permission denied
- *  - @capacitor/push-notifications plugin throws 'not implemented' (dev build)
+ * WS is primary in foreground; FCM covers background / killed / stale-socket cases.
+ * Client dedupes WS+FCM via DispatchManager (offer_id) and recent-event keys here.
  */
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useCallback } from 'react';
 import { Capacitor } from '@capacitor/core';
 import api from '../api/axios';
 import { mlog } from '../utils/mobileLogger';
 
 const IS_NATIVE = Capacitor.isNativePlatform();
-
-// Must match DISPATCH_CHANNEL_ID in mediroute-backend/app/utils/fcm.py
 const DISPATCH_CHANNEL_ID = 'dispatch';
 
-export function usePushNotifications(user, token, onDispatchOffer) {
+const OFFER_TYPES = new Set(['dispatch_offer']);
+const STAFFING_TYPES = new Set([
+  'assignment_confirmed',
+  'shift_cancelled',
+  'offer_revoked',
+  'application_submitted',
+]);
+
+function eventKey(d) {
+  const type = d?.type || '';
+  const shiftId = d?.shift_id != null ? String(d.shift_id) : '';
+  const offerId = d?.offer_id != null ? String(d.offer_id) : '';
+  return `${type}:${shiftId}:${offerId}`;
+}
+
+function normalizePushData(d) {
+  if (!d?.type) return null;
+  const msg = { ...d };
+  if (msg.shift_id != null) msg.shift_id = Number(msg.shift_id);
+  if (msg.offer_id != null) msg.offer_id = Number(msg.offer_id);
+  if (msg.assignment_id != null) msg.assignment_id = Number(msg.assignment_id);
+  if (msg.expires_in_sec != null) msg.expires_in_sec = Number(msg.expires_in_sec);
+  return msg;
+}
+
+export function usePushNotifications(user, token, onPushMessage) {
   const registeredTokenRef = useRef(null);
+  const recentEventsRef = useRef(new Map());
+
+  const shouldEmit = useCallback((msg) => {
+    if (!msg?.type) return false;
+    const key = eventKey(msg);
+    const now = Date.now();
+    const last = recentEventsRef.current.get(key);
+    if (last && now - last < 8000) return false;
+    recentEventsRef.current.set(key, now);
+    if (recentEventsRef.current.size > 40) {
+      for (const [k, ts] of recentEventsRef.current) {
+        if (now - ts > 60000) recentEventsRef.current.delete(k);
+      }
+    }
+    return true;
+  }, []);
+
+  const emitPush = useCallback((raw, source) => {
+    if (typeof onPushMessage !== 'function') return;
+    const msg = normalizePushData(raw);
+    if (!msg) return;
+    if (!shouldEmit(msg)) {
+      mlog('notification', 'push_deduped', { type: msg.type, source });
+      return;
+    }
+    mlog('notification', `push_${source}`, {
+      type: msg.type,
+      shift_id: msg.shift_id,
+      offer_id: msg.offer_id,
+    });
+    onPushMessage(msg);
+  }, [onPushMessage, shouldEmit]);
+
+  const recoverFromServer = useCallback(async (d) => {
+    const type = d?.type;
+    if (OFFER_TYPES.has(type)) {
+      const targetOfferId = d.offer_id ? Number(d.offer_id) : null;
+      const res = await api.get('/dispatch/offers/pending');
+      const offers = res.data?.offers ?? [];
+      const match = targetOfferId
+        ? offers.find((o) => o.offer_id === targetOfferId) ?? offers[0]
+        : offers[0];
+      if (match) {
+        emitPush({ type: 'dispatch_offer', ...match }, 'tap_recovered');
+      }
+      return;
+    }
+    if (STAFFING_TYPES.has(type)) {
+      emitPush(
+        {
+          type,
+          shift_id: d.shift_id,
+          message: d.message,
+          hospital_name: d.hospital_name,
+          shift_start: d.shift_start,
+          lifecycle_stage: d.lifecycle_stage,
+          application_status: d.application_status,
+          assignment_id: d.assignment_id,
+        },
+        'tap_recovered',
+      );
+      window.dispatchEvent(new CustomEvent('mr-nurse-active-shift-refresh'));
+    }
+  }, [emitPush]);
 
   useEffect(() => {
     if (!IS_NATIVE || !user?.id || !token) return;
@@ -48,168 +115,121 @@ export function usePushNotifications(user, token, onDispatchOffer) {
       try {
         ({ PushNotifications } = await import('@capacitor/push-notifications'));
       } catch {
-        // Plugin not available in this build — silent no-op
         return;
       }
       if (cancelled) return;
 
-      // ── 1. Request notification permission ─────────────────────────────────
-      // On Android 13+ (API 33+) this shows the OS permission dialog.
-      // On Android 12 and below, permission is granted automatically.
       let permResult;
       try {
         permResult = await PushNotifications.requestPermissions();
       } catch (e) {
-        // Gracefully handle 'not implemented' in web/dev builds
         if (e?.message?.includes('not implemented')) return;
         throw e;
       }
       if (permResult.receive !== 'granted') {
-        console.warn('[FCM] Notification permission denied — push delivery disabled');
         mlog('notification', 'permission_denied', {});
         return;
       }
       if (cancelled) return;
 
-      // ── 2. Create high-priority dispatch notification channel (Android 8+) ─
-      // Without a channel, notifications default to low importance on Android 8+.
-      // IMPORTANCE_HIGH (5) = heads-up banner + sound + vibration even in Doze.
       if (Capacitor.getPlatform() === 'android') {
         try {
           await PushNotifications.createChannel({
             id: DISPATCH_CHANNEL_ID,
             name: 'Dispatch Offers',
-            description: 'Urgent shift dispatch notifications — tap to respond',
-            importance: 5,          // IMPORTANCE_HIGH
-            visibility: 1,          // VISIBILITY_PUBLIC — show on lock screen
+            description: 'Urgent shift dispatch and staffing updates',
+            importance: 5,
+            visibility: 1,
             vibration: true,
             sound: 'default',
             lights: true,
-            lightColor: '#FF3B30',  // Red — reinforces urgency
+            lightColor: '#FF3B30',
           });
         } catch (e) {
-          // createChannel may throw on very old devices or if already exists — safe to ignore
           console.debug('[FCM] createChannel:', e?.message);
         }
       }
 
-      // ── 3. Register for FCM ────────────────────────────────────────────────
-      // Triggers 'registration' event with the FCM token.
       await PushNotifications.register();
 
-      // ── 4. Handle token delivered / refreshed ──────────────────────────────
-      // FCM tokens can rotate (device reset, app reinstall, 60-day expiry).
-      // Always re-register to keep the backend token current.
       const regListener = await PushNotifications.addListener('registration', async (data) => {
         const fcmToken = data.value;
-        if (!fcmToken) return;
-
-        // Skip if we already registered this exact token in this session
-        if (fcmToken === registeredTokenRef.current) return;
-
+        if (!fcmToken || fcmToken === registeredTokenRef.current) return;
         try {
           await api.put('/device/token', { fcm_token: fcmToken, platform: 'android' });
           registeredTokenRef.current = fcmToken;
           mlog('notification', 'fcm_registered', {});
-          console.debug('[FCM] Token registered with backend (prefix:', fcmToken.slice(0, 12), ')');
         } catch (err) {
-          // Non-critical — WS dispatch still works without a registered token
           console.error('[FCM] Token registration failed:', err?.response?.data?.detail || err.message);
         }
       });
       cleanupFns.push(() => regListener.remove());
 
-      // Registration error (e.g. no google-services.json in debug build)
       const errListener = await PushNotifications.addListener('registrationError', (err) => {
-        console.error('[FCM] Registration error:', err.error);
         mlog('notification', 'fcm_registration_error', { msg: String(err?.error || '').slice(0, 120) });
       });
       cleanupFns.push(() => errListener.remove());
 
-      // ── 5. Foreground push notification received ───────────────────────────
-      // When the app is in the foreground, Android suppresses the heads-up banner
-      // by default. WS handles foreground delivery. This listener covers the edge
-      // case where the WS was disconnected exactly when the offer arrived.
-      // Deduplication by offer_id happens in DispatchManager.
       const fgListener = await PushNotifications.addListener(
         'pushNotificationReceived',
         (notification) => {
           const d = notification?.data ?? {};
-          if (d.type !== 'dispatch_offer' || !d.offer_id) return;
-          if (typeof onDispatchOffer !== 'function') return;
-
-          mlog('notification', 'push_offer_foreground', {
-            offer_id: Number(d.offer_id),
-            shift_id: d.shift_id != null ? Number(d.shift_id) : undefined,
-          });
-          onDispatchOffer({
-            type: 'dispatch_offer',
-            offer_id: Number(d.offer_id),
-            shift_id: Number(d.shift_id),
-            urgency: d.urgency || 'standard',
-            expires_in_sec: Number(d.expires_in_sec) || 30,
-            // Full shift details come from the WS payload or pending-offers fetch
-          });
+          if (OFFER_TYPES.has(d.type)) {
+            emitPush(d, 'foreground');
+            return;
+          }
+          if (STAFFING_TYPES.has(d.type)) {
+            emitPush(
+              { ...d, message: d.message || notification?.body },
+              'foreground',
+            );
+            window.dispatchEvent(new CustomEvent('mr-nurse-active-shift-refresh'));
+          }
         },
       );
       cleanupFns.push(() => fgListener.remove());
 
-      // ── 6. Notification tap routing (background + killed-app) ──────────────
-      // BACKGROUND: app is alive but in background — this fires immediately on tap.
-      // KILLED: Capacitor queues the event and fires it when JS finishes loading.
-      //
-      // We always fetch from the server to:
-      //  a) Validate the offer is still pending (not expired/taken)
-      //  b) Get accurate expires_in_sec (time-to-expiry from server clock)
-      //
-      // Server is the source of truth for offer state.
       const tapListener = await PushNotifications.addListener(
         'pushNotificationActionPerformed',
         async (action) => {
           const d = action?.notification?.data ?? {};
-          if (d.type !== 'dispatch_offer') return;
-          if (typeof onDispatchOffer !== 'function') return;
-
-          const targetOfferId = d.offer_id ? Number(d.offer_id) : null;
-
+          if (!d.type) return;
           try {
-            mlog('notification', 'push_tap_recover_start', { target_offer_id: targetOfferId });
-            const res = await api.get('/dispatch/offers/pending');
-            const offers = res.data?.offers ?? [];
-
-            // Prefer the specific tapped offer; fall back to most urgent pending offer
-            const match = targetOfferId
-              ? offers.find(o => o.offer_id === targetOfferId) ?? offers[0]
-              : offers[0];
-
-            if (match) {
-              mlog('notification', 'push_tap_offer_restored', { offer_id: match.offer_id });
-              onDispatchOffer({ type: 'dispatch_offer', ...match });
-            } else {
-              mlog('notification', 'push_tap_no_pending', { target_offer_id: targetOfferId });
-            }
-            // If no match: offer expired or was taken by another nurse — show nothing
+            await recoverFromServer({ ...d, message: d.message || action?.notification?.body });
           } catch (err) {
-            console.warn('[FCM] Tap recovery failed:', err.message);
-            mlog('notification', 'push_tap_recover_failed', {
-              msg: (err?.message || '').slice(0, 120),
-            });
+            mlog('notification', 'push_tap_recover_failed', { msg: (err?.message || '').slice(0, 120) });
           }
         },
       );
       cleanupFns.push(() => tapListener.remove());
+
+      try {
+        const { App } = await import('@capacitor/app');
+        const resumeListener = await App.addListener('appStateChange', ({ isActive }) => {
+          if (!isActive) return;
+          registeredTokenRef.current = null;
+          PushNotifications.register().catch(() => {});
+          window.dispatchEvent(new CustomEvent('mr-nurse-active-shift-refresh'));
+        });
+        cleanupFns.push(() => resumeListener.remove());
+      } catch {
+        /* browser */
+      }
     }
 
-    setup().catch(err => {
+    setup().catch((err) => {
       if (!err?.message?.includes('not implemented')) {
-        console.error('[FCM] Setup failed:', err);
         mlog('notification', 'setup_failed', { msg: String(err?.message || err).slice(0, 120) });
       }
     });
 
     return () => {
       cancelled = true;
-      cleanupFns.forEach(fn => { try { fn(); } catch {} });
+      cleanupFns.forEach((fn) => { try { fn(); } catch {} });
     };
-  }, [user?.id, token]); // Re-run on user/token change (login/logout)
+  }, [user?.id, token, emitPush, recoverFromServer]);
+
+  useEffect(() => {
+    registeredTokenRef.current = null;
+  }, [user?.id]);
 }

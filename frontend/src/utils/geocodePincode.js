@@ -180,10 +180,15 @@ export async function geocodePincode(pincode) {
 
   if (useBackendGeo()) {
     const data = await backendGeoGet(`/geo/pincode/${clean}`);
+    const displayName = resolveAreaLabel({
+      locality: data.locality || data.display_name,
+      pincode: clean,
+      displayName: data.display_name,
+    }) || data.display_name || '';
     const result = {
       lat: parseFloat(data.lat),
       lng: parseFloat(data.lng),
-      displayName: data.locality || data.display_name || '',
+      displayName,
     };
     _cache[clean] = result;
     if (result.displayName) persistPincodeLocality(clean, result.displayName);
@@ -268,12 +273,20 @@ export async function reverseGeocodeCoords(lat, lng) {
       pincode = normalizeIndianPincode(data.pincode);
       locality = (data.locality || '').trim() || undefined;
       displayName = data.display_name;
+      if (!locality && displayName) {
+        locality = parseLocalityFromAddress(data.address || {}, displayName).label || undefined;
+      }
+      if (!locality && pincode) {
+        const persisted = getPersistedLocality(pincode);
+        if (persisted) locality = persisted;
+      }
       mlog('location', 'reverse_parse', {
         source: 'backend',
         micro_field: data.micro_field || null,
         city_field: data.city_field || null,
         locality: locality ? locality.slice(0, 48) : null,
         pin: pincode ? `${pincode.slice(0, 3)}***` : null,
+        partial: Boolean((pincode && !locality) || (!pincode && locality)),
       });
     }
   } else {
@@ -299,13 +312,28 @@ export async function reverseGeocodeCoords(lat, lng) {
     });
   }
 
+  const resolvedLocality = resolveAreaLabel({
+    locality,
+    pincode,
+    displayName,
+    lat: la,
+    lng: ln,
+  });
+
   const out = {
     pincode,
-    locality,
+    locality: resolvedLocality || undefined,
     displayName,
   };
-  _revCache[key] = out;
+
+  mlog('location', 'reverse_resolved', {
+    has_pin: Boolean(out.pincode),
+    has_locality: Boolean(out.locality),
+    partial: Boolean((out.pincode && !out.locality) || (!out.pincode && out.locality)),
+  });
+
   if (out.locality || out.pincode) {
+    _revCache[key] = out;
     saveLastKnownArea({
       locality: out.locality,
       pincode: out.pincode,
@@ -318,6 +346,21 @@ export async function reverseGeocodeCoords(lat, lng) {
   return out;
 }
 
+/** Stable display locality — pin map → parsed name → last-known / region fallback. */
+export function resolveAreaLabel({ locality, pincode, displayName, lat, lng } = {}) {
+  const pc = normalizeIndianPincode(pincode);
+  let label = String(locality || '').trim();
+  if (label && SKIP_LOCALITY_RE.test(label)) label = '';
+  if (!label && pc) label = getPersistedLocality(pc);
+  if (!label && displayName) {
+    label = parseLocalityFromAddress({}, displayName).label;
+  }
+  if (!label && lat != null && lng != null) {
+    label = gracefulAreaFallback(lat, lng).locality || '';
+  }
+  return label.trim();
+}
+
 /** OSM micro-area keys (Hyderabad suburbs often appear as city_district). */
 const MICRO_LOCALITY_KEYS = [
   'suburb',
@@ -326,6 +369,7 @@ const MICRO_LOCALITY_KEYS = [
   'residential',
   'locality',
   'city_district',
+  'state_district',
   'borough',
   'hamlet',
   'village',
@@ -367,9 +411,14 @@ export function localityFromDisplayName(displayNameFallback = '') {
   }
 
   for (const p of parts) {
-    if (/\b(road|street|lane|marg|highway)\b/i.test(p)) continue;
-    if (/^sec(tor)?\s*\d/i.test(p)) return { field: 'display_name', value: p };
-    if (p.length >= 3 && p.length <= 40) return { field: 'display_name', value: p };
+    if (/^sec(tor)?\s*\d/i.test(p)) return { field: 'display_name', value: p, city: 'Hyderabad' };
+  }
+
+  for (const p of parts) {
+    if (/\b(road|street|lane|marg|highway|flyover)\b/i.test(p)) continue;
+    if (p.length >= 3 && p.length <= 40 && !/^\d+$/.test(p)) {
+      return { field: 'display_name', value: p };
+    }
   }
   return null;
 }

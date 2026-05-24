@@ -17,6 +17,13 @@
  * NEVER log: auth tokens, raw OTP values, passwords, phone numbers, patient data.
  * Safe to log: categories, event names, HTTP status codes, anonymised IDs.
  *
+ * Correlation keys (compact NDJSON fields):
+ *   sid   shift_id        oid   offer_id
+ *   aid   assignment_id   uid   nurse/user id
+ *   stage lifecycle_stage cid   websocket connection id
+ *
+ * Helpers: shiftTrace(), mlogShift() — use for dispatch/lifecycle WS events.
+ *
  * Enable adb logcat (debug) mirror for mlog: set VITE_DEBUG_LOG=true, use ?debugLog=1,
  * or localStorage mediroute_debug_log=1 — see isDebugLogMirrorEnabled().
  */
@@ -109,6 +116,24 @@ async function _doWrite(line) {
 
   // Write updated content (existing + new line)
   await Filesystem.writeFile({ path: LOG_FILE, data: existing + line, ...opts });
+}
+
+/** Compact correlation fields from WS/API payloads — no PII, no message bodies. */
+export function shiftTrace(msg = {}) {
+  const out = {};
+  if (msg.shift_id != null) out.sid = Number(msg.shift_id);
+  if (msg.offer_id != null) out.oid = Number(msg.offer_id);
+  if (msg.assignment_id != null) out.aid = Number(msg.assignment_id);
+  const uid = msg.nurse_user_id ?? msg.user_id;
+  if (uid != null) out.uid = Number(uid);
+  if (msg.lifecycle_stage) out.stage = String(msg.lifecycle_stage);
+  if (msg.application_status) out.app = String(msg.application_status);
+  return out;
+}
+
+/** Lifecycle / dispatch log with shift correlation IDs. */
+export function mlogShift(category, event, msg = {}, extra = {}) {
+  mlog(category, event, { ...shiftTrace(msg), ...extra });
 }
 
 /**

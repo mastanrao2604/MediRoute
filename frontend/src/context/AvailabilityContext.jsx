@@ -29,6 +29,8 @@ import {
   savePincode,
   saveLastKnownArea,
   loadLastKnownArea,
+  resolveAreaLabel,
+  getPersistedLocality,
 } from '../utils/geocodePincode';
 import { getDevicePosition, captureCurrentArea } from '../utils/deviceLocation';
 import { formatAreaDisplaySync, humanizeCityId } from '../utils/areaLabel';
@@ -58,23 +60,40 @@ async function syncGpsToProfile(lat, lng) {
   try {
     const rev = await reverseGeocodeCoords(lat, lng);
     const pc = normalizeIndianPincode(rev.pincode);
-    if (rev.locality || pc) {
-      saveLastKnownArea({ locality: rev.locality, pincode: pc, lat, lng });
+    const label = resolveAreaLabel({
+      locality: rev.locality,
+      pincode: pc,
+      displayName: rev.displayName,
+      lat,
+      lng,
+    });
+    if (label || pc) {
+      saveLastKnownArea({ locality: label || rev.locality, pincode: pc, lat, lng });
     }
     if (pc) savePincode(pc);
-    if (pc || rev.locality) {
+    if (pc || label) {
       await api.put('/profile/me', {
         ...(pc ? { service_pincode: pc } : {}),
-        ...(rev.locality ? { service_locality: rev.locality } : {}),
+        ...(label ? { service_locality: label } : {}),
         location_source: 'gps',
       });
-      mlog('location', 'profile_gps_sync_ok', { has_pin: Boolean(pc) });
+      mlog('location', 'profile_gps_sync_ok', { has_pin: Boolean(pc), has_locality: Boolean(label) });
     }
-    return rev;
+    return { ...rev, locality: label || rev.locality };
   } catch (e) {
     mlog('location', 'profile_gps_sync_fail', { err: e?.message });
     return null;
   }
+}
+
+function labelFromCapture(cap, lat, lng) {
+  return resolveAreaLabel({
+    locality: cap.locality,
+    pincode: cap.pincode,
+    displayName: cap.displayName || cap.displayLabel,
+    lat,
+    lng,
+  }) || loadLastKnownArea()?.locality || '';
 }
 
 export function AvailabilityProvider({ children, user }) {
@@ -124,6 +143,21 @@ export function AvailabilityProvider({ children, user }) {
     if (last?.locality) setSessionAreaLabel(last.locality);
     else if (user?.service_locality) setSessionAreaLabel(user.service_locality);
   }, [user?.id, isEligible, user?.service_locality]);
+
+  // Restore area label when app returns to foreground (reconnect / reopen).
+  useEffect(() => {
+    if (!isEligible) return undefined;
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      const last = loadLastKnownArea();
+      if (last?.locality) {
+        setSessionAreaLabel((prev) => prev || last.locality);
+        mlog('location', 'visibility_area_restore', { has_locality: true });
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [isEligible]);
 
   // ── Heartbeat: keep last_seen fresh while nurse is available ──────────────
   // Backend marks nurses with last_seen > 5 min as stale for dispatch.
@@ -183,7 +217,8 @@ export function AvailabilityProvider({ children, user }) {
       if (cap.ok) {
         latRef.current = cap.lat;
         lngRef.current = cap.lng;
-        if (cap.locality) setSessionAreaLabel(cap.locality);
+        const label = labelFromCapture(cap, cap.lat, cap.lng);
+        if (label) setSessionAreaLabel(label);
         setLocationSource('gps');
         if (isAvailable && cap.lat != null) {
           await api.put('/availability/location', {
@@ -193,7 +228,10 @@ export function AvailabilityProvider({ children, user }) {
           });
         }
         window.dispatchEvent(new CustomEvent('mr-jobs-shifts-refresh'));
-        mlog('location', 'manual_refresh_ok', { has_pin: Boolean(cap.pincode) });
+        mlog('location', 'manual_refresh_ok', {
+          has_pin: Boolean(cap.pincode),
+          has_locality: Boolean(label),
+        });
       } else {
         setError(cap.userMessage || 'Could not update your location.');
       }
@@ -226,15 +264,18 @@ export function AvailabilityProvider({ children, user }) {
         latRef.current = lat;
         lngRef.current = lng;
         locSource = 'gps';
-        if (cap.locality) setSessionAreaLabel(cap.locality);
-        mlog('availability', 'location_gps', {});
+        const label = labelFromCapture(cap, lat, lng);
+        if (label) setSessionAreaLabel(label);
+        mlog('availability', 'location_gps', { has_locality: Boolean(label), has_pin: Boolean(cap.pincode) });
       } else if (cap.lat != null && cap.lng != null) {
         lat = cap.lat;
         lng = cap.lng;
         latRef.current = lat;
         lngRef.current = lng;
         locSource = 'gps';
-        mlog('availability', 'location_gps_partial', {});
+        const label = labelFromCapture(cap, lat, lng);
+        if (label) setSessionAreaLabel(label);
+        mlog('availability', 'location_gps_partial', { has_locality: Boolean(label), has_pin: Boolean(cap.pincode) });
       } else {
         const serverPin = String(user?.service_pincode || '').replace(/\D/g, '');
         const storedPincode = loadPincode() || serverPin;
@@ -246,8 +287,9 @@ export function AvailabilityProvider({ children, user }) {
             latRef.current = lat;
             lngRef.current = lng;
             locSource = 'pincode';
-            if (result.displayName) setSessionAreaLabel(result.displayName);
-            mlog('availability', 'location_pincode_fallback', {});
+            const pinLabel = result.displayName || getPersistedLocality(storedPincode);
+            if (pinLabel) setSessionAreaLabel(pinLabel);
+            mlog('availability', 'location_pincode_fallback', { has_locality: Boolean(pinLabel) });
           } catch {
             mlog('availability', 'location_none', {});
           }

@@ -15,9 +15,9 @@ export const SEARCH_PHASE_LABEL = {
 export const SHIFT_CARD_STATUS = {
   open: 'Getting ready',
   dispatching: 'Finding staff',
-  filled: 'Staff assigned',
+  filled: 'Staff confirmed',
   search_paused: 'Applications closed',
-  receiving: 'Nurses applied',
+  receiving: 'Applications to review',
   expired: 'Shift expired',
   cancelled: 'Cancelled',
 };
@@ -28,10 +28,12 @@ export function recruiterShiftCardStatus(shift, live) {
   const applied = shift?.applied_count ?? 0;
   const searchActive = shift?.search_active !== false && !shift?.search_closed;
   if (shift?.search_closed && confirmed > 0) return 'search_paused';
+  if (shift?.search_closed && applied > 0 && confirmed === 0) return 'receiving';
   if (searchActive && (applied > 0 || confirmed > 0)) return 'receiving';
-  if (shift?.status === 'filled' && !searchActive) return 'filled';
+  if (shift?.status === 'filled' && confirmed > 0 && !searchActive) return 'filled';
   if (shift?.status === 'dispatching' || shift?.status === 'open') return 'dispatching';
   if (live?.type === 'nurse_accepted' && searchActive) return 'receiving';
+  if (live?.type === 'nurse_applied' && searchActive) return 'receiving';
   return shift?.status || 'open';
 }
 
@@ -58,31 +60,92 @@ export function formatRoleLabel(role) {
   return String(role).replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-/** Nurse dashboard — their confirmed shift progress */
+/** Nurse dashboard — assignment progress after recruiter confirmation */
 export const NURSE_ASSIGNMENT_STATUS = {
   confirmed: 'Shift confirmed',
   checked_in: 'On shift',
   completed: 'Completed',
   no_show: 'Missed',
-  cancelled: 'Position filled',
+  cancelled: 'Not selected',
+  applied: 'Application under review',
+};
+
+/** Operational lifecycle stages (API assignment.lifecycle_stage) */
+export const LIFECYCLE_STAGE_LABEL = {
+  invited: 'Invited',
+  applied: 'Application submitted',
+  under_review: 'Hospital reviewing your application',
+  recruiter_confirmed: 'Shift confirmed',
+  checked_in: 'On shift',
+  completed: 'Completed',
+  cancelled: 'Cancelled',
+  expired: 'Expired',
+  not_selected: 'Not selected',
 };
 
 export const APPLICATION_STATUS_LABEL = {
-  applied: 'Recruiter reviewing your application',
-  confirmed: 'Hospital confirmed your application',
+  applied: 'Application submitted — hospital reviewing',
+  under_review: 'Hospital reviewing your application',
+  recruiter_confirmed: 'Hospital confirmed your shift',
+  confirmed: 'Hospital confirmed your shift',
 };
 
 /** Job seeker shift finalized only after recruiter confirms (not on apply alone). */
 export function isApplicationFinalized(shift) {
   if (!shift?.assignment) return false;
   if (shift.assignment.recruiter_confirmed === true) return true;
-  if (shift.assignment.application_status === 'confirmed') return true;
-  if (shift.search_closed || shift.status === 'filled') return true;
+  if (shift.assignment.application_status === 'recruiter_confirmed') return true;
+  if (shift.assignment.lifecycle_stage === 'recruiter_confirmed') return true;
+  if (shift.assignment.lifecycle_stage === 'checked_in') return true;
+  if (shift.assignment.lifecycle_stage === 'completed') return true;
+  if (Boolean(shift.assignment.recruiter_confirmed_at)) return true;
   return false;
 }
 
 export function isApplicationPending(shift) {
+  if (!shift?.assignment || isShiftCancelledForNurse(shift)) return false;
+  const stage = shift.assignment.lifecycle_stage;
+  if (stage === 'applied' || stage === 'under_review') return true;
   return Boolean(shift?.assignment) && !isApplicationFinalized(shift);
+}
+
+/** Plain-language label for nurse active/pending shift card */
+export function nurseLifecycleLabel(shift) {
+  if (!shift?.assignment) return '';
+  const stage = shift.assignment.lifecycle_stage;
+  if (stage && LIFECYCLE_STAGE_LABEL[stage]) {
+    return LIFECYCLE_STAGE_LABEL[stage];
+  }
+  if (isApplicationPending(shift)) {
+    return APPLICATION_STATUS_LABEL.under_review;
+  }
+  return nurseAssignmentStatusLabel(shift.assignment.status);
+}
+
+/** Recruiter applicant row label */
+export function applicantLifecycleLabel(applicant) {
+  const stage = applicant?.lifecycle_stage;
+  if (stage && LIFECYCLE_STAGE_LABEL[stage]) {
+    return LIFECYCLE_STAGE_LABEL[stage];
+  }
+  if (applicant?.status === 'waiting') return LIFECYCLE_STAGE_LABEL.invited;
+  if (applicant?.status === 'applied') return LIFECYCLE_STAGE_LABEL.under_review;
+  if (applicant?.status === 'confirmed') return LIFECYCLE_STAGE_LABEL.recruiter_confirmed;
+  return applicant?.status ? String(applicant.status).replace(/_/g, ' ') : '—';
+}
+
+export function isShiftCancelledForNurse(shift) {
+  if (!shift) return false;
+  if (shift.status === 'cancelled') return true;
+  if (shift.assignment?.status === 'cancelled') return true;
+  return false;
+}
+
+export function cancelledShiftStatusLabel(shift) {
+  if (shift?.cancellation_reason) {
+    return `Cancelled: ${shift.cancellation_reason}`;
+  }
+  return 'Cancelled by hospital';
 }
 
 export function nurseAssignmentStatusLabel(status) {

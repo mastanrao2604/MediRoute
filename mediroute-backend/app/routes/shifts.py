@@ -11,6 +11,7 @@ Endpoints:
   POST /shifts/{shift_id}/checkout — nurse checks out (completes assignment)
 """
 import asyncio
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -25,7 +26,13 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..dependencies import get_current_user
 from .. import models
-from ..dispatch.engine import start_dispatch, cancel_dispatch_session
+from ..dispatch.engine import (
+    start_dispatch,
+    cancel_dispatch_session,
+    deliver_nurse_message,
+    _finalize_search_closed_sync,
+    _expire_shift_past_start_unfilled_sync,
+)
 from ..dispatch.events import (
     SHIFT_CREATED, SHIFT_CANCELLED, SHIFT_EXPIRED, ASSIGNMENT_CHECKIN, ASSIGNMENT_CHECKOUT,
     ASSIGNMENT_COMPLETED, ASSIGNMENT_NO_SHOW, MANUAL_RETRY_TRIGGERED,
@@ -35,14 +42,27 @@ from ..dispatch.events import (
 from ..ws_manager import ws_manager
 from ..utils.datetime_util import to_utc_naive, utc_iso
 from ..dispatch.eligibility import nurse_accept_eligible, nurse_shift_visible, normalize_pincode
-from ..dispatch.offer_policy import offer_respondable, shift_search_open
-from ..dispatch.engine import _finalize_search_closed_sync
+from ..dispatch.offer_policy import offer_respondable, shift_search_open, nurse_blocks_other_acceptances
 from ..routes.availability import DISPATCH_ELIGIBLE_ROLES
 from .. import crud
 
 logger = logging.getLogger(__name__)
 logger.parent = logging.getLogger("uvicorn.error")
 router = APIRouter(prefix="/shifts", tags=["Shifts"])
+
+# Pilot: multi-nurse lifecycle incomplete — cap all staffing at one confirmed nurse.
+PILOT_NURSES_REQUIRED = 1
+
+
+def _pilot_nurses_required(_shift: Optional[models.ShiftRequest] = None) -> int:
+    return PILOT_NURSES_REQUIRED
+
+
+def _lifecycle_log(ev: str, **fields) -> None:
+    """Compact shift/assignment lifecycle trace — sid/aid/uid/stage correlation keys."""
+    entry = {"event": "shift.lifecycle", "ev": ev, "ts": datetime.utcnow().isoformat()}
+    entry.update({k: v for k, v in fields.items() if v is not None})
+    logger.info(json.dumps(entry, default=str))
 
 _shift_cols_ready = False
 _assignment_cols_ready = False
@@ -65,7 +85,7 @@ def _ensure_shift_location_columns(db: Session) -> None:
 
 
 def _ensure_assignment_columns(db: Session) -> None:
-    """Idempotent DDL for recruiter confirmation timestamp on applications."""
+    """Idempotent DDL for recruiter confirmation + applied assignment status."""
     global _assignment_cols_ready
     if _assignment_cols_ready:
         return
@@ -73,6 +93,20 @@ def _ensure_assignment_columns(db: Session) -> None:
         text(
             "ALTER TABLE live_assignments "
             "ADD COLUMN IF NOT EXISTS recruiter_confirmed_at TIMESTAMPTZ"
+        )
+    )
+    db.execute(
+        text(
+            "DO $$ BEGIN "
+            "ALTER TYPE assignmentstatus ADD VALUE IF NOT EXISTS 'applied'; "
+            "EXCEPTION WHEN duplicate_object THEN NULL; "
+            "END $$"
+        )
+    )
+    db.execute(
+        text(
+            "UPDATE live_assignments SET status = 'applied' "
+            "WHERE recruiter_confirmed_at IS NULL AND status::text = 'confirmed'"
         )
     )
     db.commit()
@@ -83,14 +117,52 @@ def _assignment_recruiter_confirmed(
     assignment: Optional[models.LiveAssignment],
     shift: Optional[models.ShiftRequest] = None,
 ) -> bool:
-    """True only after recruiter explicitly confirms (legacy: shift already closed)."""
+    """True only after recruiter explicitly confirms (recruiter_confirmed_at set)."""
     if not assignment:
         return False
-    if getattr(assignment, "recruiter_confirmed_at", None):
-        return True
-    if shift and getattr(shift, "search_closed_at", None):
-        return True
-    return False
+    return bool(getattr(assignment, "recruiter_confirmed_at", None))
+
+
+def _assignment_lifecycle_stage(
+    assignment: Optional[models.LiveAssignment],
+    shift: Optional[models.ShiftRequest] = None,
+) -> Optional[str]:
+    """
+    Operational lifecycle stage for API/UI (distinct from DB status during apply phase).
+    invited = offer only (no assignment row).
+    """
+    if not assignment:
+        return None
+    st = assignment.status
+    if st == models.AssignmentStatus.completed:
+        return "completed"
+    if st == models.AssignmentStatus.checked_in:
+        return "checked_in"
+    if st == models.AssignmentStatus.cancelled:
+        if (
+            shift
+            and shift.status != models.ShiftRequestStatus.cancelled
+            and not _assignment_recruiter_confirmed(assignment, shift)
+        ):
+            return "not_selected"
+        return "cancelled"
+    if _assignment_recruiter_confirmed(assignment, shift):
+        return "recruiter_confirmed"
+    if st == models.AssignmentStatus.applied:
+        return "applied"
+    if st == models.AssignmentStatus.confirmed:
+        return "under_review"
+    if st == models.AssignmentStatus.no_show:
+        return "cancelled"
+    return "applied"
+
+
+def _assignment_is_pending_review(
+    assignment: Optional[models.LiveAssignment],
+    shift: Optional[models.ShiftRequest] = None,
+) -> bool:
+    stage = _assignment_lifecycle_stage(assignment, shift)
+    return stage in ("applied", "under_review")
 
 
 def _attach_hospital_contact(
@@ -186,6 +258,19 @@ class ShiftCreateRequest(BaseModel):
             raise ValueError("dispatch_radius_km must be between 0.5 and 50")
         return v
 
+    @field_validator("nurses_required")
+    @classmethod
+    def pilot_single_nurse(cls, v):
+        if v is not None and int(v) > PILOT_NURSES_REQUIRED:
+            raise ValueError(
+                f"Pilot supports {PILOT_NURSES_REQUIRED} nurse per shift only."
+            )
+        return PILOT_NURSES_REQUIRED
+
+
+class CancelShiftRequest(BaseModel):
+    reason: Optional[str] = None
+
 
 class ConfirmStaffRequest(BaseModel):
     nurse_user_id: int
@@ -249,89 +334,10 @@ def _shift_start_utc_naive(shift_start: datetime) -> datetime:
 
 def _expire_shift_if_past_start_unfilled(db: Session, shift: models.ShiftRequest) -> bool:
     """
-    If shift start passed with no confirmed nurse, mark expired and stop offers.
+    If shift start passed with no recruiter-confirmed nurse, mark expired and stop offers.
     Safe to call on list/detail reads (idempotent for terminal shifts).
     """
-    if shift.status not in (
-        models.ShiftRequestStatus.open,
-        models.ShiftRequestStatus.dispatching,
-    ):
-        return False
-    if _shift_start_utc_naive(shift.shift_start) > datetime.utcnow():
-        return False
-    assigned = (
-        db.query(models.LiveAssignment.id)
-        .filter(models.LiveAssignment.shift_request_id == shift.id)
-        .first()
-    )
-    if assigned:
-        if not getattr(shift, "search_closed_at", None):
-            now = datetime.utcnow()
-            shift.search_closed_at = now
-            _stop_all_dispatch_for_shift(db, shift)
-            shift.status = models.ShiftRequestStatus.filled
-            shift.filled_at = now
-            db.commit()
-
-            async def _notify_started() -> None:
-                await ws_manager.send(
-                    shift.hospital_user_id,
-                    {
-                        "type": "shift_search_stopped",
-                        "shift_id": shift.id,
-                        "message": "Shift started — staff finalized.",
-                    },
-                )
-
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(_notify_started())
-            except RuntimeError:
-                pass
-        return True
-
-    now = datetime.utcnow()
-    pending_rows = (
-        db.query(models.DispatchOffer)
-        .filter(
-            models.DispatchOffer.shift_request_id == shift.id,
-            models.DispatchOffer.status == models.OfferStatus.pending,
-        )
-        .all()
-    )
-    nurse_user_ids = {row.nurse_user_id for row in pending_rows}
-    for row in pending_rows:
-        row.status = models.OfferStatus.timed_out
-        row.responded_at = now
-
-    active_session = (
-        db.query(models.DispatchSession)
-        .filter(
-            models.DispatchSession.shift_request_id == shift.id,
-            models.DispatchSession.status == models.DispatchSessionStatus.active,
-        )
-        .first()
-    )
-    session_id = active_session.id if active_session else None
-    if active_session:
-        active_session.status = models.DispatchSessionStatus.failed
-        active_session.completed_at = now
-
-    shift.status = models.ShiftRequestStatus.expired
-    db.add(
-        models.ShiftTimelineEvent(
-            shift_request_id=shift.id,
-            event_type=SHIFT_EXPIRED,
-            actor_user_id=None,
-            city_id=shift.city_id,
-            payload={"reason": "past_shift_start_no_accept"},
-        )
-    )
-    db.commit()
-    if session_id is not None:
-        cancel_dispatch_session(session_id)
-    _schedule_shift_expired_notifications(shift, nurse_user_ids)
-    return True
+    return _expire_shift_past_start_unfilled_sync(db, shift)
 
 
 def _stop_all_dispatch_for_shift(db: Session, shift: models.ShiftRequest) -> None:
@@ -374,7 +380,7 @@ def _schedule_shift_expired_notifications(
         hospital_msg = {
             "type": "shift_expired",
             "shift_id": shift.id,
-            "message": "No nurse accepted before the shift start time.",
+            "message": "No staff confirmed before the shift start time.",
         }
         await ws_manager.send(shift.hospital_user_id, hospital_msg)
         if nurse_user_ids:
@@ -422,10 +428,15 @@ def _attach_recruiter_staffing(d: dict, shift: models.ShiftRequest, db: Session)
     applicants = []
     for a in assignments:
         card = _assigned_nurse_summary(db, a.nurse_user_id)
+        stage = _assignment_lifecycle_stage(a, shift)
+        card["lifecycle_stage"] = stage
         card["status"] = (
             "confirmed" if _assignment_recruiter_confirmed(a, shift) else "applied"
         )
         card["assignment_id"] = a.id
+        card["assignment_status"] = a.status.value
+        card["check_in_at"] = utc_iso(a.check_in_at) if a.check_in_at else None
+        card["check_out_at"] = utc_iso(a.check_out_at) if a.check_out_at else None
         applicants.append(card)
 
     pending_offers = (
@@ -437,19 +448,20 @@ def _attach_recruiter_staffing(d: dict, shift: models.ShiftRequest, db: Session)
         .order_by(models.DispatchOffer.offered_at.asc())
         .all()
     )
-    confirmed_ids = {a.nurse_user_id for a in assignments}
+    assignment_nurse_ids = {a.nurse_user_id for a in assignments}
     for offer in pending_offers:
-        if offer.nurse_user_id in confirmed_ids:
+        if offer.nurse_user_id in assignment_nurse_ids:
             continue
         card = _assigned_nurse_summary(db, offer.nurse_user_id)
+        card["lifecycle_stage"] = "invited"
         card["status"] = "waiting"
         card["offer_id"] = offer.id
         applicants.append(card)
 
     pending_responses = sum(
-        1 for o in pending_offers if o.nurse_user_id not in confirmed_ids
+        1 for o in pending_offers if o.nurse_user_id not in assignment_nurse_ids
     )
-    nurses_required = getattr(shift, "nurses_required", None) or 1
+    nurses_required = _pilot_nurses_required(shift)
     d["applicants"] = applicants
     d["confirmed_count"] = sum(
         1 for a in assignments if _assignment_recruiter_confirmed(a, shift)
@@ -462,11 +474,18 @@ def _attach_recruiter_staffing(d: dict, shift: models.ShiftRequest, db: Session)
     d["search_active"] = shift_search_open(shift)
     if assignments and not d.get("assignment"):
         a0 = assignments[0]
+        recruiter_ok = _assignment_recruiter_confirmed(a0, shift)
         d["assignment"] = {
             "id": a0.id,
             "nurse_user_id": a0.nurse_user_id,
             "status": a0.status.value,
+            "lifecycle_stage": _assignment_lifecycle_stage(a0, shift),
+            "recruiter_confirmed": recruiter_ok,
+            "application_status": (
+                "recruiter_confirmed" if recruiter_ok else "under_review"
+            ),
             "confirmed_at": a0.confirmed_at.isoformat() if a0.confirmed_at else None,
+            "recruiter_confirmed_at": utc_iso(getattr(a0, "recruiter_confirmed_at", None)),
             "check_in_at": a0.check_in_at.isoformat() if a0.check_in_at else None,
             "check_out_at": a0.check_out_at.isoformat() if a0.check_out_at else None,
         }
@@ -507,7 +526,30 @@ def _assigned_nurse_summary(db: Session, nurse_user_id: int) -> dict:
     }
 
 
-def _shift_to_dict(shift: models.ShiftRequest, assignment: Optional[models.LiveAssignment] = None) -> dict:
+def _shift_cancel_reason(db: Session, shift_id: int) -> Optional[str]:
+    ev = (
+        db.query(models.ShiftTimelineEvent)
+        .filter(
+            models.ShiftTimelineEvent.shift_request_id == shift_id,
+            models.ShiftTimelineEvent.event_type == SHIFT_CANCELLED,
+        )
+        .order_by(models.ShiftTimelineEvent.occurred_at.desc())
+        .first()
+    )
+    if not ev or not isinstance(ev.payload, dict):
+        return None
+    reason = ev.payload.get("reason")
+    if reason and isinstance(reason, str):
+        trimmed = reason.strip()
+        return trimmed[:500] if trimmed else None
+    return None
+
+
+def _shift_to_dict(
+    shift: models.ShiftRequest,
+    assignment: Optional[models.LiveAssignment] = None,
+    db: Optional[Session] = None,
+) -> dict:
     d = {
         "id": shift.id,
         "city_id": shift.city_id,
@@ -525,7 +567,7 @@ def _shift_to_dict(shift: models.ShiftRequest, assignment: Optional[models.LiveA
         "hospital_pincode": getattr(shift, "hospital_pincode", None),
         "hospital_locality": getattr(shift, "hospital_locality", None),
         "dispatch_radius_km": shift.dispatch_radius_km,
-        "nurses_required": getattr(shift, "nurses_required", None) or 1,
+        "nurses_required": _pilot_nurses_required(shift),
         "search_closed": bool(getattr(shift, "search_closed_at", None)),
         "search_closed_at": utc_iso(getattr(shift, "search_closed_at", None)),
         "filled_at": utc_iso(shift.filled_at),
@@ -533,12 +575,16 @@ def _shift_to_dict(shift: models.ShiftRequest, assignment: Optional[models.LiveA
     }
     if assignment:
         recruiter_ok = _assignment_recruiter_confirmed(assignment, shift)
+        stage = _assignment_lifecycle_stage(assignment, shift)
         d["assignment"] = {
             "id": assignment.id,
             "nurse_user_id": assignment.nurse_user_id,
             "status": assignment.status.value,
+            "lifecycle_stage": stage,
             "recruiter_confirmed": recruiter_ok,
-            "application_status": "confirmed" if recruiter_ok else "applied",
+            "application_status": (
+                "recruiter_confirmed" if recruiter_ok else "under_review"
+            ),
             "confirmed_at": assignment.confirmed_at.isoformat() if assignment.confirmed_at else None,
             "recruiter_confirmed_at": utc_iso(
                 getattr(assignment, "recruiter_confirmed_at", None)
@@ -546,6 +592,8 @@ def _shift_to_dict(shift: models.ShiftRequest, assignment: Optional[models.LiveA
             "check_in_at": assignment.check_in_at.isoformat() if assignment.check_in_at else None,
             "check_out_at": assignment.check_out_at.isoformat() if assignment.check_out_at else None,
         }
+    if shift.status == models.ShiftRequestStatus.cancelled and db is not None:
+        d["cancellation_reason"] = _shift_cancel_reason(db, shift.id)
     return d
 
 
@@ -668,7 +716,7 @@ async def create_shift(
             notes=req.notes,
             idempotency_key=idempotency_key,
             dispatch_radius_km=req.dispatch_radius_km or 10.0,
-            nurses_required=max(1, int(req.nurses_required or 1)),
+            nurses_required=PILOT_NURSES_REQUIRED,
         )
         db.add(shift)
         db.commit()
@@ -694,6 +742,14 @@ async def create_shift(
     logger.info(
         "[shifts] shift %d created by user %d (%s, %s, city=%s)",
         shift.id, current_user.id, shift.role_required.value, shift.urgency.value, shift.city_id
+    )
+    _lifecycle_log(
+        "shift_created",
+        sid=shift.id,
+        uid=current_user.id,
+        actor="recruiter",
+        urgency=shift.urgency.value,
+        role=shift.role_required.value,
     )
 
     # Start dispatch in background (non-blocking asyncio task)
@@ -747,9 +803,13 @@ def list_shifts(
             .limit(20)
             .all()
         )
-        return {
-            "shifts": [_shift_to_dict(shift, assignment) for assignment, shift in assignments]
-        }
+        payload = []
+        for assignment, shift in assignments:
+            if _expire_shift_if_past_start_unfilled(db, shift):
+                db.refresh(shift)
+                db.refresh(assignment)
+            payload.append(_shift_to_dict(shift, assignment, db))
+        return {"shifts": payload}
 
 
 @router.get("/browse")
@@ -810,6 +870,7 @@ def browse_open_shifts(
             if db.query(models.LiveAssignment).filter(
                 models.LiveAssignment.shift_request_id == s.id,
                 models.LiveAssignment.nurse_user_id == current_user.id,
+                models.LiveAssignment.status != models.AssignmentStatus.cancelled,
             ).first():
                 continue
             if db.query(models.DispatchOffer).filter(
@@ -873,7 +934,7 @@ def get_shift(
             models.LiveAssignment.nurse_user_id == current_user.id,
         ).first()
         if assignment:
-            d = _shift_to_dict(shift, assignment)
+            d = _shift_to_dict(shift, assignment, db)
             _attach_hospital_contact(
                 d,
                 shift,
@@ -1077,6 +1138,7 @@ async def confirm_staff(
             models.LiveAssignment.shift_request_id == shift_id,
             models.LiveAssignment.nurse_user_id == nurse_id,
             models.LiveAssignment.status.in_([
+                models.AssignmentStatus.applied,
                 models.AssignmentStatus.confirmed,
                 models.AssignmentStatus.checked_in,
             ]),
@@ -1098,6 +1160,28 @@ async def confirm_staff(
 
     _ensure_assignment_columns(db)
 
+    already_confirmed_other = (
+        db.query(models.LiveAssignment)
+        .filter(
+            models.LiveAssignment.shift_request_id == shift_id,
+            models.LiveAssignment.recruiter_confirmed_at.isnot(None),
+            models.LiveAssignment.nurse_user_id != nurse_id,
+        )
+        .first()
+    )
+    if already_confirmed_other:
+        _lifecycle_log(
+            "recruiter_confirm_rejected",
+            sid=shift_id,
+            uid=nurse_id,
+            actor="recruiter",
+            reason="pilot_single_nurse",
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="This shift already has confirmed staff. Pilot supports one nurse per shift.",
+        )
+
     if _assignment_recruiter_confirmed(assignment, shift) and getattr(
         shift, "search_closed_at", None
     ):
@@ -1105,10 +1189,7 @@ async def confirm_staff(
             db.query(models.LiveAssignment)
             .filter(
                 models.LiveAssignment.shift_request_id == shift_id,
-                models.LiveAssignment.status.in_([
-                    models.AssignmentStatus.confirmed,
-                    models.AssignmentStatus.checked_in,
-                ]),
+                models.LiveAssignment.recruiter_confirmed_at.isnot(None),
             )
             .count()
         )
@@ -1120,9 +1201,20 @@ async def confirm_staff(
             "search_closed": True,
         }
 
+    _lifecycle_log(
+        "recruiter_confirm_start",
+        sid=shift_id,
+        aid=assignment.id,
+        uid=nurse_id,
+        actor="recruiter",
+        stage=_assignment_lifecycle_stage(assignment, shift),
+    )
+
     now = datetime.utcnow()
     if not getattr(assignment, "recruiter_confirmed_at", None):
         assignment.recruiter_confirmed_at = now
+    if assignment.status == models.AssignmentStatus.applied:
+        assignment.status = models.AssignmentStatus.confirmed
 
     other_assignments = (
         db.query(models.LiveAssignment)
@@ -1130,6 +1222,7 @@ async def confirm_staff(
             models.LiveAssignment.shift_request_id == shift_id,
             models.LiveAssignment.nurse_user_id != nurse_id,
             models.LiveAssignment.status.in_([
+                models.AssignmentStatus.applied,
                 models.AssignmentStatus.confirmed,
                 models.AssignmentStatus.checked_in,
             ]),
@@ -1163,18 +1256,21 @@ async def confirm_staff(
     db.commit()
 
     confirmed_count = 1
-    await ws_manager.send(nurse_id, {
+    await deliver_nurse_message(db, nurse_id, {
         "type": "assignment_confirmed",
         "shift_id": shift_id,
         "assignment_id": assignment.id,
         "hospital_name": shift.hospital_name,
         "shift_start": utc_iso(shift.shift_start),
+        "application_status": "recruiter_confirmed",
+        "lifecycle_stage": "recruiter_confirmed",
         "message": "Shift confirmed — the hospital selected you. Get ready for your shift.",
     })
     for uid in not_selected_ids:
-        await ws_manager.send(uid, {
+        await deliver_nurse_message(db, uid, {
             "type": "offer_revoked",
             "shift_id": shift_id,
+            "lifecycle_stage": "not_selected",
             "message": "Position filled — another staff member was selected for this shift.",
         })
     await ws_manager.send(shift.hospital_user_id, {
@@ -1195,6 +1291,15 @@ async def confirm_staff(
     logger.info(
         "[shifts] shift %d staff confirmed nurse=%d by recruiter %d",
         shift_id, nurse_id, current_user.id,
+    )
+    _lifecycle_log(
+        "recruiter_confirmed",
+        sid=shift_id,
+        aid=assignment.id,
+        uid=nurse_id,
+        actor="recruiter",
+        stage="recruiter_confirmed",
+        not_selected=len(not_selected_ids),
     )
     return {
         "confirmed": True,
@@ -1224,7 +1329,10 @@ async def stop_shift_search(
     if getattr(shift, "search_closed_at", None):
         confirmed = (
             db.query(models.LiveAssignment)
-            .filter(models.LiveAssignment.shift_request_id == shift_id)
+            .filter(
+                models.LiveAssignment.shift_request_id == shift_id,
+                models.LiveAssignment.recruiter_confirmed_at.isnot(None),
+            )
             .count()
         )
         return {"stopped": True, "confirmed_count": confirmed}
@@ -1236,7 +1344,10 @@ async def stop_shift_search(
 
     confirmed = (
         db.query(models.LiveAssignment)
-        .filter(models.LiveAssignment.shift_request_id == shift_id)
+        .filter(
+            models.LiveAssignment.shift_request_id == shift_id,
+            models.LiveAssignment.recruiter_confirmed_at.isnot(None),
+        )
         .count()
     )
     await ws_manager.send(shift.hospital_user_id, {
@@ -1250,16 +1361,24 @@ async def stop_shift_search(
             "type": "shift_filled",
             "shift_id": shift_id,
             "confirmed_count": confirmed,
-            "message": f"{confirmed} nurse(s) confirmed for this shift.",
+            "message": f"{confirmed} nurse confirmed for this shift.",
         })
 
     logger.info("[shifts] shift %d search stopped by recruiter %d", shift_id, current_user.id)
+    _lifecycle_log(
+        "search_stopped",
+        sid=shift_id,
+        uid=current_user.id,
+        actor="recruiter",
+        confirmed=confirmed,
+    )
     return {"stopped": True, "confirmed_count": confirmed}
 
 
 @router.post("/{shift_id}/cancel")
 async def cancel_shift(
     shift_id: int,
+    body: Optional[CancelShiftRequest] = None,
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -1267,7 +1386,7 @@ async def cancel_shift(
     Recruiter/hospital cancels an open/dispatching shift.
 
     Stops the in-process dispatch loop (waves + watchlist), marks pending offers
-    cancelled, closes active dispatch session — no further WS/FCM offers go out.
+    cancelled, releases nurse applications, closes active dispatch session.
     """
     shift = db.query(models.ShiftRequest).filter(
         models.ShiftRequest.id == shift_id,
@@ -1279,19 +1398,47 @@ async def cancel_shift(
         raise HTTPException(status_code=409, detail=f"Cannot cancel a shift with status '{shift.status.value}'.")
 
     now = datetime.utcnow()
+    cancel_reason = None
+    if body and body.reason:
+        trimmed = body.reason.strip()
+        if trimmed:
+            cancel_reason = trimmed[:500]
 
-    pending_rows = (
+    nurse_ws_ids: set[int] = set()
+
+    offer_rows = (
         db.query(models.DispatchOffer)
         .filter(
             models.DispatchOffer.shift_request_id == shift_id,
-            models.DispatchOffer.status == models.OfferStatus.pending,
+            models.DispatchOffer.status.in_(
+                (models.OfferStatus.pending, models.OfferStatus.accepted)
+            ),
         )
         .all()
     )
-    nurse_ws_ids = {row.nurse_user_id for row in pending_rows}
-    for row in pending_rows:
-        row.status = models.OfferStatus.cancelled
-        row.responded_at = now
+    for row in offer_rows:
+        nurse_ws_ids.add(row.nurse_user_id)
+        if row.status != models.OfferStatus.cancelled:
+            row.status = models.OfferStatus.cancelled
+            row.responded_at = now
+
+    assignment_rows = (
+        db.query(models.LiveAssignment)
+        .filter(
+            models.LiveAssignment.shift_request_id == shift_id,
+            models.LiveAssignment.status.in_(
+                (
+                    models.AssignmentStatus.applied,
+                    models.AssignmentStatus.confirmed,
+                    models.AssignmentStatus.checked_in,
+                )
+            ),
+        )
+        .all()
+    )
+    for row in assignment_rows:
+        nurse_ws_ids.add(row.nurse_user_id)
+        row.status = models.AssignmentStatus.cancelled
 
     active_session = (
         db.query(models.DispatchSession)
@@ -1307,12 +1454,16 @@ async def cancel_shift(
 
     shift.status = models.ShiftRequestStatus.cancelled
 
+    timeline_payload: dict = {"cancelled_by": "hospital"}
+    if cancel_reason:
+        timeline_payload["reason"] = cancel_reason
+
     event = models.ShiftTimelineEvent(
         shift_request_id=shift_id,
         event_type=SHIFT_CANCELLED,
         actor_user_id=current_user.id,
         city_id=shift.city_id,
-        payload={"cancelled_by": "hospital"},
+        payload=timeline_payload,
     )
     db.add(event)
     db.commit()
@@ -1324,21 +1475,40 @@ async def cancel_shift(
         "type": "shift_cancelled",
         "shift_id": shift_id,
         "message": "You cancelled this shift. Dispatch has stopped.",
+        "cancellation_reason": cancel_reason,
     })
 
+    nurse_message = "The hospital cancelled this shift."
+    if cancel_reason:
+        nurse_message = f"The hospital cancelled this shift: {cancel_reason}"
+
     nurse_payload = {
-        "type": "offer_revoked",
+        "type": "shift_cancelled",
         "shift_id": shift_id,
-        "message": "This staffing request was cancelled.",
+        "message": nurse_message,
+        "cancellation_reason": cancel_reason,
+        "lifecycle_stage": "cancelled",
     }
     if nurse_ws_ids:
-        await asyncio.gather(
-            *[ws_manager.send(uid, nurse_payload) for uid in nurse_ws_ids],
-            return_exceptions=True,
+        for uid in nurse_ws_ids:
+            await deliver_nurse_message(db, uid, nurse_payload)
+        logger.info(
+            "[shifts] shift %d cancelled — notified %d nurse(s)",
+            shift_id,
+            len(nurse_ws_ids),
         )
 
     logger.info("[shifts] shift %d cancelled by user %d", shift_id, current_user.id)
-    return {"cancelled": True}
+    _lifecycle_log(
+        "shift_cancelled",
+        sid=shift_id,
+        uid=current_user.id,
+        actor="recruiter",
+        stage="cancelled",
+        nurses_notified=len(nurse_ws_ids),
+        has_reason=bool(cancel_reason),
+    )
+    return {"cancelled": True, "cancellation_reason": cancel_reason}
 
 
 @router.post("/{shift_id}/re-dispatch")
@@ -1412,11 +1582,12 @@ async def recruiter_redispatch_shift(
     await start_dispatch(shift_id)
 
     logger.info("[shifts] re-dispatch for shift %d by recruiter %d", shift_id, current_user.id)
+    _lifecycle_log("redispatch", sid=shift_id, uid=current_user.id, actor="recruiter")
     return {"success": True, "message": f"Dispatch restarted for shift {shift_id}"}
 
 
 @router.post("/{shift_id}/checkin")
-def check_in(
+async def check_in(
     shift_id: int,
     req: CheckInRequest,
     current_user: models.User = Depends(get_current_user),
@@ -1472,12 +1643,40 @@ def check_in(
     db.add(event)
     db.commit()
 
+    nurse = db.query(models.User).filter(models.User.id == current_user.id).first()
+    nurse_name = (nurse.name if nurse and nurse.name else None) or f"Staff #{current_user.id}"
+
+    await ws_manager.send(shift.hospital_user_id, {
+        "type": "nurse_checked_in",
+        "shift_id": shift_id,
+        "nurse_user_id": current_user.id,
+        "nurse_name": nurse_name,
+        "check_in_at": now.isoformat(),
+        "message": f"{nurse_name} checked in on site.",
+    })
+    await ws_manager.send(current_user.id, {
+        "type": "assignment_checked_in",
+        "shift_id": shift_id,
+        "check_in_at": now.isoformat(),
+        "lifecycle_stage": "checked_in",
+        "message": "You are checked in. Remember to check out when your shift ends.",
+    })
+
     logger.info("[shifts] nurse %d checked in to shift %d (%.0fm from hospital)", current_user.id, shift_id, distance_m)
+    _lifecycle_log(
+        "check_in",
+        sid=shift_id,
+        aid=assignment.id,
+        uid=current_user.id,
+        actor="nurse",
+        stage="checked_in",
+        dist_m=round(distance_m),
+    )
     return {"checked_in": True, "check_in_at": now.isoformat()}
 
 
 @router.post("/{shift_id}/checkout")
-def check_out(
+async def check_out(
     shift_id: int,
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -1534,5 +1733,32 @@ def check_out(
     db.add(event)
     db.commit()
 
+    nurse = db.query(models.User).filter(models.User.id == current_user.id).first()
+    nurse_name = (nurse.name if nurse and nurse.name else None) or f"Staff #{current_user.id}"
+
+    await ws_manager.send(shift.hospital_user_id, {
+        "type": "nurse_checked_out",
+        "shift_id": shift_id,
+        "nurse_user_id": current_user.id,
+        "nurse_name": nurse_name,
+        "check_out_at": now.isoformat(),
+        "message": f"{nurse_name} completed the shift.",
+    })
+    await ws_manager.send(current_user.id, {
+        "type": "assignment_completed",
+        "shift_id": shift_id,
+        "check_out_at": now.isoformat(),
+        "lifecycle_stage": "completed",
+        "message": "Shift completed. You are available for new shifts.",
+    })
+
     logger.info("[shifts] nurse %d checked out of shift %d", current_user.id, shift_id)
+    _lifecycle_log(
+        "check_out",
+        sid=shift_id,
+        aid=assignment.id,
+        uid=current_user.id,
+        actor="nurse",
+        stage="completed",
+    )
     return {"completed": True, "check_out_at": now.isoformat()}

@@ -21,7 +21,7 @@ import sentry_sdk
 
 from ..database import SessionLocal
 from .. import models
-from .engine import dispatch_events, _executor, _update_reliability_on_event_sync, _offer_fatigue, _OFFER_FATIGUE_WINDOW_SEC
+from .engine import dispatch_events, _executor, _update_reliability_on_event_sync, _offer_fatigue, _OFFER_FATIGUE_WINDOW_SEC, _expire_shift_past_start_unfilled_sync
 from .events import OFFER_TIMED_OUT
 from ..ws_manager import ws_manager
 
@@ -159,6 +159,37 @@ async def _janitor_tick() -> None:
                 session.completed_at = now
             await loop.run_in_executor(_executor, partial(lambda d: d.commit(), db))
             logger.info("[janitor] marked %d stale sessions as failed", len(stale_sessions))
+
+        # 5. Expire open/dispatching shifts past start without recruiter-confirmed staff
+        past_start_shifts = await loop.run_in_executor(
+            _executor,
+            partial(
+                lambda d, t: d.query(models.ShiftRequest)
+                .filter(
+                    models.ShiftRequest.status.in_([
+                        models.ShiftRequestStatus.open,
+                        models.ShiftRequestStatus.dispatching,
+                    ]),
+                    models.ShiftRequest.shift_start <= t,
+                )
+                .all(),
+                db, now
+            )
+        )
+        if past_start_shifts:
+            expired_count = 0
+            for shift in past_start_shifts:
+                did = await loop.run_in_executor(
+                    _executor,
+                    partial(_expire_shift_past_start_unfilled_sync, db, shift),
+                )
+                if did:
+                    expired_count += 1
+            if expired_count:
+                logger.info(
+                    "[janitor] reconciled %d past-start shift(s) (fill or expire)",
+                    expired_count,
+                )
 
     except Exception as exc:
         sentry_sdk.capture_exception(exc)

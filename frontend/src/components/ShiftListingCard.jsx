@@ -29,6 +29,7 @@ export default function ShiftListingCard({
   nearbyMatch = true,
   acceptEligible = true,
   confirmed = false,
+  applicationPending = false,
 }) {
   const areaLabel = useAreaLabel(shiftAreaSource(shift));
   const startLabel = formatShiftDateTime(shift.shift_start, {
@@ -62,7 +63,12 @@ export default function ShiftListingCard({
           <span className={`text-xs px-2 py-1 rounded-full font-medium ${stClass}`}>
             {shiftStatusLabel(shift.status)}
           </span>
-          {confirmed && (
+          {applicationPending && (
+            <span className="text-xs px-2 py-1 rounded-full font-semibold bg-amber-50 text-amber-900">
+              Application submitted
+            </span>
+          )}
+          {confirmed && !applicationPending && (
             <span className="text-xs px-2 py-1 rounded-full font-semibold bg-green-100 text-green-800">
               Shift confirmed
             </span>

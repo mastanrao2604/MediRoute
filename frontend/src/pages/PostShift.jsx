@@ -5,7 +5,7 @@ import MainLayout from '../layouts/MainLayout';
 import { useAuth } from '../context/AuthContext';
 import { mlog, mlogError } from '../utils/mobileLogger';
 import { captureCurrentArea, openAppSettings } from '../utils/deviceLocation';
-import { geocodePincode } from '../utils/geocodePincode';
+import { geocodePincode, loadLastKnownArea, resolveAreaLabel } from '../utils/geocodePincode';
 import { formatAreaDisplaySync } from '../utils/areaLabel';
 import { datetimeLocalToUtcIso, nowDatetimeLocalPlusMinutes } from '../utils/shiftDateTime';
 
@@ -103,6 +103,48 @@ export default function PostShift() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount
   }, []);
 
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible' || locMode !== 'gps_ok') return;
+      if (areaLabel && areaLabel !== 'Your current area') return;
+      const last = loadLastKnownArea();
+      if (!last?.locality || lat == null || lng == null) return;
+      setHospitalLocality(last.locality);
+      setAreaLabel(
+        formatAreaDisplaySync({
+          locality: last.locality,
+          pincode: gpsDerivedPincode || last.pincode,
+          cityId: 'HYD',
+          includePincode: Boolean(gpsDerivedPincode || last.pincode),
+        }) || last.locality,
+      );
+      mlog('location', 'post_shift_visibility_restore', {});
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [locMode, areaLabel, lat, lng, gpsDerivedPincode]);
+
+  function applyGpsAreaLabel(cap, coordsLat, coordsLng) {
+    const pc = cap.pincode || '';
+    const locName = resolveAreaLabel({
+      locality: cap.locality,
+      pincode: pc,
+      displayName: cap.displayName || cap.displayLabel,
+      lat: coordsLat,
+      lng: coordsLng,
+    }) || loadLastKnownArea()?.locality || '';
+    if (locName) setHospitalLocality(locName);
+    setAreaLabel(
+      formatAreaDisplaySync({
+        locality: locName,
+        pincode: pc,
+        cityId: 'HYD',
+        includePincode: Boolean(pc),
+      }) || locName || 'Your current area',
+    );
+    return locName;
+  }
+
   async function tryGPS() {
     setGpsDerivedPincode('');
     setGpsRevWarn('');
@@ -116,25 +158,22 @@ export default function PostShift() {
       setLat(cap.lat);
       setLng(cap.lng);
       if (cap.pincode) setGpsDerivedPincode(cap.pincode);
-      const locName = (cap.locality || cap.displayLabel || '').trim();
-      if (locName) setHospitalLocality(locName);
-      setAreaLabel(
-        formatAreaDisplaySync({
-          locality: locName,
-          pincode: cap.pincode,
-          cityId: 'HYD',
-          includePincode: Boolean(cap.pincode),
-        }) || locName || 'Your current area',
-      );
+      const locName = applyGpsAreaLabel(cap, cap.lat, cap.lng);
       setLocMode('gps_ok');
-      mlog('location', 'post_shift_gps_ok', { locality: cap.locality?.slice(0, 24) });
+      mlog('location', 'post_shift_gps_ok', {
+        has_locality: Boolean(locName),
+        has_pin: Boolean(cap.pincode),
+      });
       return;
     }
     if (cap.lat != null && cap.lng != null) {
       setLat(cap.lat);
       setLng(cap.lng);
+      if (cap.pincode) setGpsDerivedPincode(cap.pincode);
+      applyGpsAreaLabel(cap, cap.lat, cap.lng);
       setLocMode('gps_ok');
       setGpsRevWarn(cap.userMessage || 'Enter pincode manually for best matching.');
+      mlog('location', 'post_shift_gps_partial', { has_pin: Boolean(cap.pincode) });
       return;
     }
     setLocMode('pincode_mode');
@@ -166,9 +205,9 @@ export default function PostShift() {
         }) || result.displayName || clean,
       );
       setLocMode('geocode_ok');
-      console.log('[PostShift] geocode ok:', result.lat, result.lng, result.displayName);
+      mlog('location', 'post_shift_pincode_ok', { has_locality: Boolean(result.displayName) });
     } catch (e) {
-      console.warn('[PostShift] geocode failed:', e.message);
+      mlogError('location', 'post_shift_pincode_fail', e);
       setGeocodeErr('Could not find this pincode. Check and try again.');
       setLocMode('geocode_err');
     }
@@ -202,6 +241,7 @@ export default function PostShift() {
       urgency:             form.urgency,
       city_id:             'HYD',
       dispatch_radius_km:  parseFloat(form.dispatch_radius_km) || 10,
+      nurses_required:     1,
       idempotency_key:     crypto.randomUUID(),
     };
     if (locMode === 'geocode_ok') {
@@ -267,7 +307,7 @@ export default function PostShift() {
           </button>
           <div>
             <h1 className="text-xl font-bold text-gray-900">Post a Shift</h1>
-            <p className="text-xs text-gray-500">Staff will be matched and notified automatically</p>
+            <p className="text-xs text-gray-500">One nurse per shift during pilot · matched automatically</p>
           </div>
         </div>
 

@@ -218,15 +218,11 @@ def toggle_availability(
                 ),
             )
 
-    # Block going offline if currently on active assignment
+    # Block going offline if currently on recruiter-confirmed / checked-in assignment
     if not req.is_available:
-        active_assignment = db.query(models.LiveAssignment).filter(
-            models.LiveAssignment.nurse_user_id == current_user.id,
-            models.LiveAssignment.status.in_([
-                models.AssignmentStatus.confirmed,
-                models.AssignmentStatus.checked_in,
-            ]),
-        ).first()
+        from ..dispatch.offer_policy import nurse_blocks_other_acceptances
+
+        active_assignment = nurse_blocks_other_acceptances(db, current_user.id)
         if active_assignment:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,

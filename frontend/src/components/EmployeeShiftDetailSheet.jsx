@@ -17,7 +17,10 @@ import {
   urgencyLabel,
   isApplicationFinalized,
   isApplicationPending,
+  isShiftCancelledForNurse,
+  cancelledShiftStatusLabel,
   APPLICATION_STATUS_LABEL,
+  nurseLifecycleLabel,
 } from '../utils/staffingStatusCopy';
 import { useAreaLabel } from '../hooks/useAreaLabel';
 import { formatAreaDisplaySync, shiftAreaSource } from '../utils/areaLabel';
@@ -27,6 +30,23 @@ import {
 } from '../utils/shiftVisibility';
 
 const ACTIVE_ASSIGNMENT = new Set(['confirmed', 'checked_in']);
+
+function readGpsPosition() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) {
+      reject(new Error('Location is not available on this device.'));
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve({
+        latitude: pos.coords.latitude,
+        longitude: pos.coords.longitude,
+      }),
+      (err) => reject(err),
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 60000 },
+    );
+  });
+}
 
 function offerFromMyOffer(shift) {
   const mo = shift?.my_offer;
@@ -44,8 +64,16 @@ function offerFromMyOffer(shift) {
 }
 
 function hasActiveAssignment(shift) {
+  if (isShiftCancelledForNurse(shift)) return false;
   const st = shift?.assignment?.status;
+  if (st === 'completed') return false;
   return st && ACTIVE_ASSIGNMENT.has(st);
+}
+
+function hasBookedAssignment(shift) {
+  if (isShiftCancelledForNurse(shift)) return false;
+  const st = shift?.assignment?.status;
+  return Boolean(st && st !== 'cancelled');
 }
 
 
@@ -64,6 +92,7 @@ export default function EmployeeShiftDetailSheet({
   const [actionError, setActionError] = useState('');
   const [responding, setResponding] = useState(false);
   const [acceptPhase, setAcceptPhase] = useState(null);
+  const [operating, setOperating] = useState(false);
 
   useLockBodyScroll(Boolean(shiftId));
 
@@ -169,6 +198,45 @@ export default function EmployeeShiftDetailSheet({
     }
   }
 
+  async function handleCheckIn() {
+    if (operating || !shiftId) return;
+    setOperating(true);
+    setActionError('');
+    try {
+      const { latitude, longitude } = await readGpsPosition();
+      await api.post(`/shifts/${shiftId}/checkin`, { latitude, longitude });
+      await load();
+      window.dispatchEvent(new CustomEvent('mr-nurse-active-shift-refresh'));
+    } catch (err) {
+      const detail = formatApiErrorDetail(err.response?.data?.detail);
+      if (err?.code === 1 || err?.message?.includes('denied')) {
+        setActionError('Location permission is required to check in near the hospital.');
+      } else {
+        setActionError(humanizeStaffingError(detail || err.message || 'Could not check in.'));
+      }
+    } finally {
+      setOperating(false);
+    }
+  }
+
+  async function handleCheckOut() {
+    if (operating || !shiftId) return;
+    setOperating(true);
+    setActionError('');
+    try {
+      await api.post(`/shifts/${shiftId}/checkout`);
+      await load();
+      window.dispatchEvent(new CustomEvent('mr-nurse-active-shift-refresh'));
+      onResponded?.('completed');
+    } catch (err) {
+      setActionError(
+        humanizeStaffingError(formatApiErrorDetail(err.response?.data?.detail) || 'Could not check out.'),
+      );
+    } finally {
+      setOperating(false);
+    }
+  }
+
   async function handleDecline() {
     if (!offer || responding) return;
     setResponding(true);
@@ -188,24 +256,39 @@ export default function EmployeeShiftDetailSheet({
 
   if (!shiftId || typeof document === 'undefined') return null;
 
-  const isAssignedView = mode === 'assigned' || hasActiveAssignment(shift);
+  const isCancelled = isShiftCancelledForNurse(shift);
+  const isAssignedView = (mode === 'assigned' || hasBookedAssignment(shift)) && !isCancelled;
   const shiftOpen = shift ? isBeforeShiftStartUtc(shift.shift_start) : false;
   const isConfirmed =
-    acceptPhase === 'confirmed'
-    || (hasActiveAssignment(shift) && isApplicationFinalized(shift));
+    !isCancelled
+    && (acceptPhase === 'confirmed'
+    || (hasActiveAssignment(shift) && isApplicationFinalized(shift)));
   const isPendingReview =
-    (acceptPhase === 'applied' || isApplicationPending(shift))
+    !isCancelled
+    && (acceptPhase === 'applied' || isApplicationPending(shift))
     && !isConfirmed;
+  const assignmentStatus = shift?.assignment?.status;
+  const lifecycleStage = shift?.assignment?.lifecycle_stage;
+  const isCheckedIn = assignmentStatus === 'checked_in' || lifecycleStage === 'checked_in';
+  const isCompleted = assignmentStatus === 'completed' || lifecycleStage === 'completed';
+  const canCheckIn =
+    isAssignedView
+    && isApplicationFinalized(shift)
+    && assignmentStatus === 'confirmed'
+    && !isCheckedIn
+    && !isCompleted;
+  const canCheckOut = isAssignedView && isCheckedIn;
   const canRespond =
     !isAssignedView &&
     !isConfirmed &&
     !isPendingReview &&
+    !isCompleted &&
     Boolean(shift?.my_offer?.respondable && offer && shiftOpen);
   const canAccept = canRespond && shiftCanAccept(shift);
   const acceptBlockedMsg =
     shift?.accept_blocked_message || shift?.my_offer?.accept_blocked_message || SHIFT_ACCEPT_NEARBY_ONLY_MSG;
   const declinedEarlier = offer?.offer_status === 'declined' || shift?.my_offer?.status === 'declined';
-  const assignmentStatus = shift?.assignment?.status;
+  const statusLabel = shift ? nurseLifecycleLabel(shift) : '';
 
   return createPortal(
     <div
@@ -290,11 +373,11 @@ export default function EmployeeShiftDetailSheet({
                     </dd>
                   </div>
                 )}
-                {isAssignedView && assignmentStatus && (
+                {isAssignedView && (statusLabel || assignmentStatus) && (
                   <div>
                     <dt className="text-xs font-medium text-gray-400 uppercase tracking-wide">Your status</dt>
                     <dd className="text-gray-900 font-medium mt-0.5">
-                      {nurseAssignmentStatusLabel(assignmentStatus)}
+                      {statusLabel || nurseAssignmentStatusLabel(assignmentStatus)}
                     </dd>
                   </div>
                 )}
@@ -306,6 +389,14 @@ export default function EmployeeShiftDetailSheet({
                     </dd>
                   </div>
                 )}
+                {isAssignedView && shift.assignment?.check_out_at && (
+                  <div>
+                    <dt className="text-xs font-medium text-gray-400 uppercase tracking-wide">Checked out</dt>
+                    <dd className="text-gray-900 font-medium mt-0.5">
+                      {formatShiftDateTime(shift.assignment.check_out_at)}
+                    </dd>
+                  </div>
+                )}
                 {shift.notes && (
                   <div>
                     <dt className="text-xs font-medium text-gray-400 uppercase tracking-wide">Note from hospital</dt>
@@ -313,6 +404,15 @@ export default function EmployeeShiftDetailSheet({
                   </div>
                 )}
               </dl>
+
+              {isCancelled && (
+                <div className="mt-4 rounded-xl bg-red-50 border border-red-200 px-3 py-3">
+                  <p className="text-sm font-semibold text-red-900">Shift cancelled</p>
+                  <p className="text-xs text-red-800 mt-1">
+                    {cancelledShiftStatusLabel(shift)}. You can accept other open shifts.
+                  </p>
+                </div>
+              )}
 
               {isPendingReview && (
                 <div className="mt-4 rounded-xl bg-amber-50 border border-amber-200 px-3 py-3">
@@ -323,12 +423,36 @@ export default function EmployeeShiftDetailSheet({
                 </div>
               )}
 
-              {isConfirmed && (
+              {isConfirmed && !isCheckedIn && !isCompleted && (
                 <div className="mt-4 rounded-xl bg-green-50 border border-green-200 px-3 py-3">
                   <p className="text-sm font-semibold text-green-900">Shift confirmed</p>
                   <p className="text-xs text-green-800 mt-1">
-                    {APPLICATION_STATUS_LABEL.confirmed}. Waiting for shift start — see your dashboard.
+                    {APPLICATION_STATUS_LABEL.confirmed}. Check in when you arrive at the hospital (within 200m).
                   </p>
+                </div>
+              )}
+
+              {isCheckedIn && !isCompleted && (
+                <div className="mt-4 rounded-xl bg-blue-50 border border-blue-200 px-3 py-3">
+                  <p className="text-sm font-semibold text-blue-900">On shift</p>
+                  <p className="text-xs text-blue-800 mt-1">
+                    You are checked in. Check out when your shift ends to become available again.
+                  </p>
+                </div>
+              )}
+
+              {isCompleted && (
+                <div className="mt-4 rounded-xl bg-slate-50 border border-slate-200 px-3 py-3">
+                  <p className="text-sm font-semibold text-slate-900">Shift completed</p>
+                  <p className="text-xs text-slate-700 mt-1">
+                    This shift is complete. You can accept new shifts from your dashboard.
+                  </p>
+                </div>
+              )}
+
+              {canCheckIn && (
+                <div className="mt-4 rounded-xl bg-indigo-50 border border-indigo-200 px-3 py-3 text-xs text-indigo-900">
+                  Check-in uses your phone location and must be within 200m of the hospital.
                 </div>
               )}
 
@@ -375,7 +499,7 @@ export default function EmployeeShiftDetailSheet({
                 </div>
               )}
 
-              {isAssignedView && (
+              {isAssignedView && !isCheckedIn && !isCompleted && (
                 <div className="mt-4 rounded-xl bg-indigo-50 border border-indigo-200 px-3 py-3 text-sm text-indigo-900">
                   <p className="font-semibold">You are booked for this shift</p>
                   <p className="text-xs mt-1 text-indigo-800 leading-relaxed">
@@ -406,7 +530,7 @@ export default function EmployeeShiftDetailSheet({
                 </div>
               )}
 
-              {!shiftOpen && (
+              {!shiftOpen && !isAssignedView && (
                 <div className="mt-4 rounded-xl bg-amber-50 border border-amber-200 px-3 py-3 text-sm text-amber-900">
                   This shift has already started or is no longer open for responses.
                 </div>
@@ -421,7 +545,25 @@ export default function EmployeeShiftDetailSheet({
 
         {shift && !loading && (
           <div className="shrink-0 border-t border-gray-100 px-4 pt-3 pb-2 grid grid-cols-2 gap-3">
-            {canRespond ? (
+            {canCheckIn ? (
+              <button
+                type="button"
+                onClick={handleCheckIn}
+                disabled={operating}
+                className="col-span-2 min-h-[48px] rounded-xl bg-green-600 hover:bg-green-700 text-white font-bold text-sm disabled:opacity-50"
+              >
+                {operating ? 'Checking in…' : 'Check in at hospital'}
+              </button>
+            ) : canCheckOut ? (
+              <button
+                type="button"
+                onClick={handleCheckOut}
+                disabled={operating}
+                className="col-span-2 min-h-[48px] rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm disabled:opacity-50"
+              >
+                {operating ? 'Checking out…' : 'Check out · complete shift'}
+              </button>
+            ) : canRespond ? (
               <>
                 <button
                   type="button"
@@ -444,10 +586,10 @@ export default function EmployeeShiftDetailSheet({
               <button
                 type="button"
                 onClick={onClose}
-                disabled={isConfirming}
+                disabled={responding || operating}
                 className="col-span-2 min-h-[48px] rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-sm disabled:opacity-50"
               >
-                {isConfirming ? 'Confirming…' : isConfirmed ? 'Done' : 'Close'}
+                {isCompleted ? 'Done' : isCheckedIn ? 'Close' : isConfirmed ? 'Done' : 'Close'}
               </button>
             )}
           </div>

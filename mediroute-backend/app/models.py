@@ -341,11 +341,12 @@ class OfferDeliveryMethod(str, enum.Enum):
 
 
 class AssignmentStatus(str, enum.Enum):
-    confirmed = "confirmed"
+    applied = "applied"          # job seeker submitted; awaiting recruiter decision
+    confirmed = "confirmed"      # recruiter confirmed; not yet on-site
     checked_in = "checked_in"
     completed = "completed"
     no_show = "no_show"
-    cancelled = "cancelled"
+    cancelled = "cancelled"      # shift cancelled or applicant not selected
 
 
 class NurseAvailability(Base):
@@ -552,8 +553,9 @@ class DispatchOffer(Base):
 
 class LiveAssignment(Base):
     """
-    Confirmed nurse ↔ shift assignment. The terminal state of a successful dispatch.
-    check_in_latitude/longitude validated against hospital coords for attendance fraud prevention (§21.2).
+    Nurse ↔ shift application/assignment row.
+    applied → (recruiter confirms) → confirmed → checked_in → completed.
+    recruiter_confirmed_at is the operational confirmation marker.
     """
     __tablename__ = "live_assignments"
 
@@ -564,9 +566,9 @@ class LiveAssignment(Base):
     nurse_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     offer_id = Column(Integer, ForeignKey("dispatch_offers.id"), nullable=False)
     status = Column(
-        Enum(AssignmentStatus), nullable=False, default=AssignmentStatus.confirmed
+        Enum(AssignmentStatus), nullable=False, default=AssignmentStatus.applied
     )
-    confirmed_at = Column(DateTime, default=datetime.utcnow)
+    confirmed_at = Column(DateTime, default=datetime.utcnow)  # application/accept timestamp
     recruiter_confirmed_at = Column(DateTime, nullable=True)
     check_in_at = Column(DateTime, nullable=True)
     check_out_at = Column(DateTime, nullable=True)
