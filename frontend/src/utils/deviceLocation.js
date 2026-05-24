@@ -15,6 +15,7 @@ import {
   savePincode,
   saveLastKnownArea,
   gracefulAreaFallback,
+  loadLastKnownArea,
 } from './geocodePincode';
 import { formatAreaDisplaySync } from './areaLabel';
 
@@ -389,6 +390,30 @@ export async function captureCurrentArea({
     return await withTimeout(run(), CAPTURE_BUDGET_MS, 'capture');
   } catch (e) {
     mlog('location', 'capture_fail', { code: e?.code, msg: e?.message });
+    const last = loadLastKnownArea();
+    const lastFresh = last?.at && Date.now() - Number(last.at) < 24 * 60 * 60 * 1000;
+    if (
+      last?.lat != null
+      && last?.lng != null
+      && lastFresh
+      && e?.code !== 'permanent'
+    ) {
+      mlog('location', 'capture_fallback_last_known', {});
+      const locality = last.locality || '';
+      const pc = normalizeIndianPincode(last.pincode);
+      return {
+        ok: true,
+        lat: last.lat,
+        lng: last.lng,
+        pincode: pc,
+        locality,
+        displayLabel: formatAreaDisplaySync({ locality, pincode: pc, cityId: 'HYD' }),
+        permissionState: 'granted',
+        degraded: true,
+        permissionTitle: copy.permissionTitle,
+        permissionBody: copy.permissionBody,
+      };
+    }
     const userMessage = locationErrorMessage(e, audience);
     return {
       ok: false,

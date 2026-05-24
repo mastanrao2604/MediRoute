@@ -266,6 +266,21 @@ export default function RecruiterDashboard() {
     }
   }
 
+  async function markNoShow(shiftId, nurseUserId) {
+    if (!window.confirm('Mark this nurse as a no-show? The shift will reopen for staffing.')) return;
+    setShiftBusyId(shiftId);
+    try {
+      await api.post(`/shifts/${shiftId}/mark-no-show`, { nurse_user_id: nurseUserId });
+      await loadShifts();
+      triggerDispatchReconcile('recruiter_no_show').catch(() => {});
+    } catch (e) {
+      const d = e?.response?.data?.detail;
+      setShiftsError(typeof d === 'string' ? d : 'Could not mark no-show.');
+    } finally {
+      setShiftBusyId(null);
+    }
+  }
+
   async function stopStaffSearch(shiftId) {
     if (!window.confirm('Stop accepting new applications? Confirm one nurse to finalize staffing.')) return;
     setShiftBusyId(shiftId);
@@ -424,7 +439,11 @@ export default function RecruiterDashboard() {
                 const live = getShiftStatus(s.id);
                 const effective = effectiveShiftStatus(s, live);
                 const canCancel = effective !== 'cancelled' && effective !== 'filled' && effective !== 'expired';
-                const canRedispatch = effective === 'expired' || effective === 'cancelled';
+                const canRedispatch = effective === 'expired' || effective === 'cancelled'
+                  || ((s.confirmed_count ?? 0) === 0 && s.status === 'open'
+                    && (s.applicants || []).some(
+                      (a) => a.lifecycle_stage === 'no_show' || a.assignment_status === 'no_show',
+                    ));
                 const canArchive =
                   s.status === 'expired' || s.status === 'cancelled' || s.status === 'filled'
                   || effective === 'expired' || effective === 'cancelled';
@@ -481,6 +500,8 @@ export default function RecruiterDashboard() {
                         shift={s}
                         confirmingNurseId={confirmingNurseId}
                         onConfirmStaff={(nurse) => confirmStaff(s.id, nurse.user_id)}
+                        onMarkNoShow={(nurse) => markNoShow(s.id, nurse.user_id)}
+                        shiftBusy={shiftBusyId === s.id}
                         onViewProfile={(nurse) => {
                           setProfileNurse(nurse);
                           setProfileShiftId(s.id);

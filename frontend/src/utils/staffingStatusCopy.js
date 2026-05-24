@@ -20,6 +20,7 @@ export const SHIFT_CARD_STATUS = {
   receiving: 'Applications to review',
   expired: 'Shift expired',
   cancelled: 'Cancelled',
+  no_show: 'No-show',
 };
 
 /** Recruiter card — search still running with at least one confirm. */
@@ -81,6 +82,7 @@ export const LIFECYCLE_STAGE_LABEL = {
   cancelled: 'Cancelled',
   expired: 'Expired',
   not_selected: 'Not selected',
+  no_show: 'No-show — did not arrive',
 };
 
 export const APPLICATION_STATUS_LABEL = {

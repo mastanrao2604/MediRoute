@@ -32,6 +32,7 @@ from sqlalchemy import text
 from ..database import SessionLocal
 from .. import models
 from ..utils.datetime_util import utc_iso
+from ..ops_trace import shift_lifecycle, assignment_lifecycle, ws_trace, op_failure
 
 
 # Route engine logs through uvicorn.error so they appear in the captured log file.
@@ -70,11 +71,6 @@ def _dispatch_log(level: str, event_type: str, **kwargs) -> None:
         logger.debug(msg)
     else:
         logger.info(msg)
-
-
-def _lifecycle_log(ev: str, **fields) -> None:
-    """Compact shift/assignment lifecycle trace — sid/aid/uid/stage correlation keys."""
-    _dispatch_log("info", "shift.lifecycle", ev=ev, **fields)
 
 
 # ── Lightweight in-process metrics (Task 14) ──────────────────────────────────
@@ -850,6 +846,8 @@ def _update_reliability_on_event_sync(
         rs.declined += 1
     elif event == "timed_out":
         rs.timed_out += 1
+    elif event == "no_show":
+        rs.no_shows = (rs.no_shows or 0) + 1
 
     # Score formula: 100 * accepted/total, penalized by no-shows and timeouts
     if rs.total_offers > 0:
@@ -973,8 +971,8 @@ async def deliver_nurse_message(db, user_id: int, payload: dict) -> None:
     """WebSocket + FCM for nurse staffing events (client dedupes duplicate delivery)."""
     from ..ws_manager import ws_manager
 
-    _lifecycle_log(
-        "ws_nurse_out",
+    ws_trace(
+        "nurse_out",
         sid=payload.get("shift_id"),
         uid=user_id,
         typ=payload.get("type"),
@@ -1125,8 +1123,8 @@ async def _notify_hospital(
     msg = {"type": message_type, "shift_id": shift_id, **payload}
     is_online = ws_manager.is_connected(hospital_user_id)
     delivered = await ws_manager.send(hospital_user_id, msg)
-    _lifecycle_log(
-        "ws_recruiter_out",
+    ws_trace(
+        "recruiter_out",
         sid=shift_id,
         uid=hospital_user_id,
         typ=message_type,
@@ -1253,7 +1251,7 @@ async def _do_fill(
             f"{'' if applied_count == 1 else 's'}) — review and confirm."
         ),
     })
-    _lifecycle_log(
+    shift_lifecycle(
         "nurse_applied",
         sid=shift_id,
         uid=accepted_offer.nurse_user_id,
@@ -1261,6 +1259,13 @@ async def _do_fill(
         stage="applied",
         applied=applied_count,
         wave=wave_num,
+    )
+    assignment_lifecycle(
+        "applied",
+        sid=shift_id,
+        uid=accepted_offer.nurse_user_id,
+        oid=accepted_offer.id,
+        stage="applied",
     )
 
     event = dispatch_events.get(session_id)
@@ -1362,6 +1367,12 @@ async def _run_dispatch_inner(db, shift_id: int) -> None:
     )
 
     # Notify hospital: dispatch started
+    shift_lifecycle(
+        "dispatch_started",
+        sid=shift_id,
+        rid=shift.hospital_user_id,
+        session_id=session.id,
+    )
     await _notify_hospital(shift.hospital_user_id, shift_id, "dispatch_started", {
         "session_id": session.id,
         "urgency": shift.urgency.value,
@@ -1455,6 +1466,14 @@ async def _run_dispatch_inner(db, shift_id: int) -> None:
             # Task 5: Record offers sent for fatigue tracking
             for offer in offers:
                 _record_offer_sent(offer.nurse_user_id)
+
+            shift_lifecycle(
+                "offer_sent",
+                sid=shift_id,
+                rid=shift.hospital_user_id,
+                wave=wave_num,
+                count=len(offers),
+            )
 
             # Write timeline event for wave
             await asyncio.get_running_loop().run_in_executor(
@@ -1563,7 +1582,7 @@ async def _run_dispatch_inner(db, shift_id: int) -> None:
                 _executor, functools.partial(_count_recruiter_confirmed_sync, db, shift_id)
             )
             if confirmed_at_entry >= PILOT_NURSES_REQUIRED:
-                _lifecycle_log(
+                shift_lifecycle(
                     "pilot_cap_met",
                     sid=shift_id,
                     confirmed=confirmed_at_entry,
@@ -1748,6 +1767,13 @@ async def _run_dispatch_inner(db, shift_id: int) -> None:
                 return
 
             # Waves exhausted before shift start with no applications at all
+            shift_lifecycle(
+                "expired",
+                sid=shift_id,
+                rid=shift.hospital_user_id,
+                reason="waves_exhausted",
+                nurses_offered=len(already_offered),
+            )
             await asyncio.get_running_loop().run_in_executor(
                 _executor, functools.partial(
                     _update_shift_status_sync, db, shift_id, models.ShiftRequestStatus.expired

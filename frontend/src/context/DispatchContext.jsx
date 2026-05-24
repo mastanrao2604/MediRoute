@@ -29,6 +29,7 @@ const HOSPITAL_EVENT_TYPES = new Set([
   'shift_filled',
   'shift_expired',
   'shift_cancelled',
+  'nurse_no_show',
   'dispatch_error',
 ]);
 

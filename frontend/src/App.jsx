@@ -22,6 +22,7 @@ import {
   applyNurseOfferReconcile,
   notifyReconcileRefresh,
   triggerDispatchReconcile,
+  installNetworkReconnectListeners,
 } from './utils/dispatchReconcile';
 
 // ── Global Error Boundary ─────────────────────────────────────────────────────
@@ -307,6 +308,7 @@ function DispatchManager() {
       }
     };
     window.addEventListener(RECONCILE_EVENT, onReconcileEvent);
+    installNetworkReconnectListeners();
 
     triggerDispatchReconcile('app_start').catch(() => {});
 
@@ -336,6 +338,7 @@ function DispatchManager() {
       'shift_cancelled',
       'shift_expired',
       'offer_revoked',
+      'assignment_no_show',
     ]);
     if (msg?.shift_id != null && removeFromBrowse.has(msg.type)) {
       window.dispatchEvent(
@@ -398,6 +401,13 @@ function DispatchManager() {
         notifyNurseStaffingChange(msg, { notice: Boolean(msg.message) });
         break;
 
+      case 'assignment_no_show':
+        mlogShift('dispatch', 'ws_assignment_no_show', msg, { ...wsExtra(), stage: 'no_show' });
+        setCurrentOffer(null);
+        setMinimizedOffer(null);
+        notifyNurseStaffingChange(msg, { notice: Boolean(msg.message) });
+        break;
+
       case 'assignment_checked_in':
       case 'nurse_checked_in':
         mlogShift('dispatch', `ws_${msg.type}`, msg, { ...wsExtra(), stage: msg.lifecycle_stage || 'checked_in' });
@@ -406,6 +416,12 @@ function DispatchManager() {
       case 'assignment_checked_out':
       case 'nurse_checked_out':
         mlogShift('dispatch', `ws_${msg.type}`, msg, { ...wsExtra(), stage: msg.lifecycle_stage || 'completed' });
+        break;
+
+      case 'nurse_no_show':
+        mlogShift('dispatch', 'ws_nurse_no_show', msg, wsExtra());
+        publish(msg);
+        window.dispatchEvent(new CustomEvent('mr-recruiter-shifts-refresh'));
         break;
 
       case 'dispatch_started':

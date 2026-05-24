@@ -1,0 +1,5 @@
+.data/
+.env.test
+reports/junit-*.xml
+reports/operational-report-*.md
+fixtures/seed_manifest.json

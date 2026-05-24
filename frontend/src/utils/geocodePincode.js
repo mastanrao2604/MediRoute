@@ -65,19 +65,30 @@ const NOMINATIM_HEADERS = {
   'User-Agent': 'MediRoute/1.0 (healthcare staffing; support@mediroute.in)',
 };
 
-async function nominatimFetch(url) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 14_000);
-  try {
-    const res = await fetch(url, { headers: NOMINATIM_HEADERS, signal: ctrl.signal });
-    if (!res.ok) throw new Error('Geocode network error');
-    return res.json();
-  } catch (e) {
-    if (e?.name === 'AbortError') throw new Error('Geocode timed out — check network and retry.');
-    throw e;
-  } finally {
-    clearTimeout(timer);
+async function nominatimFetch(url, { retries = 2 } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt < retries; attempt += 1) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 14_000);
+    try {
+      const res = await fetch(url, { headers: NOMINATIM_HEADERS, signal: ctrl.signal });
+      if (!res.ok) throw new Error('Geocode network error');
+      return res.json();
+    } catch (e) {
+      lastErr = e;
+      if (e?.name === 'AbortError') {
+        lastErr = new Error('Geocode timed out — check network and retry.');
+      }
+      if (attempt < retries - 1) {
+        await sleep(900 * (attempt + 1));
+        continue;
+      }
+      throw lastErr;
+    } finally {
+      clearTimeout(timer);
+    }
   }
+  throw lastErr || new Error('Geocode unavailable');
 }
 
 function sleep(ms) {

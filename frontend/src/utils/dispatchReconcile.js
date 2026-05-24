@@ -125,3 +125,15 @@ export function notifyReconcileRefresh(payload) {
     );
   }
 }
+
+let networkListenersInstalled = false;
+
+/** Reconcile when browser/Capacitor regains network (airplane mode recovery). */
+export function installNetworkReconnectListeners() {
+  if (networkListenersInstalled || typeof window === 'undefined') return;
+  networkListenersInstalled = true;
+  window.addEventListener('online', () => {
+    triggerDispatchReconcile('network_online').catch(() => {});
+  });
+  mlog('dispatch', 'network_reconcile_listeners_ok', {});
+}

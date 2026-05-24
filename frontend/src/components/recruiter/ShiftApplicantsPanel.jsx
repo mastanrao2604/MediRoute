@@ -7,7 +7,9 @@ export default function ShiftApplicantsPanel({
   shift,
   onViewProfile,
   onConfirmStaff,
+  onMarkNoShow,
   confirmingNurseId = null,
+  shiftBusy = false,
 }) {
   const applicants = shift?.applicants || [];
   const confirmed = shift?.confirmed_count ?? applicants.length;
@@ -44,7 +46,11 @@ export default function ShiftApplicantsPanel({
           compact
           onViewProfile={onViewProfile}
           onConfirmStaff={onConfirmStaff}
+          onMarkNoShow={onMarkNoShow}
           canConfirm={searchActive && nurse.status === 'applied'}
+          canMarkNoShow={Boolean(nurse.can_mark_no_show) && Boolean(onMarkNoShow)}
+          noShowOverdue={Boolean(nurse.no_show_overdue)}
+          markBusy={shiftBusy}
           confirmBusy={confirmingNurseId === nurse.user_id}
         />
       ))}

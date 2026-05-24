@@ -5,8 +5,12 @@ export default function AssignedNurseCard({
   nurse,
   onViewProfile,
   onConfirmStaff,
+  onMarkNoShow,
   confirmBusy = false,
   canConfirm = false,
+  canMarkNoShow = false,
+  noShowOverdue = false,
+  markBusy = false,
   compact = false,
 }) {
   if (!nurse?.user_id && !nurse?.name) return null;
@@ -19,7 +23,9 @@ export default function AssignedNurseCard({
   return (
     <div
       className={`rounded-xl border ${
-        nurse.status === 'waiting'
+        nurse.lifecycle_stage === 'no_show' || nurse.assignment_status === 'no_show'
+          ? 'border-red-200 bg-red-50/80'
+          : nurse.status === 'waiting'
           ? 'border-amber-200 bg-amber-50/80'
           : nurse.status === 'applied'
             ? 'border-indigo-200 bg-indigo-50/80'
@@ -35,7 +41,11 @@ export default function AssignedNurseCard({
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-xs font-semibold text-green-800 uppercase tracking-wide">
-            {nurse.status === 'confirmed'
+            {nurse.lifecycle_stage === 'no_show' || nurse.assignment_status === 'no_show'
+              ? 'No-show'
+              : nurse.awaiting_check_in || nurse.lifecycle_stage === 'recruiter_confirmed'
+                ? (noShowOverdue ? 'Did not arrive' : 'Awaiting check-in')
+                : nurse.status === 'confirmed'
               ? 'Staff assigned'
               : nurse.status === 'applied'
                 ? 'Application received'
@@ -64,6 +74,19 @@ export default function AssignedNurseCard({
         </div>
       </div>
       <div className="mt-2 flex flex-col gap-2">
+        {canMarkNoShow && onMarkNoShow && (
+          <button
+            type="button"
+            disabled={markBusy}
+            onClick={(e) => {
+              e.stopPropagation();
+              onMarkNoShow(nurse);
+            }}
+            className="w-full text-sm font-bold text-white py-2.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50"
+          >
+            {markBusy ? 'Updating…' : 'Mark no-show'}
+          </button>
+        )}
         {canConfirm && onConfirmStaff && (
           <button
             type="button"

@@ -26,7 +26,8 @@ export function isShiftTerminalForNurse(shift) {
   if (TERMINAL_SHIFT.has(shift.status)) return true;
   if (isShiftCancelledForNurse(shift)) return true;
   const stage = shift.assignment?.lifecycle_stage;
-  if (stage === 'not_selected' || stage === 'cancelled') return true;
+  if (stage === 'not_selected' || stage === 'cancelled' || stage === 'no_show') return true;
+  if (shift.assignment?.status === 'no_show') return true;
   return false;
 }
 

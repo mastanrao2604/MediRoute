@@ -17,6 +17,7 @@ import {
   shiftCanAccept,
 } from '../utils/shiftVisibility';
 import EmployeeShiftDetailSheet from '../components/EmployeeShiftDetailSheet';
+import { triggerDispatchReconcile } from '../utils/dispatchReconcile';
 
 const ROLES = ['', 'nurse', 'staff_nurse', 'icu_nurse', 'ot_nurse', 'emergency_nurse', 'home_care_nurse', 'doctor', 'lab_tech', 'pharmacist', 'driver', 'front_office'];
 const JOB_TYPES = ['', 'india', 'abroad', 'both'];
@@ -94,6 +95,9 @@ export default function Jobs() {
 
   useEffect(() => {
     fetchJobs();
+    if (user?.role !== 'recruiter') {
+      triggerDispatchReconcile('jobs_open').catch(() => {});
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- filters applied when user taps Search; rerun when role is known for browse endpoint
   }, [user?.role]);
 
@@ -124,7 +128,10 @@ export default function Jobs() {
     };
     window.addEventListener('mr-staffing-notice', onStaffingNotice);
     const onVisible = () => {
-      if (document.visibilityState === 'visible') refresh();
+      if (document.visibilityState === 'visible') {
+        refresh();
+        triggerDispatchReconcile('jobs_visible').catch(() => {});
+      }
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => {

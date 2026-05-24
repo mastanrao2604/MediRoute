@@ -191,6 +191,16 @@ async def _janitor_tick() -> None:
                     expired_count,
                 )
 
+        # 6. Auto no-show: confirmed nurses past grace without check-in
+        from ..routes.shifts import process_auto_no_shows_sync
+
+        no_show_count = await loop.run_in_executor(
+            _executor,
+            partial(process_auto_no_shows_sync, db, now),
+        )
+        if no_show_count:
+            logger.info("[janitor] auto no-show applied to %d assignment(s)", no_show_count)
+
     except Exception as exc:
         sentry_sdk.capture_exception(exc)
         logger.error("[janitor] tick error: %s", exc, exc_info=True)

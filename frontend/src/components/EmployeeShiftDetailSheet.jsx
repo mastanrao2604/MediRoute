@@ -28,6 +28,7 @@ import {
   shiftCanAccept,
   SHIFT_ACCEPT_NEARBY_ONLY_MSG,
 } from '../utils/shiftVisibility';
+import { triggerDispatchReconcile } from '../utils/dispatchReconcile';
 
 const ACTIVE_ASSIGNMENT = new Set(['confirmed', 'checked_in']);
 
@@ -66,7 +67,7 @@ function offerFromMyOffer(shift) {
 function hasActiveAssignment(shift) {
   if (isShiftCancelledForNurse(shift)) return false;
   const st = shift?.assignment?.status;
-  if (st === 'completed') return false;
+  if (st === 'completed' || st === 'no_show') return false;
   return st && ACTIVE_ASSIGNMENT.has(st);
 }
 
@@ -139,8 +140,11 @@ export default function EmployeeShiftDetailSheet({
       }
       setLoading(false);
     }
+    if (shiftId && mode === 'assigned') {
+      triggerDispatchReconcile('shift_detail_open').catch(() => {});
+    }
     load();
-  }, [load, shiftId, initialShift]);
+  }, [load, shiftId, initialShift, mode]);
 
   useEffect(() => {
     if (!shiftId) return undefined;

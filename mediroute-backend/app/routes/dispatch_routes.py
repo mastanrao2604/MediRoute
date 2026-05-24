@@ -32,6 +32,7 @@ from ..dispatch.offer_policy import (
     shift_search_open,
     shift_start_utc_naive,
 )
+from ..ops_trace import shift_lifecycle, assignment_lifecycle, reconcile_trace, ws_trace, op_failure
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +108,7 @@ async def websocket_endpoint(
 
     # Register connection
     await ws_manager.connect(user_id, websocket)
-    logger.info("[ws] user %d connected (total: %d)", user_id, ws_manager.connection_count)
+    ws_trace("connected", uid=user_id, total=ws_manager.connection_count)
 
     try:
         while True:
@@ -134,7 +135,7 @@ async def websocket_endpoint(
         logger.debug("[ws] user %d connection error: %s", user_id, exc)
     finally:
         ws_manager.disconnect(user_id)
-        logger.info("[ws] user %d disconnected (total: %d)", user_id, ws_manager.connection_count)
+        ws_trace("disconnected", uid=user_id, total=ws_manager.connection_count)
 
 
 # ── Offer routes ──────────────────────────────────────────────────────────────
@@ -476,6 +477,7 @@ def get_pending_offers(
 
 @offer_router.get("/reconcile")
 def reconcile_dispatch_state(
+    trigger: str = Query("unknown", max_length=64),
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -570,8 +572,8 @@ def reconcile_dispatch_state(
                 if active_shift_id is None:
                     active_shift_id = sid
                     active_assignment_stage = stage or assign_status
-            elif stage in ("cancelled", "not_selected") or assign_status == "cancelled":
-                terminal_shifts.append({"shift_id": sid, "status": "cancelled"})
+            elif stage in ("cancelled", "not_selected", "no_show") or assign_status in ("cancelled", "no_show"):
+                terminal_shifts.append({"shift_id": sid, "status": assign_status or stage or "cancelled"})
             continue
 
         if sid not in offer_shift_ids:

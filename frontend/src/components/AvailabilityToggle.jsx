@@ -5,7 +5,7 @@
 import { Link } from 'react-router-dom';
 import { useAvailability } from '../context/AvailabilityContext';
 import { useAuth } from '../context/AuthContext';
-import { normalizeIndianPincode } from '../utils/geocodePincode';
+import { normalizeIndianPincode, loadLastKnownArea } from '../utils/geocodePincode';
 import NurseActiveShiftSummary from './NurseActiveShiftSummary';
 
 export default function AvailabilityToggle({ activeShift = null, onOpenActiveShift }) {
@@ -44,7 +44,8 @@ export default function AvailabilityToggle({ activeShift = null, onOpenActiveShi
           ? `📍 ${areaLine}`
           : '⚠️ Turn on location for best nearby matching';
 
-  const noGpsPing = isAvailable && locationSource === 'none';
+  const noGpsPing = isAvailable && locationSource === 'none'
+    && !areaDisplayLabel && serverPc === null && !loadLastKnownArea()?.locality;
 
   return (
     <div className={`rounded-2xl border p-4 transition-colors ${
@@ -113,8 +114,8 @@ export default function AvailabilityToggle({ activeShift = null, onOpenActiveShi
       )}
 
       {noGpsPing && (
-        <div className="mt-2 text-xs text-amber-700 bg-white/70 rounded-lg px-2 py-1.5">
-          GPS unavailable this session — if offers are missed, enable location permission and try again.
+        <div className="mt-2 text-xs text-gray-600 bg-white/70 rounded-lg px-2 py-1.5">
+          Using saved area — tap Update current area when GPS is available for best matching.
         </div>
       )}
 

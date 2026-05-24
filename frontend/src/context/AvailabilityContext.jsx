@@ -227,10 +227,10 @@ export function AvailabilityProvider({ children, user }) {
   // Cleanup on unmount
   useEffect(() => () => clearInterval(heartbeatRef.current), []);
 
-  const refreshLocation = useCallback(async () => {
+  const refreshLocation = useCallback(async ({ silent = false } = {}) => {
     if (!isEligible || locRefreshing) return;
     setLocRefreshing(true);
-    setError('');
+    if (!silent) setError('');
     try {
       const cap = await captureCurrentArea({
         audience: 'job_seeker',
@@ -255,18 +255,29 @@ export function AvailabilityProvider({ children, user }) {
           has_pin: Boolean(cap.pincode),
           has_locality: Boolean(label),
         });
-      } else {
+      } else if (!silent) {
         setError(cap.userMessage || 'Could not update your location.');
       }
     } catch (e) {
       mlogError('location', 'manual_refresh_fail', e);
-      setError('Could not update your location. Try again.');
+      if (!silent) setError('Could not update your location. Try again.');
     } finally {
       setLocRefreshing(false);
     }
   }, [isEligible, locRefreshing, isAvailable]);
 
-  // ── Toggle availability ───────────────────────────────────────────────────
+  // Silent location refresh when app returns to foreground while online.
+  useEffect(() => {
+    if (!isEligible || !isAvailable) return undefined;
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        refreshLocation({ silent: true }).catch(() => {});
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [isEligible, isAvailable, refreshLocation]);
+
   const toggle = useCallback(async (wantAvailable) => {
     if (toggling || !isEligible) return;
     setToggling(true);
