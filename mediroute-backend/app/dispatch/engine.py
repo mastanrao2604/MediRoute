@@ -654,23 +654,12 @@ def _expire_shift_past_start_unfilled_sync(db, shift: models.ShiftRequest) -> bo
             shift.search_closed_at = now
         _finalize_search_closed_sync(db, shift.id, datetime.utcnow(), "shift_start")
 
-        from ..ws_manager import ws_manager
-
-        async def _notify_filled() -> None:
-            await ws_manager.send(
-                shift.hospital_user_id,
-                {
-                    "type": "shift_search_stopped",
-                    "shift_id": shift.id,
-                    "message": "Shift started — staff confirmed.",
-                },
-            )
-
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(_notify_filled())
-        except RuntimeError:
-            pass
+        from .ws_notify import notify_shift_search_stopped
+        notify_shift_search_stopped(
+            shift.id,
+            shift.hospital_user_id,
+            "Shift started — staff confirmed.",
+        )
         return True
 
     now = datetime.utcnow()
@@ -728,33 +717,8 @@ def _expire_shift_past_start_unfilled_sync(db, shift: models.ShiftRequest) -> bo
     )
     db.commit()
 
-    from ..ws_manager import ws_manager
-
-    async def _notify_expired() -> None:
-        await ws_manager.send(
-            shift.hospital_user_id,
-            {
-                "type": "shift_expired",
-                "shift_id": shift.id,
-                "message": "No staff confirmed before the shift start time.",
-            },
-        )
-        if nurse_user_ids:
-            revoked = {
-                "type": "offer_revoked",
-                "shift_id": shift.id,
-                "message": "This shift expired and is no longer available.",
-            }
-            await asyncio.gather(
-                *[ws_manager.send(uid, revoked) for uid in nurse_user_ids],
-                return_exceptions=True,
-            )
-
-    try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(_notify_expired())
-    except RuntimeError:
-        pass
+    from .ws_notify import notify_shift_expired
+    notify_shift_expired(shift.id, shift.hospital_user_id, nurse_user_ids)
     return True
 
 

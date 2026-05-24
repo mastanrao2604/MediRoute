@@ -17,6 +17,12 @@ import { usePushNotifications } from './hooks/usePushNotifications';
 import DispatchOfferModal from './components/DispatchOfferModal';
 import LocationEducationModal from './components/LocationEducationModal';
 import { isBeforeShiftStartUtc } from './utils/shiftDateTime';
+import {
+  RECONCILE_EVENT,
+  applyNurseOfferReconcile,
+  notifyReconcileRefresh,
+  triggerDispatchReconcile,
+} from './utils/dispatchReconcile';
 
 // ── Global Error Boundary ─────────────────────────────────────────────────────
 // Catches any render-time exception in the entire component tree.
@@ -245,8 +251,13 @@ function DispatchManager() {
   const { user, token, revalidate } = useAuth();
   const [currentOffer, setCurrentOffer] = useState(null);
   const [minimizedOffer, setMinimizedOffer] = useState(null);
+  const currentOfferRef = useRef(null);
+  const minimizedOfferRef = useRef(null);
   const { publish } = useDispatchEvents();
   const recentMsgRef = useRef(new Map());
+
+  useEffect(() => { currentOfferRef.current = currentOffer; }, [currentOffer]);
+  useEffect(() => { minimizedOfferRef.current = minimizedOffer; }, [minimizedOffer]);
 
   // WS reconnect banner: only shown after 4s of confirmed disconnection
   // (avoids flashing on normal app start before first connection)
@@ -271,6 +282,51 @@ function DispatchManager() {
     setCurrentOffer((prev) => (Number(prev?.shift_id) === sid ? null : prev));
     setMinimizedOffer((prev) => (Number(prev?.shift_id) === sid ? null : prev));
   }, []);
+
+  const applyReconcilePayload = useCallback((payload) => {
+    if (!payload) return;
+    notifyReconcileRefresh(payload);
+    if (DISPATCH_ELIGIBLE_ROLES.has(user?.role)) {
+      const result = applyNurseOfferReconcile(payload, {
+        currentOffer: currentOfferRef.current,
+        minimizedOffer: minimizedOfferRef.current,
+        clearShiftOfferUi,
+      });
+      setCurrentOffer(result.currentOffer);
+      setMinimizedOffer(result.minimizedOffer);
+    }
+  }, [user?.role, clearShiftOfferUi]);
+
+  // Authoritative DB reconciliation on cold start (WS events are mirror only)
+  useEffect(() => {
+    if (!token || !user?.id) return undefined;
+
+    const onReconcileEvent = (e) => {
+      if (e.detail?.phase === 'done' && e.detail?.payload) {
+        applyReconcilePayload(e.detail.payload);
+      }
+    };
+    window.addEventListener(RECONCILE_EVENT, onReconcileEvent);
+
+    triggerDispatchReconcile('app_start').catch(() => {});
+
+    let resumeHandle;
+    (async () => {
+      try {
+        const { App: CapApp } = await import('@capacitor/app');
+        resumeHandle = await CapApp.addListener('appStateChange', ({ isActive }) => {
+          if (isActive) {
+            triggerDispatchReconcile('app_foreground').catch(() => {});
+          }
+        });
+      } catch { /* browser */ }
+    })();
+
+    return () => {
+      window.removeEventListener(RECONCILE_EVENT, onReconcileEvent);
+      resumeHandle?.remove?.();
+    };
+  }, [token, user?.id, user?.role, applyReconcilePayload]);
 
   const notifyNurseStaffingChange = useCallback((msg, { notice = false } = {}) => {
     if (!DISPATCH_ELIGIBLE_ROLES.has(user?.role)) return;

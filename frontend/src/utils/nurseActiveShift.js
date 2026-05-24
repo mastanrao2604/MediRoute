@@ -12,7 +12,7 @@ import { formatAreaDisplaySync, shiftAreaSource } from './areaLabel';
 
 const ACTIVE_ASSIGNMENT = new Set(['confirmed', 'checked_in']);
 const TERMINAL_ASSIGNMENT = new Set(['cancelled', 'completed', 'no_show']);
-const TERMINAL_SHIFT = new Set(['cancelled', 'expired']);
+const TERMINAL_SHIFT = new Set(['cancelled', 'expired', 'filled']);
 
 /** Recent shifts cancelled by the hospital (history). */
 export function pickCancelledNurseShifts(shifts, limit = 5) {
@@ -20,11 +20,21 @@ export function pickCancelledNurseShifts(shifts, limit = 5) {
   return shifts.filter(isShiftCancelledForNurse).slice(0, limit);
 }
 
+/** Shift is no longer actionable for the nurse (cancelled, expired, or not selected). */
+export function isShiftTerminalForNurse(shift) {
+  if (!shift) return true;
+  if (TERMINAL_SHIFT.has(shift.status)) return true;
+  if (isShiftCancelledForNurse(shift)) return true;
+  const stage = shift.assignment?.lifecycle_stage;
+  if (stage === 'not_selected' || stage === 'cancelled') return true;
+  return false;
+}
+
 /** Pick the nurse's current operational shift (most recent active assignment). */
 export function pickActiveNurseShift(shifts) {
   if (!Array.isArray(shifts)) return null;
   for (const shift of shifts) {
-    if (isShiftCancelledForNurse(shift)) continue;
+    if (isShiftTerminalForNurse(shift)) continue;
     const a = shift?.assignment;
     if (!a || TERMINAL_ASSIGNMENT.has(a.status)) continue;
     if (TERMINAL_SHIFT.has(shift.status)) continue;

@@ -15,9 +15,9 @@ import {
   SHIFT_CARD_STATUS,
   SEARCH_PHASE_LABEL,
   isPastShiftStart,
-  recruiterShiftCardStatus,
 } from '../utils/staffingStatusCopy';
 import { formatShiftDateTime } from '../utils/shiftDateTime';
+import { triggerDispatchReconcile } from '../utils/dispatchReconcile';
 
 const STAFF_SHIFT_STATUS_PILL = {
   dispatching: 'bg-blue-50 text-blue-800 border border-blue-100',
@@ -35,8 +35,13 @@ function effectiveShiftStatus(shift, live) {
   const confirmed = shift?.confirmed_count ?? 0;
   const applied = shift?.applied_count ?? 0;
 
-  if (db === 'cancelled' || live?.type === 'shift_cancelled') return 'cancelled';
-  if (db === 'expired' || live?.type === 'shift_expired') return 'expired';
+  // DB terminal states always win — WS is UX overlay only
+  if (db === 'cancelled') return 'cancelled';
+  if (db === 'expired') return 'expired';
+  if (db === 'filled' && confirmed > 0) return 'filled';
+
+  if (live?.type === 'shift_cancelled' && db !== 'cancelled') return 'cancelled';
+  if (live?.type === 'shift_expired' && db !== 'expired') return 'expired';
   if (!searchActive && confirmed > 0 && (db === 'filled' || live?.type === 'shift_filled')) {
     return 'filled';
   }
@@ -48,7 +53,45 @@ function effectiveShiftStatus(shift, live) {
   if (db === 'open') {
     return isPastShiftStart(shift?.shift_start) ? 'expired' : 'open';
   }
-  return db;
+  return db || 'open';
+}
+
+/** Card pill status — defined locally so lazy-loaded dashboard never depends on a missing shared export. */
+function resolveShiftCardStatus(shift, live) {
+  if (!shift) return 'open';
+  const confirmed = shift.confirmed_count ?? 0;
+  const applied = shift.applied_count ?? 0;
+  const searchActive = shift.search_active !== false && !shift.search_closed;
+  if (shift.search_closed && confirmed > 0) return 'search_paused';
+  if (shift.search_closed && applied > 0 && confirmed === 0) return 'receiving';
+  if (searchActive && (applied > 0 || confirmed > 0)) return 'receiving';
+  if (shift.status === 'filled' && confirmed > 0 && !searchActive) return 'filled';
+  if (shift.status === 'dispatching' || shift.status === 'open') return 'dispatching';
+  if (live?.type === 'nurse_accepted' && searchActive) return 'receiving';
+  if (live?.type === 'nurse_applied' && searchActive) return 'receiving';
+  return shift.status || 'open';
+}
+
+function safeStatusLabel(cardStatus, effective) {
+  const key = cardStatus || effective || 'open';
+  if (SHIFT_CARD_STATUS[key]) return SHIFT_CARD_STATUS[key];
+  if (typeof key === 'string' && key.length > 0) {
+    return key.charAt(0).toUpperCase() + key.slice(1).replace(/_/g, ' ');
+  }
+  return 'Shift';
+}
+
+function safeShiftRow(shift) {
+  if (!shift || shift.id == null) return null;
+  return {
+    ...shift,
+    status: shift.status || 'open',
+    hospital_name: shift.hospital_name || 'Hospital',
+    role_required: shift.role_required || 'nurse',
+    applicants: Array.isArray(shift.applicants) ? shift.applicants : [],
+    confirmed_count: Number(shift.confirmed_count) || 0,
+    applied_count: Number(shift.applied_count) || 0,
+  };
 }
 
 function applicantCanConfirm(applicant, shift) {
@@ -99,7 +142,7 @@ export default function RecruiterDashboard() {
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuth();
-  const { getRecentEvents, getDispatchStartTime, getShiftStatus, clearShift } = useDispatchEvents();
+  const { getRecentEvents, getDispatchStartTime, getShiftStatus, clearShift, reconcileFromShifts } = useDispatchEvents();
   const [jobs, setJobs] = useState([]);
   const [shifts, setShifts] = useState([]);
   const [fetching, setFetching] = useState(false);
@@ -118,7 +161,10 @@ export default function RecruiterDashboard() {
   const loadShifts = useCallback(() => (
     api.get('/shifts/')
       .then((res) => {
-        setShifts(res.data?.shifts ?? []);
+        const raw = res.data?.shifts;
+        const list = Array.isArray(raw) ? raw : [];
+        setShifts(list);
+        reconcileFromShifts(list);
         setShiftsError('');
       })
       .catch((err) => {
@@ -127,7 +173,7 @@ export default function RecruiterDashboard() {
         });
         setShiftsError('Could not load staffing shifts.');
       })
-  ), []);
+  ), [reconcileFromShifts]);
 
   const isVerified = user?.is_verified === true;
 
@@ -137,16 +183,20 @@ export default function RecruiterDashboard() {
       .catch(() => setError('Failed to load jobs.'))
       .finally(() => setFetching(false));
     loadShifts();
+    triggerDispatchReconcile('recruiter_dashboard_open').catch(() => {});
   }, [loadShifts]);
 
   useEffect(() => {
     const onRefresh = () => { loadShifts(); };
     window.addEventListener('mr-recruiter-shifts-refresh', onRefresh);
     const onVisible = () => {
-      if (document.visibilityState === 'visible') loadShifts();
+      if (document.visibilityState === 'visible') {
+        loadShifts();
+        triggerDispatchReconcile('recruiter_dashboard_visible').catch(() => {});
+      }
     };
     document.addEventListener('visibilitychange', onVisible);
-    const poll = setInterval(loadShifts, 30000);
+    const poll = setInterval(loadShifts, 60000);
     return () => {
       window.removeEventListener('mr-recruiter-shifts-refresh', onRefresh);
       document.removeEventListener('visibilitychange', onVisible);
@@ -370,7 +420,7 @@ export default function RecruiterDashboard() {
               Staffing shifts
             </h2>
             <div className="flex flex-col gap-3">
-              {shifts.map((s) => {
+              {(shifts.map(safeShiftRow).filter(Boolean)).map((s) => {
                 const live = getShiftStatus(s.id);
                 const effective = effectiveShiftStatus(s, live);
                 const canCancel = effective !== 'cancelled' && effective !== 'filled' && effective !== 'expired';
@@ -378,16 +428,14 @@ export default function RecruiterDashboard() {
                 const canArchive =
                   s.status === 'expired' || s.status === 'cancelled' || s.status === 'filled'
                   || effective === 'expired' || effective === 'cancelled';
-                const cardStatus = recruiterShiftCardStatus(s, live) || effective;
+                const cardStatus = resolveShiftCardStatus(s, live) || effective;
                 const pill = STAFF_SHIFT_STATUS_PILL[cardStatus] || STAFF_SHIFT_STATUS_PILL.open;
                 const isLive = isStaffSearchLive(s, live);
                 const canStopSearch = isLive && (s.confirmed_count ?? 0) < 1;
                 const highlighted = highlightShiftId === s.id;
                 const hasApplicants = (s.applicants?.length || 0) > 0;
 
-                const statusShort = SHIFT_CARD_STATUS[cardStatus]
-                  || SHIFT_CARD_STATUS[effective]
-                  || effective.charAt(0).toUpperCase() + effective.slice(1);
+                const statusShort = safeStatusLabel(cardStatus, effective);
                 const onsiteLine = shiftOnsiteStatusLine(s);
 
                 return (

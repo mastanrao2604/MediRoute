@@ -5,7 +5,7 @@
  *  - Connects to /ws/{userId}?token={jwt}
  *  - Exponential backoff reconnect: 1s → 2s → 4s → 8s → 30s max
  *  - Client-side ping every 25s to keep connection alive through Android Doze
- *  - On reconnect: fetches /dispatch/offers/pending to recover missed offers
+ *  - On reconnect: GET /dispatch/reconcile restores authoritative state
  *  - Cleans up on unmount / logout
  *
  * Usage:
@@ -14,6 +14,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import api from '../api/axios';
 import { mlog, mlogError } from '../utils/mobileLogger';
+import { triggerDispatchReconcile } from '../utils/dispatchReconcile';
 
 const BASE_URL =
   import.meta.env.VITE_API_URL ??
@@ -63,27 +64,15 @@ export function useWebSocket(user, token, onMessage, onAuthError) {
     if (pingTimer.current) clearInterval(pingTimer.current);
   };
 
-  const fetchMissedOffers = useCallback(async () => {
+  const reconcileAfterConnect = useCallback(async (trigger) => {
     try {
-      const res = await api.get('/dispatch/offers/pending');
-      const offers = res.data?.offers || [];
-      if (offers.length > 0) {
-        const sids = [...new Set(offers.map((o) => o.shift_id).filter((id) => id != null))];
-        mlog('websocket', 'pending_offers_recovered', {
-          cid: connIdRef.current,
-          count: offers.length,
-          sids: sids.slice(0, 10),
-        });
-      }
-      for (const offer of offers) {
-        onMessage({ type: 'dispatch_offer', ...offer });
-      }
+      await triggerDispatchReconcile(trigger);
+    } catch {
+      // reconcile utility already logged; dashboards may still refresh on partial failure
       window.dispatchEvent(new CustomEvent('mr-nurse-active-shift-refresh'));
-    } catch (err) {
-      mlogError('websocket', 'pending_offers_fetch_failed', err);
-      window.dispatchEvent(new CustomEvent('mr-nurse-active-shift-refresh'));
+      window.dispatchEvent(new CustomEvent('mr-recruiter-shifts-refresh'));
     }
-  }, [onMessage]);
+  }, []);
 
   const connect = useCallback(() => {
     if (!user?.id || !token || !mountedRef.current) return;
@@ -124,8 +113,8 @@ export function useWebSocket(user, token, onMessage, onAuthError) {
         }
       }, PING_INTERVAL_MS);
 
-      // Fetch any offers missed during the disconnect
-      fetchMissedOffers();
+      // Authoritative DB reconciliation — do not replay WS events
+      reconcileAfterConnect(hadConnectedRef.current ? 'ws_reconnect' : 'ws_connect');
     };
 
     ws.onmessage = (event) => {
@@ -204,7 +193,7 @@ export function useWebSocket(user, token, onMessage, onAuthError) {
     ws.onerror = () => {
       // onerror is always followed by onclose — let onclose handle reconnect
     };
-  }, [user?.id, token, onMessage, fetchMissedOffers, probeAuthState]);
+  }, [user?.id, token, onMessage, reconcileAfterConnect, probeAuthState]);
 
   // Task 16: Keep connectRef current so ws.onclose closure always calls the latest version
   connectRef.current = connect;
@@ -242,10 +231,11 @@ export function useWebSocket(user, token, onMessage, onAuthError) {
             || ws.readyState === WebSocket.CLOSING;
           if (isDead && mountedRef.current) {
             mlog('websocket', 'resume_reconnect', { cid: connIdRef.current });
-            // Cancel any pending backoff timer and reconnect immediately
             clearTimeout(reconnectTimer.current);
             backoffRef.current = 1;
             connectRef.current?.();
+          } else if (isActive && mountedRef.current) {
+            reconcileAfterConnect('app_resume');
           }
         });
       } catch {
@@ -253,7 +243,7 @@ export function useWebSocket(user, token, onMessage, onAuthError) {
       }
     })();
     return () => { listener?.remove?.(); };
-  }, [user?.id, token]);
+  }, [user?.id, token, reconcileAfterConnect]);
 
   return {
     isConnected: connected,

@@ -8,7 +8,7 @@
  *   - Events are keyed by shift_id — each shift's latest event overwrites the previous
  *   - Events older than MAX_EVENT_AGE_MS are excluded from getShiftStatus()
  *   - Store is bounded: only the last N events are kept to prevent memory growth
- *   - No server polling — events arrive via the existing WebSocket connection
+ *   - WS events are a realtime mirror; GET /shifts/ + reconcile clear stale overlay cache
  */
 import {
   createContext,
@@ -122,9 +122,51 @@ export function DispatchProvider({ children }) {
     });
   }, []);
 
+  /**
+   * Drop WS overlay cache when DB says shift reached a terminal state.
+   * Called after GET /shifts/ reconciliation — DB wins over live events.
+   */
+  const reconcileFromShifts = useCallback((shifts) => {
+    if (!Array.isArray(shifts) || shifts.length === 0) return;
+    const terminal = new Set(['cancelled', 'expired', 'filled']);
+    setEvents((prev) => {
+      let next = prev;
+      for (const shift of shifts) {
+        const sid = shift?.id;
+        if (sid == null) continue;
+        const dbStatus = shift.status;
+        const searchClosed = shift.search_closed || shift.search_active === false;
+        const confirmed = (shift.confirmed_count ?? 0) > 0;
+        if (
+          terminal.has(dbStatus)
+          || (searchClosed && confirmed && dbStatus === 'filled')
+        ) {
+          if (next[sid]) {
+            if (next === prev) next = { ...prev };
+            delete next[sid];
+          }
+        }
+      }
+      return next;
+    });
+    setStartTimes((prev) => {
+      let next = prev;
+      for (const shift of shifts) {
+        const sid = shift?.id;
+        if (sid == null) continue;
+        if (terminal.has(shift.status) && next[sid]) {
+          if (next === prev) next = { ...prev };
+          delete next[sid];
+        }
+      }
+      return next;
+    });
+  }, []);
+
   return (
     <DispatchContext.Provider value={{
       publish, getShiftStatus, getRecentEvents, getDispatchStartTime, clearShift,
+      reconcileFromShifts,
     }}>
       {children}
     </DispatchContext.Provider>

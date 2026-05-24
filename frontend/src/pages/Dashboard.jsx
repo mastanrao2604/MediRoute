@@ -23,6 +23,7 @@ import {
   nurseLifecycleLabel,
 } from '../utils/staffingStatusCopy';
 import { filterJobSeekerOffers, SHIFT_ACCEPT_NEARBY_ONLY_MSG } from '../utils/shiftVisibility';
+import { triggerDispatchReconcile } from '../utils/dispatchReconcile';
 
 const DISPATCH_ELIGIBLE_ROLES = new Set([
   'nurse', 'staff_nurse', 'icu_nurse', 'ot_nurse', 'emergency_nurse',
@@ -128,6 +129,7 @@ export default function Dashboard() {
     // Load pending dispatch offers (missed WebSocket deliveries)
     fetchPendingOffers();
     fetchActiveShift();
+    triggerDispatchReconcile('dashboard_open').catch(() => {});
   }, [fetchPendingOffers, fetchActiveShift]);
 
   useEffect(() => {
@@ -147,7 +149,10 @@ export default function Dashboard() {
     };
     window.addEventListener('mr-staffing-notice', onStaffingNotice);
     const onVisible = () => {
-      if (document.visibilityState === 'visible') refresh();
+      if (document.visibilityState === 'visible') {
+        refresh();
+        triggerDispatchReconcile('dashboard_visible').catch(() => {});
+      }
     };
     document.addEventListener('visibilitychange', onVisible);
     const interval = setInterval(refresh, 60000);

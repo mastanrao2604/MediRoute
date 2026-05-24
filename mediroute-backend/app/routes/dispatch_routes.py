@@ -10,7 +10,7 @@ Endpoints:
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query, status
 from sqlalchemy.orm import Session
@@ -472,3 +472,126 @@ def get_pending_offers(
         payload.append(_offer_payload(offer, shift, now, db))
 
     return {"offers": payload}
+
+
+@offer_router.get("/reconcile")
+def reconcile_dispatch_state(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Authoritative dispatch operational state for reconnect / resume / cold start.
+
+    DB truth wins over WebSocket memory. Nurses receive pending offers plus IDs
+    that must clear stale offer UI. Recruiters should refresh GET /shifts/.
+    """
+    if current_user.role == models.UserRole.recruiter:
+        from ..routes.shifts import list_shifts
+
+        shift_payload = list_shifts(current_user=current_user, db=db)
+        shifts = shift_payload.get("shifts") or []
+        terminal_shifts = [
+            {"shift_id": s["id"], "status": s.get("status")}
+            for s in shifts
+            if s.get("id") is not None and s.get("status") in ("cancelled", "expired", "filled")
+        ]
+        return {
+            "role": "recruiter",
+            "refresh": ["shifts"],
+            "terminal_shifts": terminal_shifts,
+            "clear_offer_shift_ids": [t["shift_id"] for t in terminal_shifts],
+        }
+
+    pending = get_pending_offers(current_user=current_user, db=db)
+    offers = pending.get("offers") or []
+
+    from ..routes.shifts import list_shifts
+
+    shift_payload = list_shifts(current_user=current_user, db=db)
+    shifts = shift_payload.get("shifts") or []
+
+    clear_offer_shift_ids: list[int] = []
+    terminal_shifts: list[dict] = []
+    active_shift_id = None
+    active_assignment_stage = None
+
+    offer_shift_ids = {o["shift_id"] for o in offers if o.get("shift_id") is not None}
+    terminal_shift_statuses = ("cancelled", "expired", "filled")
+    now = datetime.utcnow()
+    offer_cutoff = now - timedelta(days=3)
+
+    # Offer-only nurses: list_shifts omits shifts without assignments — scan recent offers.
+    recent_offer_rows = (
+        db.query(models.DispatchOffer, models.ShiftRequest)
+        .join(models.ShiftRequest, models.DispatchOffer.shift_request_id == models.ShiftRequest.id)
+        .filter(
+            models.DispatchOffer.nurse_user_id == current_user.id,
+            models.DispatchOffer.offered_at >= offer_cutoff,
+        )
+        .all()
+    )
+    for offer, shift in recent_offer_rows:
+        sid = shift.id
+        db_status = shift.status.value if hasattr(shift.status, "value") else shift.status
+        if db_status in terminal_shift_statuses:
+            clear_offer_shift_ids.append(sid)
+            terminal_shifts.append({"shift_id": sid, "status": db_status})
+            continue
+        if offer.status not in RESPONDABLE_OFFER_STATUSES:
+            clear_offer_shift_ids.append(sid)
+            if offer.status in (models.OfferStatus.cancelled, models.OfferStatus.timed_out):
+                terminal_shifts.append({"shift_id": sid, "status": db_status})
+            continue
+        if not offer_respondable(offer, shift):
+            clear_offer_shift_ids.append(sid)
+
+    for shift in shifts:
+        sid = shift.get("id")
+        if sid is None:
+            continue
+        db_status = shift.get("status")
+        assignment = shift.get("assignment") or {}
+        stage = assignment.get("lifecycle_stage")
+        assign_status = assignment.get("status")
+
+        if db_status in terminal_shift_statuses:
+            clear_offer_shift_ids.append(sid)
+            terminal_shifts.append({"shift_id": sid, "status": db_status})
+            continue
+
+        if assignment:
+            clear_offer_shift_ids.append(sid)
+            if stage in (
+                "applied",
+                "under_review",
+                "recruiter_confirmed",
+                "checked_in",
+            ) or assign_status in ("applied", "confirmed", "checked_in"):
+                if active_shift_id is None:
+                    active_shift_id = sid
+                    active_assignment_stage = stage or assign_status
+            elif stage in ("cancelled", "not_selected") or assign_status == "cancelled":
+                terminal_shifts.append({"shift_id": sid, "status": "cancelled"})
+            continue
+
+        if sid not in offer_shift_ids:
+            clear_offer_shift_ids.append(sid)
+
+    logger.info(
+        "[dispatch] reconcile uid=%s offers=%d clear=%d terminal=%d active=%s",
+        current_user.id,
+        len(offers),
+        len(set(clear_offer_shift_ids)),
+        len(terminal_shifts),
+        active_shift_id,
+    )
+
+    return {
+        "role": current_user.role.value,
+        "pending_offers": offers,
+        "valid_offer_ids": [o["offer_id"] for o in offers if o.get("offer_id") is not None],
+        "clear_offer_shift_ids": sorted(set(clear_offer_shift_ids)),
+        "terminal_shifts": terminal_shifts,
+        "active_shift_id": active_shift_id,
+        "active_assignment_stage": active_assignment_stage,
+    }

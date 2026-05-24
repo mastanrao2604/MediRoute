@@ -333,37 +333,6 @@ def _stop_all_dispatch_for_shift(db: Session, shift: models.ShiftRequest) -> Non
         shift.status = models.ShiftRequestStatus.open
 
 
-def _schedule_shift_expired_notifications(
-    shift: models.ShiftRequest,
-    nurse_user_ids: set,
-) -> None:
-    """Best-effort WS sync when expiry is detected on a read path."""
-
-    async def _send_all() -> None:
-        hospital_msg = {
-            "type": "shift_expired",
-            "shift_id": shift.id,
-            "message": "No staff confirmed before the shift start time.",
-        }
-        await ws_manager.send(shift.hospital_user_id, hospital_msg)
-        if nurse_user_ids:
-            revoked = {
-                "type": "offer_revoked",
-                "shift_id": shift.id,
-                "message": "This shift expired and is no longer available.",
-            }
-            await asyncio.gather(
-                *[ws_manager.send(uid, revoked) for uid in nurse_user_ids],
-                return_exceptions=True,
-            )
-
-    try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(_send_all())
-    except RuntimeError:
-        pass
-
-
 def _recruiter_archived_shift_ids(db: Session, recruiter_user_id: int) -> set:
     rows = (
         db.query(models.ShiftTimelineEvent.shift_request_id)
@@ -519,7 +488,20 @@ def _attach_recruiter_staffing(d: dict, shift: models.ShiftRequest, db: Session)
             "check_in_at": a0.check_in_at.isoformat() if a0.check_in_at else None,
             "check_out_at": a0.check_out_at.isoformat() if a0.check_out_at else None,
         }
-        d["assigned_nurse"] = _assigned_nurse_summary(db, a0.nurse_user_id)
+        try:
+            d["assigned_nurse"] = _assigned_nurse_summary(db, a0.nurse_user_id)
+        except Exception as exc:
+            logger.warning(
+                "[shifts] assigned_nurse_fallback sid=%s uid=%s err=%s",
+                shift.id,
+                a0.nurse_user_id,
+                exc,
+            )
+            d["assigned_nurse"] = {
+                "user_id": a0.nurse_user_id,
+                "name": f"Staff #{a0.nurse_user_id}",
+                "_serialize_degraded": True,
+            }
     return d
 
 
@@ -723,14 +705,17 @@ def _build_recruiter_shift_row(
     shift: models.ShiftRequest,
 ) -> dict:
     _try_expire_shift(db, shift)
-    primary = (
-        db.query(models.LiveAssignment)
-        .filter(models.LiveAssignment.shift_request_id == shift.id)
-        .order_by(models.LiveAssignment.confirmed_at.asc())
-        .first()
-    )
-    d = _shift_to_dict(shift, primary)
-    return _attach_recruiter_staffing(d, shift, db)
+    try:
+        primary = (
+            db.query(models.LiveAssignment)
+            .filter(models.LiveAssignment.shift_request_id == shift.id)
+            .order_by(models.LiveAssignment.confirmed_at.asc())
+            .first()
+        )
+        d = _shift_to_dict(shift, primary)
+        return _attach_recruiter_staffing(d, shift, db)
+    except Exception as exc:
+        return _shift_list_fallback(shift, exc)
 
 
 def _build_nurse_shift_row(
@@ -790,7 +775,11 @@ async def create_shift(
     if existing:
         logger.info("[shifts] duplicate request for idempotency_key=%s → returning existing shift %d",
                     idempotency_key, existing.id)
-        return {"shift": _shift_to_dict(existing), "created": False}
+        try:
+            shift_dict = _shift_to_dict(existing)
+        except Exception as exc:
+            shift_dict = _shift_list_fallback(existing, exc)
+        return {"shift": shift_dict, "created": False}
 
     # Basic overlap check (FUTURE: AssignmentConflictValidator — §24.5)
     # For now: warn if shift_start is in the past
@@ -1652,12 +1641,14 @@ async def cancel_shift(
     if active_session:
         cancel_dispatch_session(active_session.id)
 
-    await ws_manager.send(shift.hospital_user_id, {
+    hospital_payload = {
         "type": "shift_cancelled",
         "shift_id": shift_id,
         "message": "You cancelled this shift. Dispatch has stopped.",
         "cancellation_reason": cancel_reason,
-    })
+        "lifecycle_stage": "cancelled",
+    }
+    hospital_ok = await ws_manager.send(shift.hospital_user_id, hospital_payload)
 
     nurse_message = "The hospital cancelled this shift."
     if cancel_reason:
@@ -1670,16 +1661,31 @@ async def cancel_shift(
         "cancellation_reason": cancel_reason,
         "lifecycle_stage": "cancelled",
     }
+    nurse_delivered = 0
+    nurse_failed = 0
     if nurse_ws_ids:
-        for uid in nurse_ws_ids:
-            await deliver_nurse_message(db, uid, nurse_payload)
+        results = await asyncio.gather(
+            *[deliver_nurse_message(db, uid, nurse_payload) for uid in nurse_ws_ids],
+            return_exceptions=True,
+        )
+        for r in results:
+            if isinstance(r, Exception):
+                nurse_failed += 1
+            else:
+                nurse_delivered += 1
         logger.info(
-            "[shifts] shift %d cancelled — notified %d nurse(s)",
+            "[shifts] shift %d cancelled — nurse notify delivered=%d failed=%d",
             shift_id,
-            len(nurse_ws_ids),
+            nurse_delivered,
+            nurse_failed,
         )
 
-    logger.info("[shifts] shift %d cancelled by user %d", shift_id, current_user.id)
+    logger.info(
+        "[shifts] shift %d cancelled by user %d hospital_ws=%s",
+        shift_id,
+        current_user.id,
+        hospital_ok,
+    )
     _lifecycle_log(
         "shift_cancelled",
         sid=shift_id,

@@ -90,6 +90,9 @@ _janitor_task = None
 @app.on_event("startup")
 async def start_janitor():
     global _janitor_task
+    import asyncio
+    from .dispatch.ws_notify import register_dispatch_loop
+    register_dispatch_loop(asyncio.get_running_loop())
     try:
         from .dispatch.janitor import run_janitor
         _janitor_task = asyncio.create_task(run_janitor())

@@ -8,6 +8,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import { Capacitor } from '@capacitor/core';
 import api from '../api/axios';
 import { mlog } from '../utils/mobileLogger';
+import { triggerDispatchReconcile } from '../utils/dispatchReconcile';
 
 const IS_NATIVE = Capacitor.isNativePlatform();
 const DISPATCH_CHANNEL_ID = 'dispatch';
@@ -74,6 +75,9 @@ export function usePushNotifications(user, token, onPushMessage) {
 
   const recoverFromServer = useCallback(async (d) => {
     const type = d?.type;
+    try {
+      await triggerDispatchReconcile('fcm_tap');
+    } catch { /* logged in reconcile util */ }
     if (OFFER_TYPES.has(type)) {
       const targetOfferId = d.offer_id ? Number(d.offer_id) : null;
       const res = await api.get('/dispatch/offers/pending');
@@ -195,6 +199,7 @@ export function usePushNotifications(user, token, onPushMessage) {
               'foreground',
             );
             window.dispatchEvent(new CustomEvent('mr-nurse-active-shift-refresh'));
+            triggerDispatchReconcile('fcm_foreground').catch(() => {});
           }
         },
       );
