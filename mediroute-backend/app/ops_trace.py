@@ -61,3 +61,13 @@ def startup_trace(ev: str, level: str = "info", **fields: Any) -> None:
 def op_failure(domain: str, ev: str, **fields: Any) -> None:
     """Structured operational failure — never silent lifecycle corruption."""
     _emit("warning", domain, ev=ev, **fields)
+
+
+def api_timing_trace(endpoint: str, **fields: Any) -> None:
+    """Request-path timing breakdown for dashboard / reconcile hot paths."""
+    _emit("info", "api.timing", endpoint=endpoint, **fields)
+
+
+def dispatch_timing_trace(phase: str, **fields: Any) -> None:
+    """Dispatch loop phase timing — wave wait, DB hold, notify fanout."""
+    _emit("info", "dispatch.timing", phase=phase, **fields)

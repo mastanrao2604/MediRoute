@@ -32,7 +32,13 @@ from sqlalchemy import text
 from ..database import SessionLocal
 from .. import models
 from ..utils.datetime_util import utc_iso
-from ..ops_trace import shift_lifecycle, assignment_lifecycle, ws_trace, op_failure
+from ..ops_trace import (
+    shift_lifecycle,
+    assignment_lifecycle,
+    ws_trace,
+    op_failure,
+    dispatch_timing_trace,
+)
 
 
 # Route engine logs through uvicorn.error so they appear in the captured log file.
@@ -219,6 +225,24 @@ dispatch_events: dict[int, asyncio.Event] = {}
 _cancelled_sessions: set[int] = set()
 
 
+def _detach_dispatch_db(db) -> None:
+    """Release ORM session + pool connection. Must not span idle wave/watchlist waits."""
+    if db is None:
+        return
+    try:
+        db.rollback()
+    except Exception:
+        pass
+    try:
+        db.close()
+    except Exception:
+        pass
+
+
+def _open_dispatch_db():
+    return SessionLocal()
+
+
 def cancel_dispatch_session(session_id: int) -> None:
     """
     Signal the dispatch engine to stop a session at the next wave boundary.
@@ -366,11 +390,22 @@ def _update_shift_status_sync(
     db, shift_id: int, status: models.ShiftRequestStatus, filled_at: Optional[datetime] = None
 ) -> None:
     shift = db.query(models.ShiftRequest).filter(models.ShiftRequest.id == shift_id).first()
-    if shift:
-        shift.status = status
-        if filled_at:
-            shift.filled_at = filled_at
-        db.commit()
+    if not shift:
+        return
+    terminal = (
+        models.ShiftRequestStatus.cancelled,
+        models.ShiftRequestStatus.filled,
+        models.ShiftRequestStatus.expired,
+    )
+    if shift.status in terminal and status in (
+        models.ShiftRequestStatus.open,
+        models.ShiftRequestStatus.dispatching,
+    ):
+        return
+    shift.status = status
+    if filled_at:
+        shift.filled_at = filled_at
+    db.commit()
 
 
 def _update_session_sync(
@@ -993,6 +1028,16 @@ async def _run_sync(fn, *args):
     return await loop.run_in_executor(_executor, partial(fn, *args))
 
 
+def _wave_eligibility_sync(db, shift: models.ShiftRequest, nurse_ids: list[int]) -> dict:
+    """Sync batch eligibility — must run in executor, never on the event loop."""
+    from .eligibility import nurse_accept_eligible
+
+    out: dict[int, tuple] = {}
+    for nid in nurse_ids:
+        out[nid] = nurse_accept_eligible(db, shift, nid)
+    return out
+
+
 async def _notify_wave(
     db,
     fcm: dict,
@@ -1012,75 +1057,96 @@ async def _notify_wave(
     from ..ws_manager import ws_manager
     from ..utils.fcm import send_dispatch_offer
 
+    if not offers:
+        return
+
     loop = asyncio.get_running_loop()
-    ws_count = 0
-    fcm_count = 0
-    fcm_fail = 0
-    invalid_tokens: list[str] = []  # collected for cleanup after the loop
+    t0 = time.perf_counter()
+    nurse_ids = [o.nurse_user_id for o in offers]
+    elig = await loop.run_in_executor(
+        _executor, partial(_wave_eligibility_sync, db, shift, nurse_ids)
+    )
 
     from .offer_policy import seconds_until_shift_start
-    from .eligibility import nurse_accept_eligible
     respond_by_sec = seconds_until_shift_start(shift)
+
+    ws_payloads: list[tuple[int, dict]] = []
     for offer in offers:
-        accept_ok, dist_km, block_msg = nurse_accept_eligible(db, shift, offer.nurse_user_id)
-        payload = {
-            "type": "dispatch_offer",
-            "offer_id": offer.id,
-            "shift_id": shift.id,
-            "hospital_name": shift.hospital_name,
-            "role": shift.role_required.value,
-            "specialty": shift.specialty,
-            "urgency": shift.urgency.value,
-            "shift_start": utc_iso(shift.shift_start),
-            "shift_end": utc_iso(shift.shift_end),
-            "pay_rate": shift.pay_rate,
-            "notes": shift.notes,
-            "hospital_lat": shift.hospital_latitude,
-            "hospital_lng": shift.hospital_longitude,
-            "city_id": shift.city_id,
-            "expires_at": utc_iso(offer.expires_at),
-            "respond_by_sec": respond_by_sec,
-            "expires_in_sec": respond_by_sec,
-            "wave": offer.wave_number,
-            "accept_eligible": accept_ok,
-            "distance_km": dist_km,
-            "accept_blocked_message": block_msg or None,
-        }
+        accept_ok, dist_km, block_msg = elig.get(offer.nurse_user_id, (False, None, None))
+        ws_payloads.append((
+            offer.nurse_user_id,
+            {
+                "type": "dispatch_offer",
+                "offer_id": offer.id,
+                "shift_id": shift.id,
+                "hospital_name": shift.hospital_name,
+                "role": shift.role_required.value,
+                "specialty": shift.specialty,
+                "urgency": shift.urgency.value,
+                "shift_start": utc_iso(shift.shift_start),
+                "shift_end": utc_iso(shift.shift_end),
+                "pay_rate": shift.pay_rate,
+                "notes": shift.notes,
+                "hospital_lat": shift.hospital_latitude,
+                "hospital_lng": shift.hospital_longitude,
+                "city_id": shift.city_id,
+                "expires_at": utc_iso(offer.expires_at),
+                "respond_by_sec": respond_by_sec,
+                "expires_in_sec": respond_by_sec,
+                "wave": offer.wave_number,
+                "accept_eligible": accept_ok,
+                "distance_km": dist_km,
+                "accept_blocked_message": block_msg or None,
+            },
+        ))
 
-        ws_delivered = await ws_manager.send(offer.nurse_user_id, payload)
-        if ws_delivered:
-            ws_count += 1
+    ws_results = await asyncio.gather(
+        *[ws_manager.send(uid, payload) for uid, payload in ws_payloads],
+        return_exceptions=True,
+    )
+    ws_count = sum(1 for r in ws_results if r is True)
 
-        # Always send FCM — WS can miss when the app is backgrounded with a stale socket
+    fcm_count = 0
+    fcm_fail = 0
+    invalid_tokens: list[str] = []
+    for offer in offers:
         token = fcm.get(offer.nurse_user_id) if fcm else None
-        if token:
-            ok, err_cat = await loop.run_in_executor(
-                _executor,
-                partial(
-                    send_dispatch_offer,
-                    fcm_token=token,
-                    offer_id=offer.id,
-                    shift_id=shift.id,
-                    hospital_name=shift.hospital_name,
-                    role=shift.role_required.value,
-                    urgency=shift.urgency.value,
-                    expires_in_sec=respond_by_sec,
-                    pay_rate=shift.pay_rate,
-                ),
-            )
-            if ok:
-                fcm_count += 1
-            else:
-                fcm_fail += 1
-                if err_cat == "invalid_token":
-                    invalid_tokens.append(token)
+        if not token:
+            continue
+        ok, err_cat = await loop.run_in_executor(
+            _executor,
+            partial(
+                send_dispatch_offer,
+                fcm_token=token,
+                offer_id=offer.id,
+                shift_id=shift.id,
+                hospital_name=shift.hospital_name,
+                role=shift.role_required.value,
+                urgency=shift.urgency.value,
+                expires_in_sec=respond_by_sec,
+                pay_rate=shift.pay_rate,
+            ),
+        )
+        if ok:
+            fcm_count += 1
+        else:
+            fcm_fail += 1
+            if err_cat == "invalid_token":
+                invalid_tokens.append(token)
 
-    # Clean up invalid FCM tokens in executor (doesn't block dispatch)
     for bad_token in invalid_tokens:
         await loop.run_in_executor(
             _executor, partial(_delete_device_token_sync, db, bad_token)
         )
 
+    dispatch_timing_trace(
+        "wave_notify",
+        sid=shift.id,
+        nurses=len(offers),
+        elapsed_ms=int((time.perf_counter() - t0) * 1000),
+        ws_ok=ws_count,
+        fcm_ok=fcm_count,
+    )
     logger.info(
         "[dispatch] shift %d wave notify: ws=%d fcm_ok=%d fcm_fail=%d nurses=%d",
         shift.id, ws_count, fcm_count, fcm_fail, len(offers),
@@ -1157,46 +1223,44 @@ async def run_dispatch(shift_id: int) -> None:
 
     All DB operations use run_in_executor — never blocks the event loop.
     Concurrency is bounded by _get_dispatch_semaphore().
-    DB session is opened inside the semaphore — no idle connection held while queuing.
+    DB sessions are short-lived; connections are released during wave/watchlist idle waits.
     """
     _metrics["dispatches_started"] += 1
     async with _get_dispatch_semaphore():
-        db = SessionLocal()
-        try:
-            with sentry_sdk.start_transaction(op="dispatch", name=f"dispatch.shift.{shift_id}"):
+        with sentry_sdk.start_transaction(op="dispatch", name=f"dispatch.shift.{shift_id}"):
+            try:
+                await _run_dispatch_inner(shift_id)
+            except Exception as exc:
+                sentry_sdk.capture_exception(exc)
+                logger.error("[dispatch] unhandled error for shift %d: %s", shift_id, exc, exc_info=True)
+                _metrics["dispatches_failed"] += 1
+                err_db = _open_dispatch_db()
                 try:
-                    await _run_dispatch_inner(db, shift_id)
-                except Exception as exc:
-                    sentry_sdk.capture_exception(exc)
-                    logger.error("[dispatch] unhandled error for shift %d: %s", shift_id, exc, exc_info=True)
-                    _metrics["dispatches_failed"] += 1
-                    try:
-                        shift_for_err = await _run_sync(_get_shift_sync, db, shift_id)
-                        city_id_for_err = shift_for_err.city_id if shift_for_err else "HYD"
-                        session = await _run_sync(
-                            lambda d: d.query(models.DispatchSession).filter(
-                                models.DispatchSession.shift_request_id == shift_id
-                            ).first(),
-                            db,
-                        )
-                        if session:
-                            await _run_sync(
-                                _update_session_sync, db, session.id,
-                                models.DispatchSessionStatus.failed
-                            )
+                    shift_for_err = await _run_sync(_get_shift_sync, err_db, shift_id)
+                    city_id_for_err = shift_for_err.city_id if shift_for_err else "HYD"
+                    session = await _run_sync(
+                        lambda d: d.query(models.DispatchSession).filter(
+                            models.DispatchSession.shift_request_id == shift_id
+                        ).first(),
+                        err_db,
+                    )
+                    if session:
                         await _run_sync(
-                            _update_shift_status_sync, db, shift_id,
-                            models.ShiftRequestStatus.expired
+                            _update_session_sync, err_db, session.id,
+                            models.DispatchSessionStatus.failed
                         )
-                        # Emit dispatch.failed timeline event for operational debugging
-                        await _run_sync(
-                            _write_timeline_event_sync, db, shift_id, DISPATCH_FAILED,
-                            city_id_for_err, None, {"error": str(exc)[:200]},
-                        )
-                    except Exception:
-                        pass
-        finally:
-            db.close()
+                    await _run_sync(
+                        _update_shift_status_sync, err_db, shift_id,
+                        models.ShiftRequestStatus.expired
+                    )
+                    await _run_sync(
+                        _write_timeline_event_sync, err_db, shift_id, DISPATCH_FAILED,
+                        city_id_for_err, None, {"error": str(exc)[:200]},
+                    )
+                except Exception:
+                    pass
+                finally:
+                    _detach_dispatch_db(err_db)
 
 
 async def _do_fill(
@@ -1312,8 +1376,39 @@ async def _do_fill(
     return False
 
 
-async def _run_dispatch_inner(db, shift_id: int) -> None:
+async def _reload_shift_session(db, shift_id: int, session_id: int):
+    """Fresh ORM rows after releasing the DB session during an idle wait."""
+    import functools
+
+    shift = await asyncio.get_running_loop().run_in_executor(
+        _executor, functools.partial(_get_shift_sync, db, shift_id)
+    )
+    session = await asyncio.get_running_loop().run_in_executor(
+        _executor,
+        functools.partial(
+            lambda d, sid: d.query(models.DispatchSession).filter(
+                models.DispatchSession.id == sid
+            ).first(),
+            db,
+            session_id,
+        ),
+    )
+    return shift, session
+
+
+async def _run_dispatch_inner(shift_id: int) -> None:
     """Inner dispatch logic — separated for clean error boundary."""
+    import functools
+
+    db = _open_dispatch_db()
+    try:
+        await _run_dispatch_inner_with_db(db, shift_id)
+    finally:
+        _detach_dispatch_db(db)
+
+
+async def _run_dispatch_inner_with_db(db, shift_id: int) -> None:
+    """Dispatch body — db must be released before any long asyncio idle wait."""
     import functools
 
     # 1. Load shift
@@ -1446,7 +1541,17 @@ async def _run_dispatch_inner(db, shift_id: int) -> None:
                 )
                 time_remaining = (_shift_start_naive - datetime.utcnow()).total_seconds()
                 if time_remaining > 0:
-                    await asyncio.sleep(min(no_wait, time_remaining))
+                    sleep_sec = min(no_wait, time_remaining)
+                    session_id_snap = session.id
+                    _detach_dispatch_db(db)
+                    dispatch_timing_trace(
+                        "no_candidate_sleep", sid=shift_id, session_id=session_id_snap, sec=int(sleep_sec)
+                    )
+                    await asyncio.sleep(sleep_sec)
+                    db = _open_dispatch_db()
+                    shift, session = await _reload_shift_session(db, shift_id, session_id_snap)
+                    if not shift or not session:
+                        return
                 continue
 
             wave_candidates = candidates[:actual_wave_size]
@@ -1514,8 +1619,22 @@ async def _run_dispatch_inner(db, shift_id: int) -> None:
                 )
             )
 
-            # 8. Wait for acceptance
-            accepted = await _wait_for_acceptance(session.id, wave_timeout)
+            # 8. Wait for acceptance (release DB for entire wave timeout)
+            session_id_snap = session.id
+            _detach_dispatch_db(db)
+            t_wait = time.perf_counter()
+            accepted = await _wait_for_acceptance(session_id_snap, wave_timeout)
+            dispatch_timing_trace(
+                "wave_wait",
+                sid=shift_id,
+                session_id=session_id_snap,
+                wait_ms=int((time.perf_counter() - t_wait) * 1000),
+                accepted=accepted,
+            )
+            db = _open_dispatch_db()
+            shift, session = await _reload_shift_session(db, shift_id, session_id_snap)
+            if not shift or not session:
+                return
             # Session event is also set by cancel_dispatch_session() — distinguish from real accepts
             if session.id in _cancelled_sessions or await asyncio.get_running_loop().run_in_executor(
                 _executor, functools.partial(_is_shift_cancelled_in_db_sync, db, shift_id)
@@ -1633,7 +1752,16 @@ async def _run_dispatch_inner(db, shift_id: int) -> None:
                     break
 
                 sleep_for = min(watchlist_interval, time_remaining)
+                session_id_snap = session.id
+                _detach_dispatch_db(db)
+                dispatch_timing_trace(
+                    "watchlist_sleep", sid=shift_id, session_id=session_id_snap, sec=int(sleep_for)
+                )
                 await asyncio.sleep(sleep_for)
+                db = _open_dispatch_db()
+                shift, session = await _reload_shift_session(db, shift_id, session_id_snap)
+                if not shift or not session:
+                    return
 
                 # Re-check after sleeping
                 if datetime.utcnow() >= shift_start_naive or session.id in _cancelled_sessions:
@@ -1696,7 +1824,21 @@ async def _run_dispatch_inner(db, shift_id: int) -> None:
                     shift_id, watchlist_wave, len(offers)
                 )
 
-                accepted = await _wait_for_acceptance(session.id, wave_timeout)
+                session_id_snap = session.id
+                _detach_dispatch_db(db)
+                t_wait = time.perf_counter()
+                accepted = await _wait_for_acceptance(session_id_snap, wave_timeout)
+                dispatch_timing_trace(
+                    "watchlist_wave_wait",
+                    sid=shift_id,
+                    session_id=session_id_snap,
+                    wait_ms=int((time.perf_counter() - t_wait) * 1000),
+                    accepted=accepted,
+                )
+                db = _open_dispatch_db()
+                shift, session = await _reload_shift_session(db, shift_id, session_id_snap)
+                if not shift or not session:
+                    return
                 if session.id in _cancelled_sessions or await asyncio.get_running_loop().run_in_executor(
                     _executor, functools.partial(_is_shift_cancelled_in_db_sync, db, shift_id)
                 ):

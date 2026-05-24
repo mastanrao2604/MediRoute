@@ -1,5 +1,6 @@
 .data/
 .env.test
+.env.test.local
 reports/junit-*.xml
 reports/operational-report-*.md
 fixtures/seed_manifest.json

@@ -10,6 +10,7 @@ Endpoints:
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query, status
@@ -32,7 +33,7 @@ from ..dispatch.offer_policy import (
     shift_search_open,
     shift_start_utc_naive,
 )
-from ..ops_trace import shift_lifecycle, assignment_lifecycle, reconcile_trace, ws_trace, op_failure
+from ..ops_trace import shift_lifecycle, assignment_lifecycle, reconcile_trace, ws_trace, op_failure, api_timing_trace
 
 logger = logging.getLogger(__name__)
 
@@ -484,19 +485,33 @@ def reconcile_dispatch_state(
     """
     Authoritative dispatch operational state for reconnect / resume / cold start.
 
-    DB truth wins over WebSocket memory. Nurses receive pending offers plus IDs
-    that must clear stale offer UI. Recruiters should refresh GET /shifts/.
+    DB truth wins over WebSocket memory. Lightweight DB reads only — never calls
+    GET /shifts/ serialization or dispatch runtime state.
     """
-    if current_user.role == models.UserRole.recruiter:
-        from ..routes.shifts import list_shifts
+    t0 = time.perf_counter()
+    terminal_shift_statuses = ("cancelled", "expired", "filled")
 
-        shift_payload = list_shifts(current_user=current_user, db=db)
-        shifts = shift_payload.get("shifts") or []
+    if current_user.role == models.UserRole.recruiter:
+        rows = (
+            db.query(models.ShiftRequest.id, models.ShiftRequest.status)
+            .filter(models.ShiftRequest.hospital_user_id == current_user.id)
+            .order_by(models.ShiftRequest.created_at.desc())
+            .limit(50)
+            .all()
+        )
         terminal_shifts = [
-            {"shift_id": s["id"], "status": s.get("status")}
-            for s in shifts
-            if s.get("id") is not None and s.get("status") in ("cancelled", "expired", "filled")
+            {"shift_id": sid, "status": st.value if hasattr(st, "value") else st}
+            for sid, st in rows
+            if (st.value if hasattr(st, "value") else st) in terminal_shift_statuses
         ]
+        api_timing_trace(
+            "GET /dispatch/reconcile",
+            role="recruiter",
+            trigger=trigger,
+            total_ms=int((time.perf_counter() - t0) * 1000),
+            terminal=len(terminal_shifts),
+        )
+        reconcile_trace("recruiter", uid=current_user.id, trigger=trigger, terminal=len(terminal_shifts))
         return {
             "role": "recruiter",
             "refresh": ["shifts"],
@@ -504,13 +519,34 @@ def reconcile_dispatch_state(
             "clear_offer_shift_ids": [t["shift_id"] for t in terminal_shifts],
         }
 
+    from ..routes.shifts import _assignment_lifecycle_stage, _nurse_dashboard_archived_ids
+
     pending = get_pending_offers(current_user=current_user, db=db)
     offers = pending.get("offers") or []
 
-    from ..routes.shifts import list_shifts
-
-    shift_payload = list_shifts(current_user=current_user, db=db)
-    shifts = shift_payload.get("shifts") or []
+    archived = _nurse_dashboard_archived_ids(db, current_user.id)
+    assignment_rows = (
+        db.query(models.LiveAssignment, models.ShiftRequest)
+        .join(models.ShiftRequest, models.LiveAssignment.shift_request_id == models.ShiftRequest.id)
+        .filter(models.LiveAssignment.nurse_user_id == current_user.id)
+        .order_by(models.LiveAssignment.confirmed_at.desc())
+        .limit(20)
+        .all()
+    )
+    shifts = []
+    for assignment, shift in assignment_rows:
+        if shift.id in archived:
+            continue
+        stage = _assignment_lifecycle_stage(assignment, shift)
+        assign_status = assignment.status.value if hasattr(assignment.status, "value") else assignment.status
+        shifts.append({
+            "id": shift.id,
+            "status": shift.status.value if hasattr(shift.status, "value") else shift.status,
+            "assignment": {
+                "lifecycle_stage": stage,
+                "status": assign_status,
+            },
+        })
 
     clear_offer_shift_ids: list[int] = []
     terminal_shifts: list[dict] = []
@@ -518,11 +554,9 @@ def reconcile_dispatch_state(
     active_assignment_stage = None
 
     offer_shift_ids = {o["shift_id"] for o in offers if o.get("shift_id") is not None}
-    terminal_shift_statuses = ("cancelled", "expired", "filled")
     now = datetime.utcnow()
     offer_cutoff = now - timedelta(days=3)
 
-    # Offer-only nurses: list_shifts omits shifts without assignments — scan recent offers.
     recent_offer_rows = (
         db.query(models.DispatchOffer, models.ShiftRequest)
         .join(models.ShiftRequest, models.DispatchOffer.shift_request_id == models.ShiftRequest.id)
@@ -579,13 +613,21 @@ def reconcile_dispatch_state(
         if sid not in offer_shift_ids:
             clear_offer_shift_ids.append(sid)
 
-    logger.info(
-        "[dispatch] reconcile uid=%s offers=%d clear=%d terminal=%d active=%s",
-        current_user.id,
-        len(offers),
-        len(set(clear_offer_shift_ids)),
-        len(terminal_shifts),
-        active_shift_id,
+    api_timing_trace(
+        "GET /dispatch/reconcile",
+        role=current_user.role.value,
+        trigger=trigger,
+        total_ms=int((time.perf_counter() - t0) * 1000),
+        offers=len(offers),
+        clear=len(set(clear_offer_shift_ids)),
+    )
+    reconcile_trace(
+        "nurse",
+        uid=current_user.id,
+        trigger=trigger,
+        offers=len(offers),
+        clear=len(set(clear_offer_shift_ids)),
+        active=active_shift_id,
     )
 
     return {

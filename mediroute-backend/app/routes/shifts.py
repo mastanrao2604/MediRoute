@@ -14,6 +14,7 @@ Endpoints:
 import asyncio
 import json
 import logging
+import time
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
@@ -46,7 +47,7 @@ from ..dispatch.eligibility import nurse_accept_eligible, nurse_shift_visible, n
 from ..dispatch.offer_policy import offer_respondable, shift_search_open, nurse_blocks_other_acceptances
 from ..routes.availability import DISPATCH_ELIGIBLE_ROLES
 from .. import crud
-from ..ops_trace import shift_lifecycle, assignment_lifecycle, op_failure
+from ..ops_trace import shift_lifecycle, assignment_lifecycle, op_failure, api_timing_trace
 
 logger = logging.getLogger(__name__)
 logger.parent = logging.getLogger("uvicorn.error")
@@ -100,6 +101,8 @@ def _assignment_lifecycle_stage(
         return "completed"
     if st == models.AssignmentStatus.checked_in:
         return "checked_in"
+    if st == models.AssignmentStatus.no_show:
+        return "no_show"
     if st == models.AssignmentStatus.cancelled:
         if (
             shift
@@ -114,8 +117,6 @@ def _assignment_lifecycle_stage(
         return "applied"
     if st == models.AssignmentStatus.confirmed:
         return "under_review"
-    if st == models.AssignmentStatus.no_show:
-        return "no_show"
     return "applied"
 
 
@@ -528,18 +529,31 @@ def _nurse_may_dismiss_dashboard(
     return True
 
 
-def _attach_recruiter_staffing(d: dict, shift: models.ShiftRequest, db: Session) -> dict:
+def _attach_recruiter_staffing(
+    d: dict,
+    shift: models.ShiftRequest,
+    db: Session,
+    *,
+    assignments: Optional[list] = None,
+    pending_offers: Optional[list] = None,
+    nurse_summaries: Optional[dict] = None,
+) -> dict:
     """Applicants + staffing progress for recruiter UI."""
-    assignments = (
-        db.query(models.LiveAssignment)
-        .filter(models.LiveAssignment.shift_request_id == shift.id)
-        .order_by(models.LiveAssignment.confirmed_at.asc())
-        .all()
-    )
+    if assignments is None:
+        assignments = (
+            db.query(models.LiveAssignment)
+            .filter(models.LiveAssignment.shift_request_id == shift.id)
+            .order_by(models.LiveAssignment.confirmed_at.asc())
+            .all()
+        )
     applicants = []
     for a in assignments:
         try:
-            card = _assigned_nurse_summary(db, a.nurse_user_id)
+            card = (
+                dict(nurse_summaries[a.nurse_user_id])
+                if nurse_summaries and a.nurse_user_id in nurse_summaries
+                else _assigned_nurse_summary(db, a.nurse_user_id)
+            )
             stage = _assignment_lifecycle_stage(a, shift)
             card["lifecycle_stage"] = stage
             card["status"] = (
@@ -644,7 +658,11 @@ def _attach_recruiter_staffing(d: dict, shift: models.ShiftRequest, db: Session)
             "check_out_at": a0.check_out_at.isoformat() if a0.check_out_at else None,
         }
         try:
-            d["assigned_nurse"] = _assigned_nurse_summary(db, a0.nurse_user_id)
+            d["assigned_nurse"] = (
+                dict(nurse_summaries[a0.nurse_user_id])
+                if nurse_summaries and a0.nurse_user_id in nurse_summaries
+                else _assigned_nurse_summary(db, a0.nurse_user_id)
+            )
         except Exception as exc:
             logger.warning(
                 "[shifts] assigned_nurse_fallback sid=%s uid=%s err=%s",
@@ -669,15 +687,12 @@ def _reliability_display_score(rs: Optional[models.ReliabilityScore]) -> float:
     return round(float(rs.score), 1)
 
 
-def _assigned_nurse_summary(db: Session, nurse_user_id: int) -> dict:
-    """Staff card for recruiter — contact + profile fields only."""
-    user = db.query(models.User).filter(models.User.id == nurse_user_id).first()
-    profile = crud.get_profile(db, nurse_user_id)
-    rs = (
-        db.query(models.ReliabilityScore)
-        .filter(models.ReliabilityScore.user_id == nurse_user_id)
-        .first()
-    )
+def _nurse_summary_from_parts(
+    nurse_user_id: int,
+    user: Optional[models.User],
+    profile: Optional[models.Profile],
+    rs: Optional[models.ReliabilityScore],
+) -> dict:
     name = (user.name if user and user.name else None) or f"Staff #{nurse_user_id}"
     education = profile.education if profile else None
     if education is not None and not isinstance(education, (str, int, float, bool, list, dict, type(None))):
@@ -694,6 +709,95 @@ def _assigned_nurse_summary(db: Session, nurse_user_id: int) -> dict:
         "rating": _reliability_display_score(rs),
         "completed_shifts": int(rs.completed_shifts) if rs else 0,
     }
+
+
+def _batch_nurse_summaries(db: Session, nurse_user_ids: set) -> dict:
+    """One round-trip per table for recruiter applicant cards."""
+    if not nurse_user_ids:
+        return {}
+    ids = list(nurse_user_ids)
+    users = {
+        u.id: u
+        for u in db.query(models.User).filter(models.User.id.in_(ids)).all()
+    }
+    profiles = {
+        p.user_id: p
+        for p in db.query(models.Profile).filter(models.Profile.user_id.in_(ids)).all()
+    }
+    scores = {
+        r.user_id: r
+        for r in db.query(models.ReliabilityScore).filter(
+            models.ReliabilityScore.user_id.in_(ids)
+        ).all()
+    }
+    return {
+        uid: _nurse_summary_from_parts(uid, users.get(uid), profiles.get(uid), scores.get(uid))
+        for uid in ids
+    }
+
+
+def _batch_recruiter_list_context(db: Session, shift_ids: list[int]):
+    if not shift_ids:
+        return {}, {}, {}
+    assignments = (
+        db.query(models.LiveAssignment)
+        .filter(models.LiveAssignment.shift_request_id.in_(shift_ids))
+        .order_by(models.LiveAssignment.confirmed_at.asc())
+        .all()
+    )
+    assignments_by_shift: dict = {}
+    nurse_ids: set = set()
+    for a in assignments:
+        assignments_by_shift.setdefault(a.shift_request_id, []).append(a)
+        nurse_ids.add(a.nurse_user_id)
+    pending_offers = (
+        db.query(models.DispatchOffer)
+        .filter(
+            models.DispatchOffer.shift_request_id.in_(shift_ids),
+            models.DispatchOffer.status == models.OfferStatus.pending,
+        )
+        .order_by(models.DispatchOffer.offered_at.asc())
+        .all()
+    )
+    offers_by_shift: dict = {}
+    for o in pending_offers:
+        offers_by_shift.setdefault(o.shift_request_id, []).append(o)
+        nurse_ids.add(o.nurse_user_id)
+    return assignments_by_shift, offers_by_shift, _batch_nurse_summaries(db, nurse_ids)
+
+
+def _build_recruiter_shift_rows_batch(
+    db: Session,
+    shifts: list[models.ShiftRequest],
+) -> list[dict]:
+    shift_ids = [s.id for s in shifts]
+    assignments_by_shift, offers_by_shift, summaries = _batch_recruiter_list_context(db, shift_ids)
+    payload = []
+    for s in shifts:
+        try:
+            _try_expire_shift(db, s)
+            primary = None
+            if assignments_by_shift.get(s.id):
+                primary = assignments_by_shift[s.id][0]
+            d = _shift_to_dict(s, primary)
+            d = _attach_recruiter_staffing(
+                d,
+                s,
+                db,
+                assignments=assignments_by_shift.get(s.id, []),
+                pending_offers=offers_by_shift.get(s.id, []),
+                nurse_summaries=summaries,
+            )
+            payload.append(d)
+        except Exception as exc:
+            payload.append(_shift_list_fallback(s, exc))
+    return payload
+
+
+def _assigned_nurse_summary(db: Session, nurse_user_id: int) -> dict:
+    """Staff card for recruiter — contact + profile fields only."""
+    batch = _batch_nurse_summaries(db, {nurse_user_id})
+    return batch[nurse_user_id]
 
 
 def _shift_cancel_reason(db: Session, shift_id: int) -> Optional[str]:
@@ -1034,7 +1138,9 @@ def list_shifts(
     Nurses/healthcare workers see their assigned shifts.
     """
     if current_user.role == models.UserRole.recruiter:
+        t0 = time.perf_counter()
         archived = _recruiter_archived_shift_ids(db, current_user.id)
+        t_arch = time.perf_counter()
         shifts = (
             db.query(models.ShiftRequest)
             .filter(models.ShiftRequest.hospital_user_id == current_user.id)
@@ -1043,12 +1149,18 @@ def list_shifts(
             .all()
         )
         visible = [s for s in shifts if s.id not in archived]
-        payload = []
-        for s in visible:
-            try:
-                payload.append(_build_recruiter_shift_row(db, s))
-            except Exception as exc:
-                payload.append(_shift_list_fallback(s, exc))
+        t_query = time.perf_counter()
+        payload = _build_recruiter_shift_rows_batch(db, visible)
+        t_done = time.perf_counter()
+        api_timing_trace(
+            "GET /shifts/",
+            role="recruiter",
+            count=len(payload),
+            archived_ms=int((t_arch - t0) * 1000),
+            query_ms=int((t_query - t_arch) * 1000),
+            build_ms=int((t_done - t_query) * 1000),
+            total_ms=int((t_done - t0) * 1000),
+        )
         shift_lifecycle(
             "list_shifts_recruiter",
             uid=current_user.id,
@@ -1731,6 +1843,14 @@ async def cancel_shift(
     if shift.status in (models.ShiftRequestStatus.filled, models.ShiftRequestStatus.cancelled):
         raise HTTPException(status_code=409, detail=f"Cannot cancel a shift with status '{shift.status.value}'.")
 
+    # Stop in-flight dispatch loops immediately (DB updates follow below).
+    for session in (
+        db.query(models.DispatchSession)
+        .filter(models.DispatchSession.shift_request_id == shift_id)
+        .all()
+    ):
+        cancel_dispatch_session(session.id)
+
     now = datetime.utcnow()
     cancel_reason = None
     if body and body.reason:
@@ -1787,6 +1907,7 @@ async def cancel_shift(
         active_session.completed_at = now
 
     shift.status = models.ShiftRequestStatus.cancelled
+    shift.search_closed_at = shift.search_closed_at or now
 
     timeline_payload: dict = {"cancelled_by": "hospital"}
     if cancel_reason:

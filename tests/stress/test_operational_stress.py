@@ -43,3 +43,40 @@ def test_dashboard_stress_refresh(recruiter_client):
     for _ in range(50):
         data = recruiter_client.list_shifts()
         assert isinstance(data["shifts"], list)
+
+
+def test_dashboard_during_active_dispatch(recruiter_client):
+    """GET /shifts/ must stay responsive while dispatch waves are running."""
+    import threading
+
+    errors: list[str] = []
+    stop = threading.Event()
+
+    def poll_dashboard():
+        while not stop.is_set():
+            try:
+                data = recruiter_client.list_shifts()
+                assert isinstance(data["shifts"], list)
+            except Exception as exc:
+                errors.append(str(exc))
+            time.sleep(0.05)
+
+    poller = threading.Thread(target=poll_dashboard, daemon=True)
+    poller.start()
+    try:
+        cycles = min(STRESS_CREATE_COUNT, 30)
+        for i in range(cycles):
+            out = recruiter_client.create_shift(
+                hospital_name=f"Dispatch load {i}",
+                idempotency_key=str(uuid.uuid4()),
+                urgency="emergency",
+            )
+            sid = out["shift"]["id"]
+            recruiter_client.reconcile(trigger=f"stress_dispatch_{i}")
+            listing = recruiter_client.list_shifts()
+            assert any(s.get("id") == sid for s in listing["shifts"])
+            recruiter_client.cancel_shift(sid)
+    finally:
+        stop.set()
+        poller.join(timeout=10)
+    assert not errors, f"dashboard timeouts during dispatch: {errors[:5]}"
