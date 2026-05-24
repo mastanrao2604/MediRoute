@@ -9,7 +9,7 @@ import ShiftDispatchLive from '../components/recruiter/ShiftDispatchLive';
 import RecruiterShiftDetailSheet from '../components/recruiter/RecruiterShiftDetailSheet';
 import AssignedNurseProfileSheet from '../components/recruiter/AssignedNurseProfileSheet';
 import ShiftApplicantsPanel from '../components/recruiter/ShiftApplicantsPanel';
-import { mlog } from '../utils/mobileLogger';
+import { mlog, mlogError } from '../utils/mobileLogger';
 import { formatApiErrorDetail } from '../utils/apiErrorMessage';
 import {
   SHIFT_CARD_STATUS,
@@ -121,7 +121,12 @@ export default function RecruiterDashboard() {
         setShifts(res.data?.shifts ?? []);
         setShiftsError('');
       })
-      .catch(() => setShiftsError('Could not load staffing shifts.'))
+      .catch((err) => {
+        mlogError('dispatch', 'recruiter_shifts_load_fail', err, {
+          status: err?.response?.status ?? null,
+        });
+        setShiftsError('Could not load staffing shifts.');
+      })
   ), []);
 
   const isVerified = user?.is_verified === true;

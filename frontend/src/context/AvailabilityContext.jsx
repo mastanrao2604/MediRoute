@@ -135,6 +135,23 @@ export function AvailabilityProvider({ children, user }) {
           latRef.current = res.data.latitude;
           lngRef.current = res.data.longitude;
         }
+        if (res.data.is_available) {
+          if (res.data.latitude != null && res.data.longitude != null) {
+            setLocationSource('gps');
+          } else {
+            const pin = normalizeIndianPincode(user?.service_pincode);
+            if (pin) {
+              setLocationSource('pincode');
+            } else if (user?.location_source === 'gps' || user?.location_source === 'pincode') {
+              setLocationSource(user.location_source);
+            } else {
+              const last = loadLastKnownArea();
+              if (last?.lat != null && last?.lng != null) {
+                setLocationSource('gps');
+              }
+            }
+          }
+        }
       })
       .catch(() => {}) // non-critical — default to offline state
       .finally(() => setLoading(false));
@@ -142,7 +159,7 @@ export function AvailabilityProvider({ children, user }) {
     const last = loadLastKnownArea();
     if (last?.locality) setSessionAreaLabel(last.locality);
     else if (user?.service_locality) setSessionAreaLabel(user.service_locality);
-  }, [user?.id, isEligible, user?.service_locality]);
+  }, [user?.id, isEligible, user?.service_locality, user?.service_pincode, user?.location_source]);
 
   // Restore area label when app returns to foreground (reconnect / reopen).
   useEffect(() => {
@@ -154,10 +171,15 @@ export function AvailabilityProvider({ children, user }) {
         setSessionAreaLabel((prev) => prev || last.locality);
         mlog('location', 'visibility_area_restore', { has_locality: true });
       }
+      if (isAvailable && last?.lat != null && last?.lng != null) {
+        latRef.current = last.lat;
+        lngRef.current = last.lng;
+        setLocationSource((prev) => (prev === 'none' ? 'gps' : prev));
+      }
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
-  }, [isEligible]);
+  }, [isEligible, isAvailable]);
 
   // ── Heartbeat: keep last_seen fresh while nurse is available ──────────────
   // Backend marks nurses with last_seen > 5 min as stale for dispatch.
@@ -183,6 +205,7 @@ export function AvailabilityProvider({ children, user }) {
             lngRef.current = newLng;
             const rev = await syncGpsToProfile(newLat, newLng);
             if (rev?.locality) setSessionAreaLabel(rev.locality);
+            setLocationSource('gps');
             mlog('location', 'heartbeat_gps_refresh', {});
           }
         } catch {

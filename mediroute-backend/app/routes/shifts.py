@@ -67,6 +67,14 @@ def _lifecycle_log(ev: str, **fields) -> None:
 _shift_cols_ready = False
 _assignment_cols_ready = False
 
+NURSE_DASHBOARD_ARCHIVED = "nurse.dashboard_archived"
+
+
+def _ensure_pilot_schema(db: Session) -> None:
+    """Idempotent schema guards — list/create paths must match before ORM reads/writes."""
+    _ensure_shift_location_columns(db)
+    _ensure_assignment_columns(db)
+
 
 def _ensure_shift_location_columns(db: Session) -> None:
     """Idempotent DDL for pilot DBs where Alembic e5 did not run yet."""
@@ -417,6 +425,38 @@ def _recruiter_archived_shift_ids(db: Session, recruiter_user_id: int) -> set:
     return {r[0] for r in rows}
 
 
+def _nurse_dashboard_archived_ids(db: Session, nurse_user_id: int) -> set:
+    rows = (
+        db.query(models.ShiftTimelineEvent.shift_request_id)
+        .join(
+            models.LiveAssignment,
+            models.LiveAssignment.shift_request_id == models.ShiftTimelineEvent.shift_request_id,
+        )
+        .filter(
+            models.LiveAssignment.nurse_user_id == nurse_user_id,
+            models.ShiftTimelineEvent.event_type == NURSE_DASHBOARD_ARCHIVED,
+            models.ShiftTimelineEvent.actor_user_id == nurse_user_id,
+        )
+        .all()
+    )
+    return {r[0] for r in rows}
+
+
+def _nurse_may_dismiss_dashboard(
+    assignment: models.LiveAssignment,
+    shift: models.ShiftRequest,
+) -> bool:
+    """Block removal for operational (confirmed / on-site) assignments."""
+    if assignment.status == models.AssignmentStatus.checked_in:
+        return False
+    if _assignment_recruiter_confirmed(assignment, shift):
+        return False
+    stage = _assignment_lifecycle_stage(assignment, shift)
+    if stage in ("recruiter_confirmed", "checked_in"):
+        return False
+    return True
+
+
 def _attach_recruiter_staffing(d: dict, shift: models.ShiftRequest, db: Session) -> dict:
     """Applicants + staffing progress for recruiter UI."""
     assignments = (
@@ -697,8 +737,7 @@ async def create_shift(
         )
 
     try:
-        _ensure_shift_location_columns(db)
-        _ensure_assignment_columns(db)
+        _ensure_pilot_schema(db)
         shift = models.ShiftRequest(
             city_id=req.city_id or "HYD",
             hospital_user_id=current_user.id,
@@ -768,6 +807,7 @@ def list_shifts(
     Recruiters see their posted shifts.
     Nurses/healthcare workers see their assigned shifts.
     """
+    _ensure_pilot_schema(db)
     if current_user.role == models.UserRole.recruiter:
         archived = _recruiter_archived_shift_ids(db, current_user.id)
         shifts = (
@@ -794,6 +834,7 @@ def list_shifts(
             payload.append(d)
         return {"shifts": payload}
     else:
+        archived = _nurse_dashboard_archived_ids(db, current_user.id)
         # Nurse: return assignments with shift details
         assignments = (
             db.query(models.LiveAssignment, models.ShiftRequest)
@@ -805,6 +846,8 @@ def list_shifts(
         )
         payload = []
         for assignment, shift in assignments:
+            if shift.id in archived:
+                continue
             if _expire_shift_if_past_start_unfilled(db, shift):
                 db.refresh(shift)
                 db.refresh(assignment)
@@ -1108,6 +1151,69 @@ def archive_shift(
         db.commit()
 
     return {"success": True, "shift_id": shift_id}
+
+
+@router.post("/{shift_id}/dismiss")
+def nurse_dismiss_shift_from_dashboard(
+    shift_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Hide a past/inactive assignment from the nurse dashboard (audit kept in timeline)."""
+    if current_user.role not in DISPATCH_ELIGIBLE_ROLES:
+        raise HTTPException(status_code=403, detail="Only staff accounts can dismiss shifts.")
+
+    _ensure_pilot_schema(db)
+    assignment = (
+        db.query(models.LiveAssignment)
+        .filter(
+            models.LiveAssignment.shift_request_id == shift_id,
+            models.LiveAssignment.nurse_user_id == current_user.id,
+        )
+        .first()
+    )
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found.")
+
+    shift = db.query(models.ShiftRequest).filter(models.ShiftRequest.id == shift_id).first()
+    if not shift:
+        raise HTTPException(status_code=404, detail="Shift not found.")
+
+    if not _nurse_may_dismiss_dashboard(assignment, shift):
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot remove an active confirmed or on-site shift.",
+        )
+
+    existing = db.query(models.ShiftTimelineEvent).filter(
+        models.ShiftTimelineEvent.shift_request_id == shift_id,
+        models.ShiftTimelineEvent.event_type == NURSE_DASHBOARD_ARCHIVED,
+        models.ShiftTimelineEvent.actor_user_id == current_user.id,
+    ).first()
+    if not existing:
+        db.add(
+            models.ShiftTimelineEvent(
+                shift_request_id=shift_id,
+                event_type=NURSE_DASHBOARD_ARCHIVED,
+                actor_user_id=current_user.id,
+                city_id=shift.city_id,
+                payload={
+                    "assignment_status": assignment.status.value,
+                    "lifecycle_stage": _assignment_lifecycle_stage(assignment, shift),
+                },
+            )
+        )
+        db.commit()
+
+    _lifecycle_log(
+        "nurse_dashboard_dismiss",
+        sid=shift_id,
+        aid=assignment.id,
+        uid=current_user.id,
+        actor="nurse",
+        stage=_assignment_lifecycle_stage(assignment, shift),
+    )
+    return {"dismissed": True, "shift_id": shift_id}
 
 
 @router.post("/{shift_id}/confirm-staff")

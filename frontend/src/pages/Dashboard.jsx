@@ -6,6 +6,7 @@ import Spinner from '../components/Spinner';
 import AvailabilityToggle from '../components/AvailabilityToggle';
 import EmployeeShiftDetailSheet from '../components/EmployeeShiftDetailSheet';
 import { useAuth } from '../context/AuthContext';
+import { mlogError } from '../utils/mobileLogger';
 import { formatShiftTime } from '../utils/shiftDateTime';
 import {
   pickActiveNurseShift,
@@ -28,6 +29,34 @@ const DISPATCH_ELIGIBLE_ROLES = new Set([
   'home_care_nurse', 'doctor', 'lab_tech', 'pharmacist', 'driver', 'front_office',
 ]);
 
+function nurseShiftDismissible(shift) {
+  const a = shift?.assignment;
+  if (!a) return false;
+  const stage = a.lifecycle_stage;
+  const st = a.status;
+  if (st === 'checked_in' || stage === 'checked_in') return false;
+  if (stage === 'recruiter_confirmed') return false;
+  if (st === 'confirmed' && stage !== 'applied' && stage !== 'under_review') return false;
+  return true;
+}
+
+function ShiftDismissButton({ shift, onDismiss, busy }) {
+  if (!nurseShiftDismissible(shift)) return null;
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      onClick={(e) => {
+        e.stopPropagation();
+        onDismiss(shift.id);
+      }}
+      className="mt-2 text-xs font-semibold text-gray-500 hover:text-gray-700 underline disabled:opacity-50"
+    >
+      Remove from dashboard
+    </button>
+  );
+}
+
 export default function Dashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -45,6 +74,8 @@ export default function Dashboard() {
   const [completedShifts, setCompletedShifts] = useState([]);
   const [staffingNotice, setStaffingNotice] = useState('');
   const [assignedDetailId, setAssignedDetailId] = useState(null);
+  const [dismissBusyId, setDismissBusyId] = useState(null);
+  const [allNurseShifts, setAllNurseShifts] = useState([]);
 
   const isDispatchEligible = DISPATCH_ELIGIBLE_ROLES.has(user?.role);
 
@@ -61,6 +92,7 @@ export default function Dashboard() {
           (s) => s.assignment?.status === 'completed' || s.assignment?.lifecycle_stage === 'completed',
         ).slice(0, 5),
       );
+      setAllNurseShifts(list);
       setAssignedDetailId((id) => {
         if (id == null) return null;
         if (active?.id === id) return id;
@@ -168,6 +200,24 @@ export default function Dashboard() {
     } catch { /* ignore */ }
   }
 
+  async function handleDismissShift(shiftId) {
+    if (!window.confirm('Remove this shift from your dashboard? Records are kept on the server.')) return;
+    setDismissBusyId(shiftId);
+    try {
+      await api.post(`/shifts/${shiftId}/dismiss`);
+      setActiveShift((s) => (s?.id === shiftId ? null : s));
+      setCancelledShifts((prev) => prev.filter((s) => s.id !== shiftId));
+      setCompletedShifts((prev) => prev.filter((s) => s.id !== shiftId));
+      setAllNurseShifts((prev) => prev.filter((s) => s.id !== shiftId));
+      setAssignedDetailId((id) => (id === shiftId ? null : id));
+      await fetchActiveShift();
+    } catch (err) {
+      mlogError('dispatch', 'nurse_shift_dismiss_fail', err, { shift_id: shiftId });
+    } finally {
+      setDismissBusyId(null);
+    }
+  }
+
   function profileCompletionScore() {
     if (!profile) return 0;
     let score = 0;
@@ -179,6 +229,15 @@ export default function Dashboard() {
   }
 
   const completion = profileCompletionScore();
+
+  const pastShifts = allNurseShifts.filter((s) => {
+    const shown = new Set([
+      activeShift?.id,
+      ...cancelledShifts.map((x) => x.id),
+      ...completedShifts.map((x) => x.id),
+    ].filter(Boolean));
+    return !shown.has(s.id) && nurseShiftDismissible(s);
+  });
 
   const statusColors = {
     applied: 'bg-blue-100 text-blue-700',
@@ -252,6 +311,11 @@ export default function Dashboard() {
                 Check out when shift ends →
               </button>
             )}
+            <ShiftDismissButton
+              shift={activeShift}
+              onDismiss={handleDismissShift}
+              busy={dismissBusyId === activeShift.id}
+            />
           </div>
         )}
 
@@ -262,18 +326,27 @@ export default function Dashboard() {
             </h2>
             <div className="flex flex-col gap-2">
               {completedShifts.map((s) => (
-                <button
+                <div
                   key={`completed-${s.id}`}
-                  type="button"
-                  onClick={() => setAssignedDetailId(s.id)}
-                  className="text-left rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-3 hover:bg-slate-50"
+                  className="rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-3"
                 >
+                  <button
+                    type="button"
+                    onClick={() => setAssignedDetailId(s.id)}
+                    className="text-left w-full hover:opacity-90"
+                  >
                   <p className="text-sm font-semibold text-gray-900">
                     {s.hospital_name} · {formatRoleLabel(s.role_required)}
                   </p>
                   <p className="text-xs text-slate-700 mt-0.5">Completed</p>
                   <p className="text-xs text-gray-500 mt-0.5">{activeShiftSummaryLine(s)}</p>
-                </button>
+                  </button>
+                  <ShiftDismissButton
+                    shift={s}
+                    onDismiss={handleDismissShift}
+                    busy={dismissBusyId === s.id}
+                  />
+                </div>
               ))}
             </div>
           </div>
@@ -286,18 +359,60 @@ export default function Dashboard() {
             </h2>
             <div className="flex flex-col gap-2">
               {cancelledShifts.map((s) => (
-                <button
+                <div
                   key={`cancelled-${s.id}`}
-                  type="button"
-                  onClick={() => setAssignedDetailId(s.id)}
-                  className="text-left rounded-xl border border-red-100 bg-red-50/60 px-4 py-3 hover:bg-red-50"
+                  className="rounded-xl border border-red-100 bg-red-50/60 px-4 py-3"
                 >
-                  <p className="text-sm font-semibold text-gray-900">
-                    {s.hospital_name} · {formatRoleLabel(s.role_required)}
-                  </p>
-                  <p className="text-xs text-red-800 mt-0.5">{cancelledShiftStatusLabel(s)}</p>
-                  <p className="text-xs text-gray-500 mt-0.5">{activeShiftSummaryLine(s)}</p>
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => setAssignedDetailId(s.id)}
+                    className="text-left w-full hover:bg-red-50"
+                  >
+                    <p className="text-sm font-semibold text-gray-900">
+                      {s.hospital_name} · {formatRoleLabel(s.role_required)}
+                    </p>
+                    <p className="text-xs text-red-800 mt-0.5">{cancelledShiftStatusLabel(s)}</p>
+                    <p className="text-xs text-gray-500 mt-0.5">{activeShiftSummaryLine(s)}</p>
+                  </button>
+                  <ShiftDismissButton
+                    shift={s}
+                    onDismiss={handleDismissShift}
+                    busy={dismissBusyId === s.id}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {isDispatchEligible && pastShifts.length > 0 && (
+          <div className="mb-6">
+            <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide mb-2">
+              Past shifts
+            </h2>
+            <div className="flex flex-col gap-2">
+              {pastShifts.map((s) => (
+                <div
+                  key={`past-${s.id}`}
+                  className="rounded-xl border border-gray-200 bg-white px-4 py-3"
+                >
+                  <button
+                    type="button"
+                    onClick={() => setAssignedDetailId(s.id)}
+                    className="text-left w-full"
+                  >
+                    <p className="text-sm font-semibold text-gray-900">
+                      {s.hospital_name} · {formatRoleLabel(s.role_required)}
+                    </p>
+                    <p className="text-xs text-gray-600 mt-0.5">{nurseLifecycleLabel(s)}</p>
+                    <p className="text-xs text-gray-500 mt-0.5">{activeShiftSummaryLine(s)}</p>
+                  </button>
+                  <ShiftDismissButton
+                    shift={s}
+                    onDismiss={handleDismissShift}
+                    busy={dismissBusyId === s.id}
+                  />
+                </div>
               ))}
             </div>
           </div>
