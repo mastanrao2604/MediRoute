@@ -273,7 +273,11 @@ export default function PostShift() {
       mlog('dispatch', 'shift_post_success', { shift_id: shiftId });
       navigate('/recruiter/dashboard', {
         replace: true,
-        state: { shiftCreated: true, shiftId: res.data?.shift?.id },
+        state: {
+          shiftCreated: true,
+          shiftId: res.data?.shift?.id,
+          shift: res.data?.shift,
+        },
       });
     } catch (err) {
       console.error('[PostShift] error:', err?.response?.status, JSON.stringify(err?.response?.data));

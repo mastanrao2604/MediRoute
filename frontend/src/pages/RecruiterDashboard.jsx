@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
 import api from '../api/axios';
 import MainLayout from '../layouts/MainLayout';
@@ -157,23 +157,36 @@ export default function RecruiterDashboard() {
   const [profileShiftLabel, setProfileShiftLabel] = useState('');
   const [profileShiftId, setProfileShiftId] = useState(null);
   const [confirmingNurseId, setConfirmingNurseId] = useState(null);
+  const shiftsLoadRef = useRef(null);
 
-  const loadShifts = useCallback(() => (
-    api.get('/shifts/')
+  const loadShifts = useCallback(() => {
+    if (shiftsLoadRef.current) {
+      shiftsLoadRef.current.abort();
+    }
+    const controller = new AbortController();
+    shiftsLoadRef.current = controller;
+    return api.get('/shifts/', { signal: controller.signal, timeout: 20000 })
       .then((res) => {
+        if (controller.signal.aborted) return;
         const raw = res.data?.shifts;
-        const list = Array.isArray(raw) ? raw : [];
+        const list = Array.isArray(raw) ? raw.map(safeShiftRow).filter(Boolean) : [];
         setShifts(list);
         reconcileFromShifts(list);
         setShiftsError('');
       })
       .catch((err) => {
+        if (controller.signal.aborted || err?.code === 'ERR_CANCELED') return;
         mlogError('dispatch', 'recruiter_shifts_load_fail', err, {
           status: err?.response?.status ?? null,
         });
         setShiftsError('Could not load staffing shifts.');
       })
-  ), [reconcileFromShifts]);
+      .finally(() => {
+        if (shiftsLoadRef.current === controller) {
+          shiftsLoadRef.current = null;
+        }
+      });
+  }, [reconcileFromShifts]);
 
   const isVerified = user?.is_verified === true;
 
@@ -206,9 +219,20 @@ export default function RecruiterDashboard() {
 
   useEffect(() => {
     const createdId = location.state?.shiftId;
+    const createdShift = location.state?.shift;
     if (location.state?.shiftCreated && createdId) {
       setHighlightShiftId(createdId);
       mlog('dispatch', 'recruiter_shift_created_nav', { shift_id: createdId });
+      if (createdShift?.id) {
+        const row = safeShiftRow(createdShift);
+        if (row) {
+          setShifts((prev) => {
+            const rest = prev.filter((s) => s.id !== row.id);
+            return [row, ...rest];
+          });
+          setShiftsError('');
+        }
+      }
       navigate(location.pathname, { replace: true, state: {} });
     }
   }, [location.state, location.pathname, navigate]);

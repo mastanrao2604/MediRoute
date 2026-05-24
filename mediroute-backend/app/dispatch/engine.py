@@ -166,7 +166,7 @@ def set_dispatch_enabled(enabled: bool, actor: str = "unknown") -> bool:
 # 30 concurrent dispatches = 30 × max_wave_timeout (300s standard) potential
 # overlap, each holding DB connections via run_in_executor.
 # Phase 2: replace with Redis-backed distributed semaphore.
-_MAX_CONCURRENT_DISPATCHES: int = int(os.getenv("MAX_CONCURRENT_DISPATCHES", "30"))
+_MAX_CONCURRENT_DISPATCHES: int = int(os.getenv("MAX_CONCURRENT_DISPATCHES", "15"))
 # Semaphore is created lazily in start_dispatch (requires running event loop).
 _dispatch_semaphore: Optional[asyncio.Semaphore] = None
 
@@ -211,7 +211,7 @@ def _record_offer_sent(nurse_id: int) -> None:
 # ── Thread pool for sync DB calls ─────────────────────────────────────────────
 # All SQLAlchemy operations run in this pool via run_in_executor.
 # Sized to match DB connection pool (pool_size=10 in database.py).
-_executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="dispatch-db")
+_executor = ThreadPoolExecutor(max_workers=16, thread_name_prefix="dispatch-db")
 
 # ── In-process dispatch signaling ─────────────────────────────────────────────
 # session_id → asyncio.Event, set when any offer for that session is accepted.

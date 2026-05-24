@@ -537,8 +537,22 @@ def _attach_recruiter_staffing(
     assignments: Optional[list] = None,
     pending_offers: Optional[list] = None,
     nurse_summaries: Optional[dict] = None,
+    list_mode: bool = False,
 ) -> dict:
     """Applicants + staffing progress for recruiter UI."""
+    terminal = (
+        models.ShiftRequestStatus.cancelled,
+        models.ShiftRequestStatus.expired,
+    )
+    if list_mode and shift.status in terminal:
+        d["applicants"] = []
+        d["confirmed_count"] = 0
+        d["applied_count"] = 0
+        d["nurses_required"] = _pilot_nurses_required(shift)
+        d["pending_responses"] = 0
+        d["search_active"] = False
+        return d
+
     if assignments is None:
         assignments = (
             db.query(models.LiveAssignment)
@@ -554,6 +568,10 @@ def _attach_recruiter_staffing(
                 if nurse_summaries and a.nurse_user_id in nurse_summaries
                 else _assigned_nurse_summary(db, a.nurse_user_id)
             )
+            if list_mode:
+                card.pop("phone", None)
+                card.pop("education", None)
+                card.pop("skills", None)
             stage = _assignment_lifecycle_stage(a, shift)
             card["lifecycle_stage"] = stage
             card["status"] = (
@@ -588,21 +606,30 @@ def _attach_recruiter_staffing(
                 "_serialize_degraded": True,
             })
 
-    pending_offers = (
-        db.query(models.DispatchOffer)
-        .filter(
-            models.DispatchOffer.shift_request_id == shift.id,
-            models.DispatchOffer.status == models.OfferStatus.pending,
+    if pending_offers is None:
+        pending_offers = (
+            db.query(models.DispatchOffer)
+            .filter(
+                models.DispatchOffer.shift_request_id == shift.id,
+                models.DispatchOffer.status == models.OfferStatus.pending,
+            )
+            .order_by(models.DispatchOffer.offered_at.asc())
+            .all()
         )
-        .order_by(models.DispatchOffer.offered_at.asc())
-        .all()
-    )
     assignment_nurse_ids = {a.nurse_user_id for a in assignments}
     for offer in pending_offers:
         if offer.nurse_user_id in assignment_nurse_ids:
             continue
         try:
-            card = _assigned_nurse_summary(db, offer.nurse_user_id)
+            card = (
+                dict(nurse_summaries[offer.nurse_user_id])
+                if nurse_summaries and offer.nurse_user_id in nurse_summaries
+                else _assigned_nurse_summary(db, offer.nurse_user_id)
+            )
+            if list_mode:
+                card.pop("phone", None)
+                card.pop("education", None)
+                card.pop("skills", None)
             card["lifecycle_stage"] = "invited"
             card["status"] = "waiting"
             card["offer_id"] = offer.id
@@ -773,9 +800,15 @@ def _build_recruiter_shift_rows_batch(
     shift_ids = [s.id for s in shifts]
     assignments_by_shift, offers_by_shift, summaries = _batch_recruiter_list_context(db, shift_ids)
     payload = []
+    active_statuses = (
+        models.ShiftRequestStatus.open,
+        models.ShiftRequestStatus.dispatching,
+        models.ShiftRequestStatus.filled,
+    )
     for s in shifts:
         try:
-            _try_expire_shift(db, s)
+            if s.status in active_statuses:
+                _try_expire_shift(db, s)
             primary = None
             if assignments_by_shift.get(s.id):
                 primary = assignments_by_shift[s.id][0]
@@ -787,6 +820,7 @@ def _build_recruiter_shift_rows_batch(
                 assignments=assignments_by_shift.get(s.id, []),
                 pending_offers=offers_by_shift.get(s.id, []),
                 nurse_summaries=summaries,
+                list_mode=True,
             )
             payload.append(d)
         except Exception as exc:
@@ -990,7 +1024,7 @@ def _build_nurse_shift_row(
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
-async def create_shift(
+def create_shift(
     req: ShiftCreateRequest,
     background_tasks: BackgroundTasks,
     current_user: models.User = Depends(get_current_user),
