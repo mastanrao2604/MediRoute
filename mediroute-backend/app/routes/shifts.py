@@ -64,61 +64,16 @@ def _lifecycle_log(ev: str, **fields) -> None:
     entry.update({k: v for k, v in fields.items() if v is not None})
     logger.info(json.dumps(entry, default=str))
 
-_shift_cols_ready = False
-_assignment_cols_ready = False
-
 NURSE_DASHBOARD_ARCHIVED = "nurse.dashboard_archived"
 
 
-def _ensure_pilot_schema(db: Session) -> None:
-    """Idempotent schema guards — list/create paths must match before ORM reads/writes."""
-    _ensure_shift_location_columns(db)
-    _ensure_assignment_columns(db)
-
-
-def _ensure_shift_location_columns(db: Session) -> None:
-    """Idempotent DDL for pilot DBs where Alembic e5 did not run yet."""
-    global _shift_cols_ready
-    if _shift_cols_ready:
-        return
-    for stmt in (
-        "ALTER TABLE shift_requests ADD COLUMN IF NOT EXISTS hospital_pincode VARCHAR(10)",
-        "ALTER TABLE shift_requests ADD COLUMN IF NOT EXISTS hospital_locality VARCHAR(255)",
-        "ALTER TABLE shift_requests ADD COLUMN IF NOT EXISTS nurses_required INTEGER NOT NULL DEFAULT 1",
-        "ALTER TABLE shift_requests ADD COLUMN IF NOT EXISTS search_closed_at TIMESTAMPTZ",
-    ):
-        db.execute(text(stmt))
-    db.commit()
-    _shift_cols_ready = True
-
-
-def _ensure_assignment_columns(db: Session) -> None:
-    """Idempotent DDL for recruiter confirmation + applied assignment status."""
-    global _assignment_cols_ready
-    if _assignment_cols_ready:
-        return
-    db.execute(
-        text(
-            "ALTER TABLE live_assignments "
-            "ADD COLUMN IF NOT EXISTS recruiter_confirmed_at TIMESTAMPTZ"
-        )
-    )
-    db.execute(
-        text(
-            "DO $$ BEGIN "
-            "ALTER TYPE assignmentstatus ADD VALUE IF NOT EXISTS 'applied'; "
-            "EXCEPTION WHEN duplicate_object THEN NULL; "
-            "END $$"
-        )
-    )
-    db.execute(
-        text(
-            "UPDATE live_assignments SET status = 'applied' "
-            "WHERE recruiter_confirmed_at IS NULL AND status::text = 'confirmed'"
-        )
-    )
-    db.commit()
-    _assignment_cols_ready = True
+def _enum_value(val, default: str = "unknown") -> str:
+    """Safe enum → string for mixed historical DB rows."""
+    if val is None:
+        return default
+    if hasattr(val, "value"):
+        return str(val.value)
+    return str(val)
 
 
 def _assignment_recruiter_confirmed(
@@ -467,17 +422,35 @@ def _attach_recruiter_staffing(d: dict, shift: models.ShiftRequest, db: Session)
     )
     applicants = []
     for a in assignments:
-        card = _assigned_nurse_summary(db, a.nurse_user_id)
-        stage = _assignment_lifecycle_stage(a, shift)
-        card["lifecycle_stage"] = stage
-        card["status"] = (
-            "confirmed" if _assignment_recruiter_confirmed(a, shift) else "applied"
-        )
-        card["assignment_id"] = a.id
-        card["assignment_status"] = a.status.value
-        card["check_in_at"] = utc_iso(a.check_in_at) if a.check_in_at else None
-        card["check_out_at"] = utc_iso(a.check_out_at) if a.check_out_at else None
-        applicants.append(card)
+        try:
+            card = _assigned_nurse_summary(db, a.nurse_user_id)
+            stage = _assignment_lifecycle_stage(a, shift)
+            card["lifecycle_stage"] = stage
+            card["status"] = (
+                "confirmed" if _assignment_recruiter_confirmed(a, shift) else "applied"
+            )
+            card["assignment_id"] = a.id
+            card["assignment_status"] = _enum_value(a.status)
+            card["check_in_at"] = utc_iso(a.check_in_at) if a.check_in_at else None
+            card["check_out_at"] = utc_iso(a.check_out_at) if a.check_out_at else None
+            applicants.append(card)
+        except Exception as exc:
+            logger.warning(
+                "[shifts] applicant_card_fallback sid=%s aid=%s uid=%s err=%s",
+                shift.id,
+                getattr(a, "id", None),
+                getattr(a, "nurse_user_id", None),
+                exc,
+            )
+            applicants.append({
+                "user_id": getattr(a, "nurse_user_id", None),
+                "name": f"Staff #{getattr(a, 'nurse_user_id', '?')}",
+                "lifecycle_stage": _assignment_lifecycle_stage(a, shift),
+                "status": "applied",
+                "assignment_id": a.id,
+                "assignment_status": _enum_value(getattr(a, "status", None)),
+                "_serialize_degraded": True,
+            })
 
     pending_offers = (
         db.query(models.DispatchOffer)
@@ -492,11 +465,28 @@ def _attach_recruiter_staffing(d: dict, shift: models.ShiftRequest, db: Session)
     for offer in pending_offers:
         if offer.nurse_user_id in assignment_nurse_ids:
             continue
-        card = _assigned_nurse_summary(db, offer.nurse_user_id)
-        card["lifecycle_stage"] = "invited"
-        card["status"] = "waiting"
-        card["offer_id"] = offer.id
-        applicants.append(card)
+        try:
+            card = _assigned_nurse_summary(db, offer.nurse_user_id)
+            card["lifecycle_stage"] = "invited"
+            card["status"] = "waiting"
+            card["offer_id"] = offer.id
+            applicants.append(card)
+        except Exception as exc:
+            logger.warning(
+                "[shifts] offer_card_fallback sid=%s offer_id=%s uid=%s err=%s",
+                shift.id,
+                offer.id,
+                offer.nurse_user_id,
+                exc,
+            )
+            applicants.append({
+                "user_id": offer.nurse_user_id,
+                "name": f"Staff #{offer.nurse_user_id}",
+                "lifecycle_stage": "invited",
+                "status": "waiting",
+                "offer_id": offer.id,
+                "_serialize_degraded": True,
+            })
 
     pending_responses = sum(
         1 for o in pending_offers if o.nurse_user_id not in assignment_nurse_ids
@@ -518,7 +508,7 @@ def _attach_recruiter_staffing(d: dict, shift: models.ShiftRequest, db: Session)
         d["assignment"] = {
             "id": a0.id,
             "nurse_user_id": a0.nurse_user_id,
-            "status": a0.status.value,
+            "status": _enum_value(a0.status),
             "lifecycle_stage": _assignment_lifecycle_stage(a0, shift),
             "recruiter_confirmed": recruiter_ok,
             "application_status": (
@@ -552,14 +542,17 @@ def _assigned_nurse_summary(db: Session, nurse_user_id: int) -> dict:
         .first()
     )
     name = (user.name if user and user.name else None) or f"Staff #{nurse_user_id}"
+    education = profile.education if profile else None
+    if education is not None and not isinstance(education, (str, int, float, bool, list, dict, type(None))):
+        education = str(education)
     return {
         "user_id": nurse_user_id,
         "name": name,
         "phone": user.phone if user else None,
-        "role": user.role.value if user else None,
+        "role": _enum_value(user.role, None) if user else None,
         "experience_years": profile.experience_years if profile else None,
         "skills": profile.skills if profile else None,
-        "education": profile.education if profile else None,
+        "education": education,
         "service_locality": profile.service_locality if profile else None,
         "rating": _reliability_display_score(rs),
         "completed_shifts": int(rs.completed_shifts) if rs else 0,
@@ -594,10 +587,10 @@ def _shift_to_dict(
         "id": shift.id,
         "city_id": shift.city_id,
         "hospital_name": shift.hospital_name,
-        "role_required": shift.role_required.value,
+        "role_required": _enum_value(shift.role_required),
         "specialty": shift.specialty,
-        "urgency": shift.urgency.value,
-        "status": shift.status.value,
+        "urgency": _enum_value(shift.urgency),
+        "status": _enum_value(shift.status),
         "shift_start": utc_iso(shift.shift_start),
         "shift_end": utc_iso(shift.shift_end),
         "pay_rate": shift.pay_rate,
@@ -619,7 +612,7 @@ def _shift_to_dict(
         d["assignment"] = {
             "id": assignment.id,
             "nurse_user_id": assignment.nurse_user_id,
-            "status": assignment.status.value,
+            "status": _enum_value(assignment.status),
             "lifecycle_stage": stage,
             "recruiter_confirmed": recruiter_ok,
             "application_status": (
@@ -685,6 +678,71 @@ def _nurse_browse_context(db: Session, user: models.User):
     return city_id, nurse_pc
 
 
+def _shift_list_fallback(shift: models.ShiftRequest, err: Exception) -> dict:
+    """Minimal shift card when full serialization fails — keeps dashboard alive."""
+    logger.warning(
+        "[shifts] serialize_fallback sid=%s err=%s",
+        getattr(shift, "id", None),
+        err,
+        exc_info=True,
+    )
+    return {
+        "id": shift.id,
+        "city_id": getattr(shift, "city_id", "HYD"),
+        "hospital_name": shift.hospital_name or "Shift",
+        "role_required": _enum_value(getattr(shift, "role_required", None)),
+        "urgency": _enum_value(getattr(shift, "urgency", None), "standard"),
+        "status": _enum_value(getattr(shift, "status", None), "open"),
+        "shift_start": utc_iso(getattr(shift, "shift_start", None)),
+        "shift_end": utc_iso(getattr(shift, "shift_end", None)),
+        "nurses_required": PILOT_NURSES_REQUIRED,
+        "search_closed": bool(getattr(shift, "search_closed_at", None)),
+        "applicants": [],
+        "confirmed_count": 0,
+        "applied_count": 0,
+        "pending_responses": 0,
+        "search_active": False,
+        "_serialize_degraded": True,
+    }
+
+
+def _try_expire_shift(db: Session, shift: models.ShiftRequest) -> None:
+    """Expire on read without failing the entire list."""
+    try:
+        if _expire_shift_if_past_start_unfilled(db, shift):
+            db.refresh(shift)
+    except SQLAlchemyError as exc:
+        db.rollback()
+        logger.warning("[shifts] expire_on_read failed sid=%s err=%s", shift.id, exc)
+    except Exception as exc:
+        logger.warning("[shifts] expire_on_read unexpected sid=%s err=%s", shift.id, exc)
+
+
+def _build_recruiter_shift_row(
+    db: Session,
+    shift: models.ShiftRequest,
+) -> dict:
+    _try_expire_shift(db, shift)
+    primary = (
+        db.query(models.LiveAssignment)
+        .filter(models.LiveAssignment.shift_request_id == shift.id)
+        .order_by(models.LiveAssignment.confirmed_at.asc())
+        .first()
+    )
+    d = _shift_to_dict(shift, primary)
+    return _attach_recruiter_staffing(d, shift, db)
+
+
+def _build_nurse_shift_row(
+    db: Session,
+    assignment: models.LiveAssignment,
+    shift: models.ShiftRequest,
+) -> dict:
+    _try_expire_shift(db, shift)
+    db.refresh(assignment)
+    return _shift_to_dict(shift, assignment, db)
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
@@ -706,6 +764,12 @@ async def create_shift(
     """
     # Only recruiters can post shifts
     if current_user.role != models.UserRole.recruiter:
+        _lifecycle_log(
+            "shift_post_denied",
+            uid=current_user.id,
+            auth_role=_enum_value(current_user.role),
+            reason="not_recruiter",
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only verified hospitals (recruiter accounts) can post shifts.",
@@ -736,8 +800,15 @@ async def create_shift(
             detail="shift_start cannot be in the past.",
         )
 
+    _lifecycle_log(
+        "shift_post_start",
+        uid=current_user.id,
+        auth_role=_enum_value(current_user.role),
+        role_required=req.role_required,
+        urgency=req.urgency,
+    )
+
     try:
-        _ensure_pilot_schema(db)
         shift = models.ShiftRequest(
             city_id=req.city_id or "HYD",
             hospital_user_id=current_user.id,
@@ -787,14 +858,25 @@ async def create_shift(
         sid=shift.id,
         uid=current_user.id,
         actor="recruiter",
+        auth_role=_enum_value(current_user.role),
+        role_required=shift.role_required.value,
         urgency=shift.urgency.value,
-        role=shift.role_required.value,
     )
 
     # Start dispatch in background (non-blocking asyncio task)
     background_tasks.add_task(start_dispatch, shift.id)
 
-    return {"shift": _shift_to_dict(shift), "created": True}
+    try:
+        shift_dict = _shift_to_dict(shift)
+    except Exception as exc:
+        logger.warning(
+            "[shifts] create_shift serialize degraded sid=%s err=%s",
+            shift.id,
+            exc,
+            exc_info=True,
+        )
+        shift_dict = _shift_list_fallback(shift, exc)
+    return {"shift": shift_dict, "created": True}
 
 
 @router.get("/")
@@ -807,7 +889,6 @@ def list_shifts(
     Recruiters see their posted shifts.
     Nurses/healthcare workers see their assigned shifts.
     """
-    _ensure_pilot_schema(db)
     if current_user.role == models.UserRole.recruiter:
         archived = _recruiter_archived_shift_ids(db, current_user.id)
         shifts = (
@@ -818,24 +899,21 @@ def list_shifts(
             .all()
         )
         visible = [s for s in shifts if s.id not in archived]
-        for s in visible:
-            if _expire_shift_if_past_start_unfilled(db, s):
-                db.refresh(s)
         payload = []
         for s in visible:
-            primary = (
-                db.query(models.LiveAssignment)
-                .filter(models.LiveAssignment.shift_request_id == s.id)
-                .order_by(models.LiveAssignment.confirmed_at.asc())
-                .first()
-            )
-            d = _shift_to_dict(s, primary)
-            _attach_recruiter_staffing(d, s, db)
-            payload.append(d)
+            try:
+                payload.append(_build_recruiter_shift_row(db, s))
+            except Exception as exc:
+                payload.append(_shift_list_fallback(s, exc))
+        _lifecycle_log(
+            "list_shifts_recruiter",
+            uid=current_user.id,
+            actor="recruiter",
+            count=len(payload),
+        )
         return {"shifts": payload}
     else:
         archived = _nurse_dashboard_archived_ids(db, current_user.id)
-        # Nurse: return assignments with shift details
         assignments = (
             db.query(models.LiveAssignment, models.ShiftRequest)
             .join(models.ShiftRequest, models.LiveAssignment.shift_request_id == models.ShiftRequest.id)
@@ -848,10 +926,10 @@ def list_shifts(
         for assignment, shift in assignments:
             if shift.id in archived:
                 continue
-            if _expire_shift_if_past_start_unfilled(db, shift):
-                db.refresh(shift)
-                db.refresh(assignment)
-            payload.append(_shift_to_dict(shift, assignment, db))
+            try:
+                payload.append(_build_nurse_shift_row(db, assignment, shift))
+            except Exception as exc:
+                payload.append(_shift_list_fallback(shift, exc))
         return {"shifts": payload}
 
 
@@ -1163,7 +1241,6 @@ def nurse_dismiss_shift_from_dashboard(
     if current_user.role not in DISPATCH_ELIGIBLE_ROLES:
         raise HTTPException(status_code=403, detail="Only staff accounts can dismiss shifts.")
 
-    _ensure_pilot_schema(db)
     assignment = (
         db.query(models.LiveAssignment)
         .filter(
@@ -1263,8 +1340,6 @@ async def confirm_staff(
                 detail="This applicant has not applied yet. Wait for them to apply first.",
             )
         raise HTTPException(status_code=404, detail="Applicant not found for this shift.")
-
-    _ensure_assignment_columns(db)
 
     already_confirmed_other = (
         db.query(models.LiveAssignment)

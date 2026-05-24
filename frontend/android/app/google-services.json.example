@@ -1,0 +1,31 @@
+{
+  "_comment": "DO NOT use this file in builds. Copy from Firebase Console as google-services.json",
+  "_instructions": [
+    "1. Open https://console.firebase.google.com/project/mediroute-app-dev",
+    "2. Project settings → Your apps → Android com.mediroute.app",
+    "3. Download google-services.json → frontend/android/app/google-services.json",
+    "4. Add SHA-1/SHA-256 of your signing keystore (debug + release) in Firebase",
+    "5. Enable Cloud Messaging API; set FIREBASE_CREDENTIALS_JSON on Render (service account JSON)"
+  ],
+  "project_info": {
+    "project_number": "461943303725",
+    "project_id": "mediroute-app-dev",
+    "storage_bucket": "mediroute-app-dev.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:461943303725:android:REPLACE_WITH_REAL_APP_ID",
+        "android_client_info": {
+          "package_name": "com.mediroute.app"
+        }
+      },
+      "api_key": [
+        {
+          "current_key": "REPLACE_WITH_REAL_FIREBASE_ANDROID_API_KEY"
+        }
+      ]
+    }
+  ],
+  "configuration_version": "1"
+}

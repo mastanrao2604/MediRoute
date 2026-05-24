@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect } from 'react';
-import api from '../api/axios';
+import axios from 'axios';
+import api, { API_BASE_URL } from '../api/axios';
 import { mlog } from '../utils/mobileLogger';
 
 const AuthContext = createContext(null);
@@ -84,13 +85,39 @@ export function AuthProvider({ children }) {
    */
   async function revalidate() {
     try {
+      const refreshToken = localStorage.getItem('mediroute_refresh_token');
+      if (refreshToken) {
+        try {
+          const res = await axios.post(`${API_BASE_URL}/auth/refresh`, {
+            refresh_token: refreshToken,
+          }, { timeout: 8000 });
+          const newToken = res.data?.access_token;
+          if (newToken) {
+            localStorage.setItem('mediroute_token', newToken);
+            setToken(newToken);
+          }
+        } catch (refreshErr) {
+          const refreshStatus = refreshErr?.response?.status;
+          if (refreshStatus === 401 || refreshStatus === 403) {
+            mlog('auth', 'session_expired', { status: refreshStatus, via: 'refresh' });
+            setToken(null);
+            setUser(null);
+            localStorage.removeItem('mediroute_token');
+            localStorage.removeItem('mediroute_refresh_token');
+            localStorage.removeItem('mediroute_user');
+            return;
+          }
+        }
+      }
       const res = await api.get('/auth/me');
       const latestToken = localStorage.getItem('mediroute_token');
       setToken(latestToken);
       setUser(res.data);
       localStorage.setItem('mediroute_user', JSON.stringify(res.data));
+      mlog('auth', 'session_revalidated', { role: res.data.role, user_id: res.data.id });
     } catch (err) {
       if (err?.response?.status === 401 || err?.response?.status === 403) {
+        mlog('auth', 'session_expired', { status: err.response.status, via: 'me' });
         setToken(null);
         setUser(null);
         localStorage.removeItem('mediroute_token');

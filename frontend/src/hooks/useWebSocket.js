@@ -46,6 +46,18 @@ export function useWebSocket(user, token, onMessage, onAuthError) {
   const connectAttemptTime = useRef(null);
   const rapidFailCount = useRef(0);
 
+  /** REST probe: distinguish expired token from server cold-start / network blip. */
+  const probeAuthState = useCallback(async () => {
+    try {
+      await api.get('/auth/me', { timeout: 5000 });
+      return 'valid';
+    } catch (err) {
+      const status = err?.response?.status;
+      if (status === 401 || status === 403) return 'invalid';
+      return 'unknown';
+    }
+  }, []);
+
   const clearTimers = () => {
     if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
     if (pingTimer.current) clearInterval(pingTimer.current);
@@ -157,15 +169,19 @@ export function useWebSocket(user, token, onMessage, onAuthError) {
         rapidFailCount.current += 1;
         if (rapidFailCount.current >= RAPID_FAIL_THRESHOLD) {
           rapidFailCount.current = 0;
-          console.warn('[WS] repeated rapid failures — suspecting expired token or server restart');
-          mlog('websocket', 'rapid_fail_auth_suspected', { rapid_count: RAPID_FAIL_THRESHOLD });
-          onAuthError?.();
-          // Schedule a reconnect after a delay: covers both cases —
-          //   (a) server restart: backend will be ready by then, reconnect succeeds
-          //   (b) expired token: revalidate() updates the token, useEffect re-runs connect()
-          // If (b) happens first the useEffect will cancel this timer via clearTimers().
-          backoffRef.current = 4; // start at 4s after auth-error pause
-          reconnectTimer.current = setTimeout(() => connectRef.current?.(), 4000);
+          console.warn('[WS] repeated rapid failures — probing auth before reconnect');
+          probeAuthState().then((authState) => {
+            if (authState === 'invalid') {
+              mlog('websocket', 'rapid_fail_auth_confirmed', { rapid_count: RAPID_FAIL_THRESHOLD });
+              onAuthError?.();
+            } else if (authState === 'valid') {
+              mlog('websocket', 'rapid_fail_server_unreachable', { rapid_count: RAPID_FAIL_THRESHOLD });
+            } else {
+              mlog('websocket', 'rapid_fail_network', { rapid_count: RAPID_FAIL_THRESHOLD });
+            }
+            backoffRef.current = 4;
+            reconnectTimer.current = setTimeout(() => connectRef.current?.(), 4000);
+          });
           return;
         }
       } else {
@@ -188,7 +204,7 @@ export function useWebSocket(user, token, onMessage, onAuthError) {
     ws.onerror = () => {
       // onerror is always followed by onclose — let onclose handle reconnect
     };
-  }, [user?.id, token, onMessage, fetchMissedOffers]);
+  }, [user?.id, token, onMessage, fetchMissedOffers, probeAuthState]);
 
   // Task 16: Keep connectRef current so ws.onclose closure always calls the latest version
   connectRef.current = connect;

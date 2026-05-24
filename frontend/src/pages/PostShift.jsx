@@ -260,7 +260,11 @@ export default function PostShift() {
     if (loc) payload.hospital_locality = loc;
 
     console.log('[PostShift] submit urgency=%s role=%s', payload.urgency, payload.role_required);
-    mlog('dispatch', 'shift_post_start', { role: payload.role_required, urgency: payload.urgency });
+    mlog('dispatch', 'shift_post_start', {
+      auth_role: user?.role ?? null,
+      role_required: payload.role_required,
+      urgency: payload.urgency,
+    });
     setSubmitting(true);
     try {
       const res = await api.post('/shifts/', payload);

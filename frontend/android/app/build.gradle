@@ -69,9 +69,20 @@ apply from: 'capacitor.build.gradle'
 
 try {
     def servicesJSON = file('google-services.json')
-    if (servicesJSON.text) {
+    if (servicesJSON.exists() && servicesJSON.text) {
+        def gsText = servicesJSON.getText('UTF-8')
+        if (gsText.contains('placeholder-not-for-production-use')
+                || gsText.contains('0000000000000000')) {
+            throw new GradleException(
+                'google-services.json is a placeholder. Download the real file from Firebase Console ' +
+                '(project mediroute-app-dev, Android app com.mediroute.app) and replace ' +
+                'frontend/android/app/google-services.json before building an APK with FCM.'
+            )
+        }
         apply plugin: 'com.google.gms.google-services'
     }
+} catch (GradleException e) {
+    throw e
 } catch(Exception e) {
     logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
 }

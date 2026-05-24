@@ -765,12 +765,6 @@ def record_nurse_accept_sync(
     Record a job seeker application (pending recruiter confirmation).
     Does not finalize the shift — recruiter must confirm via POST /shifts/{id}/confirm-staff.
     """
-    db.execute(
-        text(
-            "ALTER TABLE live_assignments "
-            "ADD COLUMN IF NOT EXISTS recruiter_confirmed_at TIMESTAMPTZ"
-        )
-    )
     shift = db.query(models.ShiftRequest).filter(
         models.ShiftRequest.id == shift_id
     ).first()

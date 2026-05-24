@@ -156,17 +156,28 @@ export function usePushNotifications(user, token, onPushMessage) {
         const fcmToken = data.value;
         if (!fcmToken || fcmToken === registeredTokenRef.current) return;
         try {
-          await api.put('/device/token', { fcm_token: fcmToken, platform: 'android' });
+          await api.put('/devices/token', { fcm_token: fcmToken, platform: 'android' });
           registeredTokenRef.current = fcmToken;
-          mlog('notification', 'fcm_registered', {});
+          mlog('notification', 'fcm_registered', { token_len: fcmToken.length });
         } catch (err) {
-          console.error('[FCM] Token registration failed:', err?.response?.data?.detail || err.message);
+          const status = err?.response?.status ?? null;
+          mlog('notification', 'fcm_token_upload_fail', {
+            status,
+            msg: String(err?.response?.data?.detail || err?.message || err).slice(0, 120),
+          });
         }
       });
       cleanupFns.push(() => regListener.remove());
 
       const errListener = await PushNotifications.addListener('registrationError', (err) => {
-        mlog('notification', 'fcm_registration_error', { msg: String(err?.error || '').slice(0, 120) });
+        const msg = String(err?.error || err?.message || err || '');
+        const placeholderConfig = /valid API key|API key is required/i.test(msg);
+        mlog('notification', 'fcm_registration_error', {
+          msg: msg.slice(0, 160),
+          hint: placeholderConfig
+            ? 'Replace frontend/android/app/google-services.json with Firebase Console download (mediroute-app-dev, com.mediroute.app)'
+            : undefined,
+        });
       });
       cleanupFns.push(() => errListener.remove());
 

@@ -84,10 +84,24 @@ async def websocket_endpoint(
         from jose import JWTError
         payload = decode_access_token(token)
         token_user_id: int = payload.get("user_id")
-        if token_user_id is None or token_user_id != user_id:
+        if token_user_id is None:
+            logger.warning("[ws] auth rejected path_uid=%s reason=missing_user_id", user_id)
             await websocket.close(code=4001)
             return
-    except Exception:
+        if token_user_id != user_id:
+            logger.warning(
+                "[ws] auth rejected path_uid=%s token_uid=%s reason=user_mismatch",
+                user_id,
+                token_user_id,
+            )
+            await websocket.close(code=4001)
+            return
+    except JWTError as exc:
+        logger.warning("[ws] auth rejected path_uid=%s reason=jwt_invalid err=%s", user_id, exc)
+        await websocket.close(code=4001)
+        return
+    except Exception as exc:
+        logger.warning("[ws] auth rejected path_uid=%s reason=unexpected err=%s", user_id, exc)
         await websocket.close(code=4001)
         return
 

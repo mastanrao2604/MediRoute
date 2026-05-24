@@ -152,20 +152,27 @@ def send_push_notification(
             ),
         )
         messaging.send(message, app=_fcm_app)
-        logger.debug("[FCM] Delivered to token %s...", fcm_token[:12])
+        data_type = (data or {}).get("type", "unknown")
+        shift_id = (data or {}).get("shift_id")
+        logger.info(
+            "[FCM] delivered type=%s shift_id=%s token_prefix=%s",
+            data_type, shift_id, fcm_token[:8],
+        )
         return True, None
 
     except Exception as exc:
         category = _categorize_fcm_error(exc)
+        data_type = (data or {}).get("type", "unknown")
+        shift_id = (data or {}).get("shift_id")
         if category == "invalid_token":
             logger.warning(
-                "[FCM] Invalid/unregistered token (token=%s...) — will be cleaned up: %s",
-                fcm_token[:12], exc,
+                "[FCM] invalid_token type=%s shift_id=%s token_prefix=%s err=%s",
+                data_type, shift_id, fcm_token[:8], exc,
             )
         else:
             logger.warning(
-                "[FCM] Send failed [%s] (token=%s...): %s",
-                category, fcm_token[:12], exc,
+                "[FCM] send_failed category=%s type=%s shift_id=%s token_prefix=%s err=%s",
+                category, data_type, shift_id, fcm_token[:8], exc,
             )
         return False, category
 
